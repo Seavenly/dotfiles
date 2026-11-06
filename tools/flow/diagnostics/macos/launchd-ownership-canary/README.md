@@ -7,15 +7,22 @@ and after job removal and helper deadlines. It grants no Flow admission or
 retirement proof. Actual macOS execution is NOT_RUN until an operator returns
 host evidence. Linux results cannot qualify Darwin behavior.
 
-On a Mac with Python 3 and existing Command Line Tools, from this directory:
+On a Mac with an already installed non-Apple Python 3.9 or newer and existing
+Command Line Tools, from this directory (substitute your real Python binary):
 
 ```sh
-python3 probe.py --output "${TMPDIR:-/tmp}/flow-ownership-$(date +%s)-$$"
+FLOW_MAC_PROBE_PYTHON=/opt/homebrew/bin/python3 /bin/sh ./run.sh --output "${TMPDIR:-/tmp}/flow-ownership-$(date +%s)-$$"
 ```
 
 Use a new directory. Do not use sudo. No downloads, auth/config reads, network,
 privileged helper, coalition mutation, or global signals are used. The probe
-compiles only the adjacent owned C helper with `/usr/bin/clang`. Missing SDK,
+compiles only the adjacent owned C helper with the selected installed compiler.
+The shell entry checks `xcode-select -p`, an existing native compiler and SDK,
+and an explicit non-system native Python binary before executing Python. It
+resolves Python symlinks and refuses Apple system Python and install stubs.
+It never invokes `/usr/bin/python3`, `/usr/bin/clang`, `xcrun`, or a package
+manager. Do not substitute the direct Python entry when tools are missing.
+Missing SDK,
 compiler, private symbols, per-user GUI domain, permissions and API failures are
 retained as failures or unsupported observations; nothing is installed.
 

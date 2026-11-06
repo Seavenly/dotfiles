@@ -15,6 +15,21 @@ HERE = pathlib.Path(__file__).resolve().parent
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux-only portability checks")
 class OwnedCanary(unittest.TestCase):
+    def test_documented_shell_entry_refuses_linux_before_python_or_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            python = root / "must-not-execute"
+            marker = root / "executed"
+            python.write_text("#!/bin/sh\ntouch '" + str(marker) + "'\n")
+            python.chmod(0o700)
+            result = subprocess.run(["/bin/sh", str(HERE / "run.sh"),
+                "--output", str(root / "output")], capture_output=True, timeout=3,
+                env={"PATH": "/usr/bin:/bin", "FLOW_MAC_PROBE_PYTHON": str(python)})
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(b"unsupported platform", result.stderr)
+            self.assertFalse(marker.exists())
+            self.assertFalse((root / "output").exists())
+
     def test_linux_refuses_before_output_or_child_creation(self):
         with tempfile.TemporaryDirectory() as tmp:
             destination = pathlib.Path(tmp) / "must-not-exist"

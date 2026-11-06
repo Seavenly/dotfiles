@@ -92,14 +92,36 @@ def main():
         return code
 
     try:
-        compiler = pathlib.Path("/usr/bin/clang")
-        if not compiler.is_file():
-            report["status"] = "compiler_unavailable_no_install_attempted"
+        if command(["/usr/bin/xcode-select", "-p"]) != 0:
+            report["status"] = "developer_tools_unavailable_no_install_attempted"
             return 2
+        developer = pathlib.Path((directory / "command-0.stdout").read_text().strip())
+        if not developer.is_absolute() or not developer.is_dir():
+            report["status"] = "selected_developer_directory_unavailable"
+            return 2
+        developer = developer.resolve()
+        compiler = developer / "usr/bin/clang"
+        sdk = developer / "SDKs/MacOSX.sdk"
+        if not compiler.is_file():
+            compiler = developer / "Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
+            sdk = developer / "Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+        if not compiler.is_file() or not os.access(compiler, os.X_OK) or \
+                not (sdk / "SDKSettings.json").is_file() or \
+                not (sdk / "System/Library/Frameworks").is_dir():
+            report["status"] = "selected_compiler_or_sdk_unavailable_no_install_attempted"
+            return 2
+        compiler = compiler.resolve()
+        sdk = sdk.resolve()
+        if compiler.parent == pathlib.Path("/usr/bin") or \
+                not compiler.is_relative_to(developer) or not sdk.is_relative_to(developer):
+            report["status"] = "selected_tools_escape_developer_directory"
+            return 2
+        report["selected_compiler"] = str(compiler)
+        report["selected_sdk"] = str(sdk)
         source = pathlib.Path(__file__).with_name("helper.c")
         helper = directory / "owned-helper"
         if command([str(compiler), "-std=c11", "-Wall", "-Wextra", "-Werror",
-                    str(source), "-o", str(helper)], timeout=20) != 0:
+                    "-isysroot", str(sdk), str(source), "-o", str(helper)], timeout=20) != 0:
             report["status"] = "compile_failed_or_missing_sdk_no_install_attempted"
             return 2
         report["helper_sha256"] = hashlib.sha256(helper.read_bytes()).hexdigest()
