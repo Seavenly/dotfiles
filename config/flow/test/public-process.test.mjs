@@ -883,7 +883,7 @@ test("owner rejects a precreated symlink fallback directory", async (t) => {
 test("root-owned ancestor symlinks resolve for owner and transport", async (t) => {
   // This disposable alias models macOS /var -> /private/var without changing
   // a host-managed system path on Linux.
-  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false, shortSocketPaths: true });
   const targetRoot = join(fixture.env.HOME, "private-var");
   const systemAlias = join(fixture.env.HOME, "var");
   await mkdir(targetRoot, { recursive: true, mode: 0o700 });
@@ -955,7 +955,7 @@ test("transport rejects a controlled socket leaf symlink", async (t) => {
 });
 
 test("fallback validates the XDG runtime root, ownership, mode, and traversal", async (t) => {
-  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false, shortSocketPaths: true });
   const runtimeDirectory = join(fixture.env.HOME, "xdg-runtime");
   await mkdir(runtimeDirectory, { recursive: true, mode: 0o700 });
   const authorityDirectory = join(fixture.env.HOME, `authority-${"a".repeat(150)}`);
@@ -1057,7 +1057,7 @@ test("fallback validates the XDG runtime root, ownership, mode, and traversal", 
 });
 
 test("fallback rejects a symlinked XDG runtime component before chmod", async (t) => {
-  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false });
+  const fixture = await disposableOwnerFixture(t, { cleanupOwner: false, shortSocketPaths: true });
   const target = join(fixture.env.HOME, "real-runtime");
   const linkPath = join(fixture.env.HOME, "runtime-link");
   await mkdir(target, { recursive: true, mode: 0o700 });
@@ -1798,9 +1798,11 @@ test("watch carries watermarks and returns the server iterator on client disconn
 
 async function disposableOwnerFixture(
   t,
-  { cleanupOwner = true, production = false, qualifiedRelease = false } = {},
+  { cleanupOwner = true, production = false, qualifiedRelease = false, shortSocketPaths = false } = {},
 ) {
-  const scratch = await mkdtemp(join(tmpdir(), "flow-public-process-"));
+  // Permission/symlink cases need a root that fits the Unix socket limit even
+  // when the enclosing test runner uses a long private TMPDIR.
+  const scratch = await mkdtemp(shortSocketPaths ? "/tmp/fp-" : join(tmpdir(), "flow-public-process-"));
   const state = join(scratch, "state");
   const repository = join(scratch, "repository");
   const paths = flowOwnerPaths({

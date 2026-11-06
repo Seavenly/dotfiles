@@ -149,7 +149,7 @@ export async function seedPublicReview({
     if (reviewCompleted.phase !== "succeeded") {
       throw new Error(`public review seed failed: ${JSON.stringify(reviewCompleted)}`);
     }
-    const reviewId = `review:${candidateProjection.candidate_fingerprint}:1`;
+    const reviewId = reviewCompleted.effects.find(({ card_id }) => card_id === "review-record").receipt.provider_receipt.review_id;
     const reviewProjection = runtime.query({
       contract: "work.review/v1",
       subject_id: reviewId,

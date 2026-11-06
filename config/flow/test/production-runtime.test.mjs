@@ -93,7 +93,7 @@ function createFlowRuntime(options = {}) {
       await rm(configDirectory, { recursive: true, force: true });
       await cp(FLOW_CONFIG_DIRECTORY, configDirectory, { recursive: true, filter: source => !source.split("/").includes("node_modules") });
       await bindQualifiedReleaseFixture({ configDirectory, repositoryRoot: REPOSITORY_ROOT });
-      return createProductionFlowRuntime({ ...runtimeOptions, env: { ...process.env, ...runtimeOptions.env, FLOW_CONFIG_DIRECTORY: configDirectory, FLOW_REPOSITORY_ROOT: qualifiedReleaseRepository, FLOW_QUALIFICATION_REPOSITORY_ROOT: REPOSITORY_ROOT, FLOW_EXECUTION_BACKEND: runtimeOptions.env?.FLOW_EXECUTION_BACKEND ?? "drovr" }, ...(runtimeOptions.delegatedAgentPort === undefined || runtimeOptions.delegatedAgentResourcePort !== undefined ? {} : { delegatedAgentResourcePort: deterministicResourcePort() }) });
+      return createProductionFlowRuntime({ ...runtimeOptions, env: { ...process.env, ...runtimeOptions.env, FLOW_AUTHORITY_DIRECTORY: runtimeOptions.env?.FLOW_AUTHORITY_DIRECTORY ?? join(runtimeOptions.env?.XDG_STATE_HOME ?? join(runtimeOptions.env?.HOME ?? process.env.HOME, ".local", "state"), "flow"), FLOW_CONFIG_DIRECTORY: configDirectory, FLOW_REPOSITORY_ROOT: qualifiedReleaseRepository, FLOW_QUALIFICATION_REPOSITORY_ROOT: REPOSITORY_ROOT, FLOW_EXECUTION_BACKEND: runtimeOptions.env?.FLOW_EXECUTION_BACKEND ?? "drovr" }, ...(runtimeOptions.delegatedAgentPort === undefined || runtimeOptions.delegatedAgentResourcePort !== undefined ? {} : { delegatedAgentResourcePort: deterministicResourcePort() }) });
     })();
   }
   const bindInjectedFixture = options.delegatedAgentPort !== undefined &&

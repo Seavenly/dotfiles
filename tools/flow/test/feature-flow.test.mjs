@@ -3600,7 +3600,7 @@ test("durable ReviewAuthority accepts a human session command through FlowRuntim
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.equal(runtime.query({ run_id: launch.run_id }).phase, "succeeded");
-  const reviewId = `review:${target.candidate_fingerprint}:1`;
+  const reviewId = runtime.query({ run_id: launch.run_id }).effects.find(({ card_id }) => card_id === "review-record").receipt.provider_receipt.review_id;
   const review = runtime.query({ review_id: reviewId });
   assert.equal(review.schema, "flow.review-projection/v1");
   const start = {
@@ -4646,7 +4646,7 @@ test("feature/v1 verify executes and seals one durable local candidate", async (
   assert.equal(completed.views.trust.effects.find(({ card_id: cardId }) =>
     cardId === "feature-seal").operation_input, undefined);
 
-  const reviewId = `review:${review.candidate_fingerprint}:4`;
+  const reviewId = sourceRecordEffect.receipt.provider_receipt.review_id;
   const reviewedCandidate = reviewAuthority.query({
     contract: "work.review/v1",
     subject_id: reviewId,
