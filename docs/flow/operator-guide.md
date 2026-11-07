@@ -86,8 +86,9 @@ uncertain effects, workspace claims and taint, then stop its owner. Invoke the
 new runtime's public `local setup` command with the original state directory,
 repository, Node executable, official Codex executable, trust contract and Git
 identity, adding `--upgrade-runtime yes`. Only the runtime root may change.
-The stopped and settled checks gate creation of a new runtime revision and any
-explicit upgrade request. Setup creates an immutable client sharing the same authority and
+When the selected runtime differs from the original profile runtime, creating a
+revision or supplying `--upgrade-runtime yes` requires a stopped, settled owner.
+Original-runtime reuse remains ordinary setup. Setup creates an immutable client sharing the same authority and
 preserves the original profile and every old client. Repeating the upgrade
 reuses that revision; subsequent setup using an already registered runtime needs
 no upgrade flag, just as an existing client can already start directly. This
