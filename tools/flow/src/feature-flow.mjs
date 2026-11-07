@@ -236,6 +236,8 @@ function projectCheckedCards(cards, selection) {
   };
   return cards.flatMap(card => {
     if (card.id === capture.id) return [card, check];
+    if (card.executor.kind === "delegate" && card.inputs.phase === "apply") return [{ ...card,
+      inputs: { ...card.inputs, prompt: card.inputs.prompt + " The selected project_check is GREEN-only: preserve its pinned_files, executable, argv and registered runtime/dependency inputs. Implement with the declared tools and existing dependencies; do not install or use the network. Its suite runs on the captured candidate, so do not claim intended-RED evidence." } }];
     if (!["feature-critique", "feature-verify", "feature-seal"].includes(card.id)) return [card];
     return [{ ...card, dependencies: [...new Set([...card.dependencies, check.id])],
       inputs: { ...card.inputs, project_check: selection.project_check,
@@ -941,6 +943,7 @@ function validateFeatureRepairs(rawRepairs, brief, explicitFacts) {
 
 function featureSelectionInputs(selection) {
   return {
+    ...(selection.project_check === undefined ? {} : { project_check: selection.project_check }),
     ...(selection.verification === undefined ? {} : {
       verification: selection.verification,
     }),

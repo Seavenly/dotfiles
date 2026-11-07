@@ -1,3 +1,4 @@
+import { projectProfile } from "../test-support/project-check.mjs";
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -187,10 +188,16 @@ test("a stopped repository client advances from verify to a new checked feature 
   f.success(third.client, ["stop", "--json"]);
 });
 
-test("a different retained client refuses active checked work before recovery or provider dispatch", async t => {
+for (const version of ["v1", "v2"]) {
+test(`a different retained client refuses active ${version} checked work before recovery or provider dispatch`, async t => {
   const f = fixture(t);
+  if (version === "v2") {
+    const config = projectProfile({ root: f.repository, argv: ["--test", "acceptance.test.mjs"], files: ["acceptance.test.mjs"] });
+    config.criteria = load(join(f.root, "brief.json")).acceptance;
+    writeFileSync(f.checkPath, JSON.stringify(config));
+  }
   const original = f.success(process.execPath, f.args);
-  const next = f.success(process.execPath, [...f.args, "--mode", "test", "--check", f.checkPath, "--reconfigure-check", "yes"]);
+  const next = f.success(process.execPath, [...f.args, "--mode", version === "v2" ? "verify" : "test", "--check", f.checkPath, "--reconfigure-check", "yes"]);
   const profile = load(join(next.directory, "pilot.json"));
   const options = { env: { ...f.env, ...profile.environment }, featureTestCheck: load(f.checkPath),
     localClientCheck: { repository: f.repository, featureTestCheck: load(f.checkPath) }, autonomous: false };
@@ -215,6 +222,8 @@ test("a different retained client refuses active checked work before recovery or
   }
   finally { closeFlowRuntime(same); }
 });
+
+}
 
 test("check revision changes retain and refuse claimed or tainted workspace authority", t => {
   const f = fixture(t);
@@ -242,4 +251,31 @@ test("check revision changes retain and refuse claimed or tainted workspace auth
     assert.equal(f.run(process.execPath, [...f.args, "--mode", "test", "--check", f.checkPath, "--reconfigure-check", "yes"]).status, 1);
     assert.equal(workspace.query(query).taint.reason, "effect_outcome_uncertain");
   } finally { authority.close(); }
+});
+
+
+test("local setup exposes GREEN-only project registration in public prepare and compact inspection", { skip: process.platform !== "linux" }, t => {
+  const f = fixture(t);
+  const config = projectProfile({ root: f.repository, argv: ["--test", "acceptance.test.mjs"], files: ["acceptance.test.mjs"] });
+  config.criteria = load(join(f.root, "brief.json")).acceptance;
+  writeFileSync(f.checkPath, JSON.stringify(config));
+  const profile = f.success(process.execPath, [...f.args, "--mode", "verify", "--check", f.checkPath]);
+  f.ownClient(profile.client);
+  assert.match(profile.verification_scope, /GREEN-only/u);
+  const request = load(profile.request);
+  assert.equal(request.check.check_id, config.check_id);
+  assert.equal(request.test, undefined);
+  assert.equal(existsSync(join(profile.directory, "authority.sqlite")), false);
+  f.success(profile.client, ["start", "--json"]);
+  const prepared = f.success(profile.client, ["prepare", "--input-file", profile.request, "--json"]);
+  assert.equal(prepared.schema, "flow.prepared-run/v1");
+  assert.deepEqual(prepared.selection.inputs.project_check.registration, config);
+  assert.match(prepared.trust_posture.verification_scope.verify, /GREEN-only/u);
+  const apply = prepared.graph.cards.find(card => card.id === "feature-apply");
+  assert.deepEqual(apply.inputs.project_check.registration.argv, config.argv, "writer receives exact selected command and inputs");
+  const path = join(f.root, "prepared-v2.json"); writeFileSync(path, JSON.stringify(prepared));
+  const summary = f.success(profile.client, ["local", "inspect-prepared", path]);
+  assert.deepEqual(summary.project_check, prepared.selection.inputs.project_check);
+  assert.equal(existsSync(join(load(join(profile.directory, "pilot.json")).environment.FLOW_AUTHORITY_DIRECTORY, "direct-tasks")), false);
+  f.success(profile.client, ["stop", "--json"]);
 });
