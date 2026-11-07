@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+import { bindDelegateEvidenceReceipt, createEvidenceSafetyRequest, validateEvidenceSafety } from "../src/evidence-safety.mjs";
 import { DatabaseSync } from "node:sqlite";
 
 import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
@@ -4848,4 +4851,47 @@ test("new-owner recovery cannot reopen a cancelled invocation or cross a boot bo
         scenario === "cancelled" ? "released" : "suspended_after_reboot");
     });
   }
+});
+
+
+test("catalog 39 consumes genuine catalog 38 delegate evidence through durable replay without admitting old requests", async t => {
+  const root = await mkdtemp(join(tmpdir(), "flow-legacy-evidence-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  // Load the published implementation, rather than manufacturing an old receipt.
+  for (const filename of ["evidence-safety.mjs", "canonical.mjs"]) {
+    await writeFile(join(root, filename), execFileSync("/usr/bin/git", ["show", `3f3dbd704b7211960b34efff6f2d0c34450c9492:tools/flow/src/${filename}`], { cwd: new URL("..", import.meta.url), maxBuffer: 1024 * 1024 }));
+  }
+  const historical = await import(pathToFileURL(join(root, "evidence-safety.mjs")));
+  const output = { summary: "A retained delegated review finding" };
+  const accepted = historical.validateDelegateEvidenceSafety(output);
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.receipt.catalog_id, "flow.contract-catalog/v1@38");
+  assert.deepEqual(bindDelegateEvidenceReceipt(accepted.receipt, { subject_digest: digest(output) }).binding, accepted.binding);
+  const oldRequest = historical.createEvidenceSafetyRequest({ classification: "delegate_evidence", allowed_use: ["delegate_transfer"], input: output });
+  assert.equal(validateEvidenceSafety(oldRequest).accepted, false, "historical compatibility does not admit fresh catalog-38 requests");
+  const fresh = createEvidenceSafetyRequest({ classification: "delegate_evidence", allowed_use: ["delegate_transfer"], input: output });
+  assert.equal(fresh.catalog_id, "flow.contract-catalog/v1@39");
+  assert.equal(validateEvidenceSafety(fresh).accepted, true);
+  assert.equal(bindDelegateEvidenceReceipt({ ...accepted.receipt, catalog_id: "flow.contract-catalog/v1@37" }).accepted, false);
+  assert.equal(bindDelegateEvidenceReceipt({ ...accepted.receipt, self_digest: digest("tampered") }).accepted, false);
+  const authorityDirectory = join(root, "authority");
+  const authority = createDurableRunAuthority({ authorityDirectory, hostIdentityAdapter: fixedHostIdentity("boot-a", "old-evidence") });
+  let open = true; t.after(() => { if (open) authority.close(); });
+  const runtime = operationRuntime(authority, { classification: "caller_idempotent", invoke(intent) {
+    return operationReceipt(intent, { schema: "flow.delegate-evidence/v1", attempt_id: intent.attempt_id, card_id: intent.card_id, turn_id: "turn:retained",
+      evidence_safety_receipt: accepted.receipt, evidence_safety_binding: accepted.binding, validator_receipts: [] });
+  } });
+  const prepared = runtime.prepare(registeredOperationProposal({ checkpointBound: false }));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(({ type }) => type === "operation_execute"));
+  await until(() => runtime.query({ run_id: launch.run_id }).phase === "succeeded");
+  const receipt = runtime.query({ run_id: launch.run_id }).effects[0].receipt;
+  assert.deepEqual(receipt.provider_receipt.evidence_safety_receipt, accepted.receipt);
+  authority.close(); open = false;
+  const reopened = createDurableRunAuthority({ authorityDirectory, hostIdentityAdapter: fixedHostIdentity("boot-a", "replayed-evidence") });
+  t.after(() => reopened.close());
+  const replayed = createFlowRuntime({ runAuthority: reopened }).query({ run_id: launch.run_id });
+  assert.equal(replayed.phase, "succeeded");
+  assert.deepEqual(replayed.effects[0].receipt, receipt);
+  assert.deepEqual(bindDelegateEvidenceReceipt(replayed.effects[0].receipt.provider_receipt.evidence_safety_receipt, { subject_digest: digest(output) }).binding, accepted.binding);
 });

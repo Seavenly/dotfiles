@@ -19,7 +19,7 @@ export const EVIDENCE_SAFETY_REJECTION_SCHEMA =
 export const EVIDENCE_SAFETY_BINDING_SCHEMA =
   "flow.evidence-safety-binding/v1";
 export const EVIDENCE_SAFETY_POLICY_ID = "flow.evidence-safety-policy/v1";
-export const EVIDENCE_SAFETY_CATALOG_ID = "flow.contract-catalog/v1@38";
+export const EVIDENCE_SAFETY_CATALOG_ID = "flow.contract-catalog/v1@39";
 
 export const EVIDENCE_SAFETY_BOUNDARIES = Object.freeze([
   "delegate_transfer",
@@ -1622,13 +1622,15 @@ function conflictingOwnValue(left, right, key) {
     left[key] !== right[key];
 }
 
+// Catalog 39 adds project commands without changing evidence policy v1. Retained
+// catalog-38 receipts keep their original identity; new requests require 39.
 function validateReceipt(receipt) {
   if (!isPlainRecord(receipt) || !hasExactKeys(receipt, RECEIPT_FIELDS)) {
     return "invalid_receipt_shape";
   }
   if (receipt.schema !== EVIDENCE_SAFETY_RECEIPT_SCHEMA ||
       receipt.policy_id !== EVIDENCE_SAFETY_POLICY_ID ||
-      receipt.catalog_id !== EVIDENCE_SAFETY_CATALOG_ID ||
+      ![EVIDENCE_SAFETY_CATALOG_ID, "flow.contract-catalog/v1@38"].includes(receipt.catalog_id) ||
       !EVIDENCE_SAFETY_CLASSIFICATIONS.includes(receipt.classification) ||
       !isDigest(receipt.input_digest) || !isDigest(receipt.receipt_digest) ||
       !isDigest(receipt.self_digest)) {

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { lstatSync, readFileSync, readdirSync, realpathSync, readlinkSync, existsSync, mkdirSync, writeFileSync, symlinkSync } from "node:fs";
-import { join, resolve, isAbsolute, relative, dirname } from "node:path";
+import { join, resolve, isAbsolute, relative, dirname, basename } from "node:path";
 import { digest, freezeCanonical } from "../../../tools/flow/src/canonical.mjs";
 import { PROJECT_CHECK_SCOPE } from "../../../tools/flow/src/project-check.mjs";
 
@@ -11,11 +11,12 @@ const exact = (value, keys) => value && typeof value === "object" && !Array.isAr
 export function projectCheckError(code) { const error = new TypeError(code); error.code = code; return error; }
 const invalid = () => { throw projectCheckError("project_check_invalid"); };
 export function projectPath(path) {
-  return typeof path === "string" && path.length > 0 && !path.startsWith("-") && path.split("/").every(part => /^[a-zA-Z0-9_.-]+$/u.test(part) && ![".", "..", ".git", ".agents", ".codex"].includes(part));
+  return typeof path === "string" && path.length > 0 && !path.startsWith("-") && path.split("/").every(part => /^[a-zA-Z0-9_.-]+$/u.test(part) && ![".", "..", ".git", ".agents"].includes(part) && !privateNames.has(part));
 }
 const privateNames = new Set([".ssh", ".aws", ".codex", ".claude", ".config", ".gnupg", ".docker", ".kube", ".azure", ".password-store", ".netrc", ".npmrc", ".pypirc", ".git-credentials", ".gitconfig", "auth.json", "credentials.json", "pip.conf", ".vault-token"]);
 const overlap = (a, b) => a === b || a.startsWith(b + "/") || b.startsWith(a + "/");
 export function assertProjectReadPath(path, { authorityDirectory, home = process.env.HOME } = {}) {
+  home = home && (existsSync(home) ? realpathSync(home) : resolve(home));
   const authority = authorityDirectory && (existsSync(authorityDirectory) ? realpathSync(authorityDirectory) : resolve(authorityDirectory));
   if (path.split("/").some(part => privateNames.has(part)) || ["/etc", "/proc", "/dev", "/root"].some(root => path === root || path.startsWith(root + "/")) ||
       home && (path === home || home.startsWith(path + "/")) ||
@@ -53,6 +54,7 @@ export function validateProjectCheck(config) {
 
 /** A directory binding includes content, executable bits and in-root symlinks. */
 export function projectInputDigest(path) {
+  if (privateNames.has(basename(path))) throw projectCheckError("project_check_private_input");
   const root = realpathSync(path);
   if (root !== path) throw projectCheckError("project_check_input_drift");
   const records = []; let total = 0, count = 0;

@@ -133,6 +133,19 @@ test("the public catalog exposes the settled interface and forbids legacy import
       generic_test_inputs: "rejected_before_effects",
       native_qualification: "separate_required",
     },
+    project_check: {
+      registration: "flow.production-project-check/v2",
+      selection: "check_id_only",
+      mode: "verify",
+      operation: "flow.operation/project-check/v2",
+      receipt: "work.project-check-receipt/v2",
+      meaning: "GREEN-only_command_exit_zero_test_count_unknown",
+      candidate: "exact_captured_committed_tree",
+      network: "disabled",
+      writes: "bounded_private_tmpfs_only",
+      recovery: "existing_reservation_only",
+      native_qualification: "not_claimed",
+    },
   });
   assert.deepEqual(catalog.predefined_flows["spike/v1"], {
     definition: "flow.definition/spike/v1",
@@ -168,7 +181,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     binding: "flow.evidence-safety-binding/v1",
     catalog_view: "flow.evidence-safety-catalog/v1",
     policy_id: "flow.evidence-safety-policy/v1",
-    catalog_id: "flow.contract-catalog/v1@38",
+    catalog_id: "flow.contract-catalog/v1@39",
     allowed_uses: [
       "delegate_transfer",
       "artifact_acceptance",

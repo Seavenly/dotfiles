@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { digest } from "../../../tools/flow/src/canonical.mjs";
 import { projectProfile, initializeProject, bindProject, projectFileHash } from "../test-support/project-check.mjs";
-import { validateProjectCheck, resolveProjectCheck, projectInputDigest, createProjectCheckWorkspaceSnapshot } from "../src/production-project-check.mjs";
+import { validateProjectCheck, resolveProjectCheck, assertProjectReadPath, projectPath, projectInputDigest, createProjectCheckWorkspaceSnapshot } from "../src/production-project-check.mjs";
 import { projectCheckRunnerIdentity } from "../src/production-project-check-runner.mjs";
 import { validateProjectCheckReceipt } from "../../../tools/flow/src/project-check.mjs";
 
@@ -94,3 +94,16 @@ test("authority receipt validation rejects a forged version even with a new self
   result.version = "wrong version";
   assert.equal(validateProjectCheckReceipt({ ...result, self_digest: digest(result) }, intent), false);
 });
+
+ test("registration rejects canonical HOME aliases and private root files before hashing", linux, t => {
+  const f = fixture(t), home = join(f.root, "owned-home"), alias = join(f.root, "home-alias");
+  mkdirSync(home); symlinkSync(home, alias);
+  assert.throws(() => assertProjectReadPath(home, { home: alias }), { code: "project_check_private_input" });
+  assert.throws(() => assertProjectReadPath(f.root, { home: alias }), { code: "project_check_private_input" });
+  const sentinel = join(f.workspace.path, ".netrc"); writeFileSync(sentinel, "owned sentinel");
+  assert.equal(projectPath(".netrc"), false);
+  assert.equal(projectPath("inputs/.npmrc"), false);
+  assert.throws(() => projectInputDigest(sentinel), { code: "project_check_private_input" });
+  const config = structuredClone(f.config); config.pinned_files = [{ path: ".netrc", sha256: projectFileHash(sentinel) }];
+  assert.throws(() => validateProjectCheck(config), { code: "project_check_invalid" });
+ });

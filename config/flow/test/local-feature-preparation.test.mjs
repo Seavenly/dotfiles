@@ -189,7 +189,7 @@ test("a stopped repository client advances from verify to a new checked feature 
 });
 
 for (const version of ["v1", "v2"]) {
-test(`a different retained client refuses active ${version} checked work before recovery or provider dispatch`, async t => {
+test(`a different retained client refuses active ${version} checked work before recovery or provider dispatch`, { skip: process.platform !== "linux" && "native checked clients require Linux containment" }, async t => {
   const f = fixture(t);
   if (version === "v2") {
     const config = projectProfile({ root: f.repository, argv: ["--test", "acceptance.test.mjs"], files: ["acceptance.test.mjs"] });
