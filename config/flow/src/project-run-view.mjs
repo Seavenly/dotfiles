@@ -13,10 +13,10 @@ export function runDecisionActions(run) {
 
 export function projectRunProgress(run) {
   return { schema: "flow.project-run-progress/v1", run_id: run.run_id, phase: run.phase,
-    watermark: run.watermark, sequence: run.sequence,
+    watermark: run.watermark ?? null, sequence: run.sequence ?? null,
     cards: run.cards ?? [],
-    effects: (run.effects ?? []).map(effect => ({ effect_id: effect.effect_id, card_id: effect.card_id,
-      contract: effect.operation_contract ?? effect.effect_kind, status: effect.status,
+    effects: (run.effects ?? []).map(effect => ({ effect_id: effect.effect_id, card_id: effect.card_id ?? null,
+      contract: effect.operation_contract ?? effect.effect_kind ?? null, status: effect.status,
       outcome: effect.receipt?.provider_receipt?.outcome ?? effect.last_observation?.provider_observation?.code ?? null })),
     blocks: run.blocks ?? [], legal_actions: runDecisionActions(run).map(({ command: _command, ...action }) => action),
   };
@@ -29,6 +29,7 @@ export function renderRunPreview(preview) {
     ...(inspection.brief?.acceptance ?? []).map((criterion, index) => `  ${index + 1}. ${criterion}`),
     `Check: ${inspection.project_check ? JSON.stringify(inspection.project_check.registration?.argv ?? inspection.project_check) : JSON.stringify(inspection.trust_posture?.verification_scope ?? "See retained confirmation")}`,
     `Trust: ${JSON.stringify(inspection.trust_posture)}`, `Limits: ${JSON.stringify(inspection.limits)}`,
+    `Requested authority: ${JSON.stringify(inspection.requested_authority ?? null)}`, `Delegate routes: ${JSON.stringify(inspection.routes ?? [])}`,
     `Authority: ${preview.authority_directory}`, `Prepared confirmation: ${preview.prepared_file}`,
     `Confirmation digest: ${preview.confirmation_digest}`, preview.recovery_disclosure, ""].map(terminalText).join("\n");
 }
@@ -43,7 +44,8 @@ export function renderRunProgress(progress) {
 export function summarizeProjectRun(run, { selection, candidate = null, status, projectionFile } = {}) {
   const effects = run.effects ?? [];
   const check = effects.find(effect => effect.operation_contract === "flow.operation/project-check/v2");
-  const checkReceipt = check?.receipt?.provider_receipt;
+  const checkEnvelope = check?.receipt?.provider_receipt;
+  const checkReceipt = checkEnvelope?.record ?? checkEnvelope;
   const tests = effects.filter(effect => effect.operation_contract === "flow.operation/feature-test/v1");
   const critique = (run.cards ?? []).find(card => /critique/u.test(card.id));
   const unresolved = effects.filter(effect => !effect.receipt && !["not_created", "abandoned"].includes(effect.status));
@@ -64,7 +66,7 @@ export function summarizeProjectRun(run, { selection, candidate = null, status, 
     checks: check ? { kind: "registered_green_only", status: check.status, outcome: checkReceipt?.outcome ?? null,
       exit_code: checkReceipt?.exit_code ?? null, test_count: checkReceipt?.test_count ?? "unknown", evidence: checkReceipt ?? null }
       : tests.length ? { kind: "registered_expected_red_then_green", evidence: tests.map(effect => effect.receipt?.provider_receipt ?? null) }
-        : { kind: "content_only", project_checks: "not_run", scope: run.trust_posture?.verification_scope ?? null },
+        : { kind: "content_only", project_checks: "not_run", scope: (run.trust_posture ?? run.views?.trust?.trust_posture)?.verification_scope ?? null },
     critique: critique?.status ?? "not_observed", separate_review: "not_requested", human_approval: "not_requested",
     unresolved_effects: unresolved.map(effect => effect.effect_id), quarantined_effects: quarantined.map(effect => effect.effect_id),
     workspace_settlement: (run.resource_dispositions ?? []).map(disposition => ({ ...disposition })),
@@ -77,7 +79,10 @@ export function renderRunResult(result) {
     `Retained evidence: ${result.retained_directory}`, `Candidate: ${result.candidate ? JSON.stringify(result.candidate) : "not sealed/available"}`,
     `Checks: ${result.checks.kind} - ${result.checks.outcome ?? result.checks.status ?? result.checks.project_checks ?? "see retained evidence"}`,
     `Feature critique: ${result.critique}; separate review and human approval: not requested`,
+    ...(result.status === "detached" ? ["Frontend detached. Durable work remains retained and was not cancelled by detaching; use the reattach command below."] : []),
     ...(result.unresolved_effects.length ? [`Unresolved effects: ${result.unresolved_effects.join(", ")}. Completion and workspace reuse are not established.`] : []),
     ...(result.quarantined_effects.length ? [`Quarantined effects: ${result.quarantined_effects.join(", ")}`] : []),
+    `Workspace dispositions: ${JSON.stringify(result.workspace_settlement)}`,
+    "Worker retirement and workspace reuse are separate authority facts. Use an offered settlement action when a cancelled run retains its workspace; this frontend never releases it automatically.",
     "Next commands:", ...result.next_commands.map(command => `  ${command}`), ""].map(terminalText).join("\n");
 }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { access, chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,6 +12,39 @@ import {
   startFlowOwner,
   stopFlowOwner,
 } from "../src/owner-process.mjs";
+
+test("raw run/index CLI queries inspect a stopped authority without starting its owner or changing retained state", async t => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-cli-offline-raw-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const env = { ...process.env, HOME: scratch, XDG_STATE_HOME: join(scratch, "state"),
+    FLOW_AUTHORITY_DIRECTORY: join(scratch, "authority") };
+  const paths = flowOwnerPaths({ env });
+  const runtime = createFlowRuntime({ env, authorityDirectory: paths.authorityDirectory, autonomous: false });
+  closeFlowRuntime(runtime);
+  const snapshot = async () => {
+    const result = {};
+    for (const path of (await readdir(paths.authorityDirectory, { recursive: true })).sort()) {
+      if ((await stat(join(paths.authorityDirectory, path))).isFile()) result[path] = createHash("sha256").update(await readFile(join(paths.authorityDirectory, path))).digest("hex");
+    }
+    return result;
+  };
+  const before = await snapshot();
+  let stdout = "", stderr = "";
+  const exit = await runCli(["query", "--input", "{}", "--json"], { env,
+    stdout: { write: value => { stdout += value; } }, stderr: { write: value => { stderr += value; } } });
+  assert.equal(exit, 0, stderr);
+  const index = JSON.parse(stdout);
+  assert.equal(index.schema, "flow.run-index-projection/v1");
+  assert.deepEqual(index.runs, []);
+  const after = await snapshot();
+  // Existing inspect access may create SQLite's read coordination sidecars.
+  // Authoritative database/lock bytes and event history remain unchanged.
+  for (const [path, hash] of Object.entries(before)) assert.equal(after[path], hash, path);
+  assert.deepEqual(Object.keys(after).filter(path => !Object.hasOwn(before, path)).sort(), ["authority.sqlite-shm", "authority.sqlite-wal"]);
+  assert.equal((await stat(join(paths.authorityDirectory, "authority.sqlite-wal"))).size, 0);
+  assert.equal((await stat(join(paths.authorityDirectory, "authority.sqlite-shm"))).size, 32768);
+  await assert.rejects(access(paths.endpointPath), { code: "ENOENT" });
+});
 
 test("flow CLI exposes the watermarked legacy inventory query", async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), "flow-cli-inventory-"));
