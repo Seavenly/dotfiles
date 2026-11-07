@@ -237,6 +237,7 @@ test("feature/v1 verify selection prepares an honest candidate plan", () => {
       schema: "flow.delegate-task-inputs/v1",
       flow: "feature/v1",
       phase,
+      file_observation_contract: "flow.git-file-observation/v2",
       mode: inputs.mode,
       brief: inputs.brief,
     });
