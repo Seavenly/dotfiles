@@ -19,16 +19,16 @@ function retainedRuns(authority) {
   });
 }
 
-/** Check changes never acquire mutation authority or alter retained history. */
+/** Check and runtime changes never acquire authority or alter retained history. */
 export function assertLocalCheckChangeQuiescent({ authorityDirectory, repository }) {
   const authority = createDurableRunAuthority({ authorityDirectory, access: "inspect" });
   try {
-    if (retainedRuns(authority).some(run => !terminal(run) || !settled(run))) throw new Error("Settle every retained run and uncertain effect before selecting a different check");
+    if (retainedRuns(authority).some(run => !terminal(run) || !settled(run))) throw new Error("Settle every retained run and uncertain effect before selecting a different check or runtime");
     const repositoryId = `repository:${digest(repository).slice(7)}`;
     const subject = `workspace:${digest({ repository_id: repositoryId, canonical_path: repository }).slice(7)}`;
     const workspace = getWorkspaceAuthority({ runAuthority: authority }).query({ contract: "work.workspace/v1", subject_id: subject });
     if (workspace.schema === "work.workspace-projection/v1") {
-      if (workspace.claims.length !== 0 || workspace.taint !== null) throw new Error("Settle retained workspace claims and taint before selecting a different check");
+      if (workspace.claims.length !== 0 || workspace.taint !== null) throw new Error("Settle retained workspace claims and taint before selecting a different check or runtime");
     } else if (workspace.code !== "unknown_subject") throw new Error("Workspace authority cannot be inspected safely");
   } finally { authority.close(); }
 }

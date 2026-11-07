@@ -2,7 +2,7 @@ import { projectProfile } from "../test-support/project-check.mjs";
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -19,6 +19,17 @@ import { createGitWorkspaceObservationAdapter } from "../../../tools/flow/src/gi
 const cli = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
 const load = path => JSON.parse(readFileSync(path, "utf8"));
 const sha = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+
+function copyRuntime(root) {
+  const source = fileURLToPath(new URL("../../../", import.meta.url));
+  const destination = join(root, "next-runtime");
+  cpSync(source, destination, { recursive: true,
+    filter: path => !path.slice(source.length).split("/").some(part => [".git", "node_modules"].includes(part)) });
+  for (const section of ["config/flow", "tools/flow", "config/agent-flow"]) {
+    symlinkSync(join(source, section, "node_modules"), join(destination, section, "node_modules"));
+  }
+  return join(destination, "config/flow/src/cli.mjs");
+}
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "flow-local-test-"));
@@ -82,6 +93,109 @@ test("local setup preserves an existing repo, installs an explicit client link a
   writeFileSync(join(f.root, "occupied"), "preserve me");
   assert.equal(f.run(process.execPath, [...f.args, "--client-link", join(f.root, "occupied")]).status, 1);
   assert.equal(readFileSync(join(f.root, "occupied"), "utf8"), "preserve me");
+});
+
+test("explicit runtime upgrade preserves the original client and authority and reuses its new client", t => {
+  const f = fixture(t);
+  const original = f.success(process.execPath, f.args);
+  const originalProfile = load(join(original.directory, "pilot.json"));
+  const authority = originalProfile.environment.FLOW_AUTHORITY_DIRECTORY;
+  const profilePath = join(authority, "../profile.json");
+  const preserved = [profilePath, original.client, join(original.directory, "trusted-owner.mjs"), join(original.directory, "pilot.json")]
+    .map(path => [path, readFileSync(path)]);
+  const nextCli = copyRuntime(f.root);
+  const nextArgs = [nextCli, ...f.args.slice(1)];
+  assert.equal(f.run(process.execPath, nextArgs).status, 1, "runtime change requires explicit selection");
+  const next = f.success(process.execPath, [...nextArgs, "--upgrade-runtime", "yes"]);
+  assert.notEqual(next.client, original.client);
+  assert.equal(next.owner_started, false);
+  assert.equal(next.provider_execution, "not_run");
+  assert.equal(load(join(next.directory, "pilot.json")).environment.FLOW_AUTHORITY_DIRECTORY, authority);
+  const repeated = f.success(process.execPath, [...nextArgs, "--upgrade-runtime", "yes"]);
+  assert.equal(repeated.client, next.client);
+  assert.equal(repeated.profile_reused, true);
+  assert.equal(f.success(process.execPath, nextArgs).client, next.client, "registered runtime reuse needs no new upgrade");
+  assert.equal(f.success(process.execPath, f.args).client, original.client, "runtime variants are not different checks");
+  for (const [path, bytes] of preserved) assert.deepEqual(readFileSync(path), bytes);
+  assert.equal(existsSync(join(authority, "authority.sqlite")), false, "setup must not start an owner");
+  assert.equal(f.git(["status", "--porcelain=v1"]), "");
+  f.ownClient(next.client);
+  f.success(next.client, ["start", "--json"]);
+  assert.equal(f.success(next.client, ["prepare", "--input-file", next.request, "--json"]).schema, "flow.prepared-run/v1");
+  f.success(next.client, ["stop", "--json"]);
+  f.ownClient(original.client);
+  f.success(original.client, ["start", "--json"]);
+  assert.equal(f.success(original.client, ["query", "--input", "{}", "--json"]).schema, "flow.run-index-projection/v1");
+  f.success(original.client, ["stop", "--json"]);
+  assert.equal(existsSync(join(authority, "direct-tasks")), false);
+});
+
+test("runtime upgrade refuses a live owner without replacing its client", t => {
+  const f = fixture(t);
+  const original = f.success(process.execPath, f.args);
+  const before = readFileSync(original.client);
+  const nextArgs = [copyRuntime(f.root), ...f.args.slice(1), "--upgrade-runtime", "yes"];
+  f.ownClient(original.client);
+  f.success(original.client, ["start", "--json"]);
+  const refused = f.run(process.execPath, nextArgs);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /Stop the existing local owner/u);
+  assert.deepEqual(readFileSync(original.client), before);
+  assert.equal(f.success(original.client, ["status", "--json"]).state, "running");
+});
+
+test("runtime upgrade never changes executable, trust or Git identity pins", t => {
+  const f = fixture(t);
+  const original = f.success(process.execPath, f.args);
+  const oldProfile = readFileSync(join(original.directory, "pilot.json"));
+  const nextArgs = [copyRuntime(f.root), ...f.args.slice(1), "--upgrade-runtime", "yes"];
+  const identityPath = join(f.env.XDG_CONFIG_HOME, "git/config");
+  const identity = readFileSync(identityPath);
+  writeFileSync(identityPath, '[user]\n name = Different Author\n email = other@example.test\n');
+  const changedIdentity = f.run(process.execPath, nextArgs);
+  assert.equal(changedIdentity.status, 1);
+  assert.match(changedIdentity.stderr, /different Node, executable, trust or Git identity pins/u);
+  writeFileSync(identityPath, identity);
+  writeFileSync(f.executable, readFileSync(f.executable, "utf8") + "# changed executable bytes\n");
+  const changedExecutable = f.run(process.execPath, nextArgs);
+  assert.equal(changedExecutable.status, 1);
+  assert.match(changedExecutable.stderr, /different Node, executable, trust or Git identity pins/u);
+  const trustArgs = [...nextArgs]; trustArgs[trustArgs.indexOf("supervised-native-cli")] = "another-contract";
+  const changedTrust = f.run(process.execPath, trustArgs);
+  assert.equal(changedTrust.status, 1);
+  assert.match(changedTrust.stderr, /Select --execution-trust supervised-native-cli/u);
+  assert.deepEqual(readFileSync(join(original.directory, "pilot.json")), oldProfile);
+});
+
+test("same-check runtime upgrade refuses active work before any provider is invoked", { skip: process.platform !== "linux" }, async t => {
+  const f = fixture(t);
+  const original = f.success(process.execPath, f.args);
+  const profile = load(join(original.directory, "pilot.json"));
+  const options = { env: { ...f.env, ...profile.environment }, autonomous: false,
+    localClientCheck: { repository: f.repository } };
+  const runtime = productionRuntime(options);
+  let runId;
+  try {
+    const prepared = await runtime.prepare(load(original.request));
+    const launched = runtime.launch({ prepared, execution_trust: profile.execution_trust,
+      confirmation: { schema: "flow.predefined-flow-confirmation-decision/v1", decision: "accept", bundle_digest: prepared.bundle_digest, confirmation_digest: prepared.confirmation_digest },
+      closed_facts: { schema: "flow.closed-fact-observation/v1", bundle_digest: prepared.bundle_digest, facts: prepared.explicit_facts } });
+    assert.equal(launched.schema, "flow.launch-receipt/v1");
+    runId = launched.run_id;
+  } finally { closeFlowRuntime(runtime); }
+  const upgradedArgs = [copyRuntime(f.root), ...f.args.slice(1), "--upgrade-runtime", "yes"];
+  const active = f.run(process.execPath, upgradedArgs);
+  assert.equal(active.status, 1);
+  assert.match(active.stderr, /Settle every retained run and uncertain effect/u);
+  const retained = productionRuntime(options);
+  try {
+    const run = retained.query({ run_id: runId });
+    assert.equal(run.phase, "active");
+    const cancelled = retained.command(run.views.operator.legal_actions.find(action => action.type === "cancel"));
+    assert.equal(cancelled.accepted, true);
+    assert.equal(retained.query({ run_id: runId }).phase, "cancelled");
+  } finally { closeFlowRuntime(retained); }
+  assert.equal(existsSync(join(profile.environment.FLOW_AUTHORITY_DIRECTORY, "direct-tasks")), false);
 });
 
 test("local test setup binds explicit committed checks and public confirmation without running a provider", { skip: process.platform !== "linux" }, t => {
@@ -211,6 +325,11 @@ test(`a different retained client refuses active ${version} checked work before 
     assert.equal(launched.schema, "flow.launch-receipt/v1", JSON.stringify(launched));
   } finally { closeFlowRuntime(runtime); }
   assert.equal(f.run(process.execPath, [...f.args, "--reconfigure-check", "yes"]).status, 1, "offline setup sees active retained work");
+  const upgraded = f.run(process.execPath, [copyRuntime(f.root), ...f.args.slice(1),
+    "--mode", version === "v2" ? "verify" : "test", "--check", f.checkPath,
+    "--reconfigure-check", "yes", "--upgrade-runtime", "yes"]);
+  assert.equal(upgraded.status, 1);
+  assert.match(upgraded.stderr, /Settle every retained run and uncertain effect/u);
   const wrong = f.run(original.client, ["start", "--json"]);
   assert.equal(wrong.status, 1, wrong.stdout + wrong.stderr);
   assert.equal(existsSync(join(profile.environment.FLOW_AUTHORITY_DIRECTORY, "direct-tasks")), false);
@@ -225,7 +344,7 @@ test(`a different retained client refuses active ${version} checked work before 
 
 }
 
-test("check revision changes retain and refuse claimed or tainted workspace authority", t => {
+test("check and runtime changes retain and refuse claimed or tainted workspace authority", t => {
   const f = fixture(t);
   const original = f.success(process.execPath, f.args);
   f.ownClient(original.client);
@@ -233,6 +352,7 @@ test("check revision changes retain and refuse claimed or tainted workspace auth
   const prepared = f.success(original.client, ["prepare", "--input-file", original.request, "--json"]);
   f.success(original.client, ["stop", "--json"]);
   const authorityDirectory = load(join(original.directory, "pilot.json")).environment.FLOW_AUTHORITY_DIRECTORY;
+  const upgradedArgs = [copyRuntime(f.root), ...f.args.slice(1), "--upgrade-runtime", "yes"];
   const authority = createDurableRunAuthority({ authorityDirectory, gitWorkspaceObservationAdapter: createGitWorkspaceObservationAdapter() });
   try {
     const workspace = getWorkspaceAuthority({ runAuthority: authority });
@@ -243,12 +363,14 @@ test("check revision changes retain and refuse claimed or tainted workspace auth
       claim: { claim_id: "claim:local-held", holder: "run:retained", operations: ["feature-apply"] } });
     assert.equal(claim.accepted, true, JSON.stringify(claim));
     assert.equal(f.run(process.execPath, [...f.args, "--mode", "test", "--check", f.checkPath, "--reconfigure-check", "yes"]).status, 1);
+    assert.match(f.run(process.execPath, upgradedArgs).stderr, /Settle retained workspace claims and taint/u);
     assert.equal(workspace.query(query).claims.length, 1);
     assert.equal(workspace.command(workspace.query(query).legal_actions.find(action => action.type === "workspace_claim_release")).accepted, true);
     const taint = workspace.command({ schema: "work.workspace-taint-command/v1", command_id: "taint:local-uncertain", type: "workspace_taint", ...query,
       expected_watermark: workspace.query(query).watermark, taint: { reason: "effect_outcome_uncertain", evidence_digest: `sha256:${"8".repeat(64)}` } });
     assert.equal(taint.accepted, true, JSON.stringify(taint));
     assert.equal(f.run(process.execPath, [...f.args, "--mode", "test", "--check", f.checkPath, "--reconfigure-check", "yes"]).status, 1);
+    assert.match(f.run(process.execPath, upgradedArgs).stderr, /Settle retained workspace claims and taint/u);
     assert.equal(workspace.query(query).taint.reason, "effect_outcome_uncertain");
   } finally { authority.close(); }
 });

@@ -32,7 +32,7 @@ try {
 async function setup(args) {
   if (!/^v22\./u.test(process.version)) throw new Error("Local setup requires Node 22");
   const options = {};
-  const allowed = ["--repository", "--brief", "--codex-executable", "--execution-trust", "--mode", "--check", "--client-link", "--reconfigure-check"];
+  const allowed = ["--repository", "--brief", "--codex-executable", "--execution-trust", "--mode", "--check", "--client-link", "--reconfigure-check", "--upgrade-runtime"];
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index], value = args[index + 1];
     if (!allowed.includes(flag) || !value || Object.hasOwn(options, flag)) throw new Error("Invalid local setup arguments");
@@ -44,6 +44,7 @@ async function setup(args) {
   }
   const mode = options["--mode"] ?? "verify";
   if (options["--reconfigure-check"] !== undefined && options["--reconfigure-check"] !== "yes") throw new Error("Use --reconfigure-check yes to explicitly select a different check");
+  if (options["--upgrade-runtime"] !== undefined && options["--upgrade-runtime"] !== "yes") throw new Error("Use --upgrade-runtime yes to explicitly select a different runtime");
   if (!["test", "verify"].includes(mode) || mode === "test" && !options["--check"]) {
     throw new Error("Use verify with an optional v2 project --check, or test with one explicit v1 trusted --check JSON_FILE");
   }
@@ -85,18 +86,34 @@ async function setup(args) {
   const identity = { schema: "flow.local-client/v1", repository, runtime_root: runtimeRoot,
     node: realpathSync(process.execPath), executable, execution_trust: SUPERVISED_NATIVE_ACKNOWLEDGMENT, git_identity: gitIdentity };
   const checkDigest = check ? digest(check) : null;
-  const directory = join(profileRoot, "clients", checkDigest?.slice(7) ?? "verify");
+  const checkKey = checkDigest?.slice(7) ?? "verify";
+  let directory = join(profileRoot, "clients", checkKey);
   const authorityDirectory = join(profileRoot, "authority");
   let profile;
-  const reused = existsSync(directory);
+  let runtimeChanged = false;
   if (existsSync(profileRoot)) {
     if (!lstatSync(profileRoot).isDirectory() || lstatSync(profileRoot).isSymbolicLink()) throw new Error("Local client path is not an owned profile directory");
     const pinned = load(join(profileRoot, "profile.json"));
-    if (digest(pinned.identity) !== digest(identity)) throw new Error("This repository already has different runtime or executable pins; retain its authority and existing clients");
-    if (pinned.initial_check_digest !== checkDigest || readdirSync(join(profileRoot, "clients")).length > 1) {
+    const { runtime_root: originalRuntime, ...originalPins } = pinned.identity;
+    const { runtime_root: _selectedRuntime, ...selectedPins } = identity;
+    if (digest(originalPins) !== digest(selectedPins)) throw new Error("This repository already has different Node, executable, trust or Git identity pins; retain its authority and existing clients");
+    runtimeChanged = originalRuntime !== runtimeRoot;
+    if (runtimeChanged) {
+      directory = join(profileRoot, "clients", `${checkKey}.runtime-${digest(runtimeRoot).slice(7)}`);
+      if (!existsSync(directory) && options["--upgrade-runtime"] !== "yes") throw new Error("Use --upgrade-runtime yes to select a different runtime while retaining the same authority");
+    }
+    const checkKeys = new Set(readdirSync(join(profileRoot, "clients")).map(name => {
+      const match = /^(verify|[a-f0-9]{64})(?:\.runtime-[a-f0-9]{64})?$/u.exec(name);
+      if (!match) throw new Error("Local client directory has an unknown identity");
+      return match[1];
+    }));
+    const checkChanged = pinned.initial_check_digest !== checkDigest || checkKeys.size > 1;
+    if (checkChanged) {
       if (options["--reconfigure-check"] !== "yes") throw new Error("Use --reconfigure-check yes to select a different check while retaining the same authority");
+    }
+    if (checkChanged || runtimeChanged && options["--upgrade-runtime"] === "yes") {
       const owner = await statusFlowOwner({ authorityDirectory });
-      if (owner.state !== "stopped") throw new Error("Stop the existing local owner before selecting a different check");
+      if (owner.state !== "stopped") throw new Error("Stop the existing local owner before selecting a different check or runtime");
       assertLocalCheckChangeQuiescent({ authorityDirectory, repository });
     }
   } else {
@@ -106,6 +123,7 @@ async function setup(args) {
     mkdirSync(authorityDirectory, { mode: 0o700 });
     save(join(profileRoot, "profile.json"), { identity, initial_check_digest: checkDigest });
   }
+  const reused = existsSync(directory);
   if (reused) {
     profile = load(join(directory, "pilot.json"));
     if (digest(profile.local_client) !== digest(identity)) throw new Error("Local client identity changed");
@@ -137,6 +155,7 @@ async function setup(args) {
     request: requestPath, mode, commit_identity: gitIdentity, verification_scope: projectCheck ? PROJECT_CHECK_SCOPE : check
       ? "Registered pinned Node health and acceptance checks, including expected RED then GREEN; arbitrary project suites are not registered"
       : verifyScope, owner_started: false, provider_execution: "not_run", profile_reused: reused,
+    runtime_upgrade: runtimeChanged,
     next_commands: [
       `${quoteShell(client)} start --json`,
       `${quoteShell(client)} prepare --input-file ${quoteShell(requestPath)} --json > ${quoteShell(preparedPath)}`,

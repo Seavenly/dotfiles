@@ -65,7 +65,7 @@ Git configuration.
 
 One private profile is reused for each canonical repository, with one durable
 authority and workspace claim namespace. Later setup calls create new request
-files. They preserve prior state and reject changed source/tool pins; they do
+files. They preserve prior state and reject unselected runtime or changed tool pins; they do
 not create a second authority for a new brief or overwrite an active client.
 Changing the profile's host state directory selects a different authority and
 must not be used to work around an existing workspace claim.
@@ -76,15 +76,33 @@ Repeat `local setup` with the new brief/check and `--reconfigure-check yes`.
 This creates an immutable client revision sharing the original authority;
 old clients, owner modules, requests and receipts remain intact. Use the
 returned client path or a new `--client-link` name. An existing link is preserved.
-After a profile contains several revisions, selecting any revision through
+After a profile contains several different check revisions, selecting any check through
 setup requires this explicit stopped/settled procedure. A client starting later
 also checks retained active work under the authority lease before recovery:
 checked work can resume only with its original exact check fingerprint.
 
+To select a new runtime release for an existing project, settle retained runs,
+uncertain effects, workspace claims and taint, then stop its owner. Invoke the
+new runtime's public `local setup` command with the original state directory,
+repository, Node executable, official Codex executable, trust contract and Git
+identity, adding `--upgrade-runtime yes`. Only the runtime root may change.
+The stopped and settled checks gate creation of a new runtime revision and any
+explicit upgrade request. Setup creates an immutable client sharing the same authority and
+preserves the original profile and every old client. Repeating the upgrade
+reuses that revision; subsequent setup using an already registered runtime needs
+no upgrade flag, just as an existing client can already start directly. This
+reuse does not grant recovery or dispatch authority. Two runtime revisions of the same check do not count as two
+different checks. A changed check still requires `--reconfigure-check yes`.
+Use the returned client or a new link name; the old command is never replaced.
+Setup starts no owner or provider. Owner/configuration handshakes and fresh
+preparation fences still decide whether a later start or launch is compatible.
+
 Without an explicit v2 project check, default `verify` means **Git-backed content observations plus independent model
 critique; project checks NOT_RUN; runtime behavior not established**. The
-registered operation checks exact committed `git_file_equals` observations for
-every criterion and a changed clean workspace. It does not prove that broad
+registered operation checks exact committed `git_file_equals` observations or,
+for explicitly versioned tasks, raw captured-file `git_file_sha256` digests for
+every criterion and a changed clean workspace. Both establish content identity.
+They do not prove that broad
 behavioral prose works or that an agent's claimed test command passed.
 
 For behavioral evidence, add `--mode test --check /path/to/check.json` at setup.
