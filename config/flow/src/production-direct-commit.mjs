@@ -44,29 +44,10 @@ export function createProductionDirectCommitOperation({ resolveWorkspace, author
   };
   const safeRepository = (repository) => {
     if (realpathSync(gitText(repository, ["rev-parse", "--show-toplevel"])) !== realpathSync(repository)) throw new Error("candidate_commit_repository_redirected");
-    // Even status/add can execute clean/process filters. Reject configured
-    // external drivers before any worktree hashing or Git mutation.
-    try {
-      if (git(repository, ["config", "--get-regexp", "^filter\\..*\\.(clean|process)$"]).length) throw new Error("candidate_commit_external_filter_unsupported");
-    } catch (error) {
-      if (error.status !== 1) throw error;
-    }
-    // A named driver defined only in suppressed global config becomes Git's
-    // silent pass-through. Attribute discovery itself executes no driver.
-    const paths = enumerateRepository(repository, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]);
-    if (paths.length) {
-      const attributes = enumerateRepository(repository, ["check-attr", "--all", "-z", "--stdin"], { input: paths });
-      for (let offset = 0; offset < attributes.length;) {
-        const pathEnd = attributes.indexOf(0, offset);
-        const attributeEnd = attributes.indexOf(0, pathEnd + 1);
-        const valueEnd = attributes.indexOf(0, attributeEnd + 1);
-        if (pathEnd < 0 || attributeEnd < 0 || valueEnd < 0) throw new Error("candidate_commit_attributes_invalid");
-        // --all omits unspecified attributes. Reject every declared filter,
-        // including ambiguous sentinel-looking driver names and unset values.
-        if (attributes.subarray(pathEnd + 1, attributeEnd).equals(Buffer.from("filter"))) throw new Error("candidate_commit_external_filter_unsupported");
-        offset = valueEnd + 1;
-      }
-    }
+    assertProductionGitFiltersAbsent(
+      args => git(repository, args),
+      (args, options) => enumerateRepository(repository, args, options),
+    );
   };
   const recordRoot = (intent) => join(roots, digest({ effect_id: intent.effect_id, idempotency_key: intent.idempotency_key }).slice(7));
   const exactRecord = (intent) => {
@@ -303,4 +284,31 @@ function writeDurable(root, name, text) {
   const path = join(root, name + ".new"); const fd = openSync(path, "wx", 0o600);
   try { writeFileSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(path, join(root, name)); syncDirectory(root);
+}
+
+/** Discovery and commit share the same no-filter policy before worktree hashing. */
+export function assertProductionGitFiltersAbsent(git, enumerate = git) {
+  // Even status/add can execute clean/process filters. Reject configured
+  // external drivers before any worktree hashing or Git mutation.
+  try {
+    if (git( ["config", "--get-regexp", "^filter\\..*\\.(clean|process)$"]).length) throw new Error("candidate_commit_external_filter_unsupported");
+  } catch (error) {
+    if (error.status !== 1) throw error;
+  }
+  // A named driver defined only in suppressed global config becomes Git's
+  // silent pass-through. Attribute discovery itself executes no driver.
+  const paths = enumerate( ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]);
+  if (paths.length) {
+    const attributes = enumerate( ["check-attr", "--all", "-z", "--stdin"], { input: paths });
+    for (let offset = 0; offset < attributes.length;) {
+      const pathEnd = attributes.indexOf(0, offset);
+      const attributeEnd = attributes.indexOf(0, pathEnd + 1);
+      const valueEnd = attributes.indexOf(0, attributeEnd + 1);
+      if (pathEnd < 0 || attributeEnd < 0 || valueEnd < 0) throw new Error("candidate_commit_attributes_invalid");
+      // --all omits unspecified attributes. Reject every declared filter,
+      // including ambiguous sentinel-looking driver names and unset values.
+      if (attributes.subarray(pathEnd + 1, attributeEnd).equals(Buffer.from("filter"))) throw new Error("candidate_commit_external_filter_unsupported");
+      offset = valueEnd + 1;
+    }
+  }
 }

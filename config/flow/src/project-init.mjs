@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { digest } from "../../../tools/flow/src/canonical.mjs";
 import { findInstalledExecutable, projectCheckPreset, projectGit, projectSignals } from "./project-check-presets.mjs";
 import { createProjectCheckRegistration } from "./project-check-registration.mjs";
-import { resolveProductionGitIdentity } from "./production-direct-commit.mjs";
+import { assertProductionGitFiltersAbsent, resolveProductionGitIdentity } from "./production-direct-commit.mjs";
 
 const runtimeRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../.."));
 const fail = message => { throw new Error(message); };
@@ -33,6 +33,7 @@ Options:
   --kind npm|python|go          select when project signals are ambiguous
   --summary TEXT               feature summary; TTY prompts when omitted
   --acceptance TEXT            acceptance criterion, repeatable
+  --id TEXT                    optional stable feature brief identifier
   --brief JSON_FILE            optional existing brief instead of plain text
   --codex-executable PATH      installed official Codex (default: installed PATH entry)
   --tool-executable PATH       installed Python/Go; npm uses this CLI's Node 22
@@ -88,13 +89,23 @@ export function createProjectInitPlan(options, { env = process.env, cwd = proces
   if (!/^v22\./u.test(process.version)) fail("Guided setup requires Node 22");
   const selected = realpathSync(resolve(cwd, options["--repository"] ?? "."));
   const repository = realpathSync(projectGit(selected, ["rev-parse", "--show-toplevel"]).trim());
+  try { assertProductionGitFiltersAbsent((args, options) => projectGit(repository, args, { ...options, encoding: null })); }
+  catch (error) {
+    if (error.message === "candidate_commit_external_filter_unsupported") fail("Git clean/process filters or declared filter attributes are unsupported by the existing commit contract. Init runs no filter; review this configuration separately.");
+    throw error;
+  }
   if (projectGit(repository, ["status", "--porcelain"]).length) fail("Choose an existing clean Git project. Preserve or commit dirty work before init.");
   const brief = briefFromOptions(options);
   if (!brief || Object.keys(brief).sort().join(",") !== "acceptance,id,schema,summary" || brief.schema !== "flow.feature-brief/v1" ||
       !Array.isArray(brief.acceptance) || !brief.acceptance.length || new Set(brief.acceptance).size !== brief.acceptance.length ||
       [brief.id, brief.summary, ...brief.acceptance].some(value => typeof value !== "string" || !value.trim() || value.length > 8192)) fail("Provide a valid brief with unique non-empty acceptance criteria");
   const codex = findInstalledExecutable("codex", { env, selected: options["--codex-executable"] });
-  const gitIdentity = resolveProductionGitIdentity(repository, env);
+  let gitIdentity;
+  try { gitIdentity = resolveProductionGitIdentity(repository, env); }
+  catch (error) {
+    if (error.message === "candidate_commit_author_identity_unproven") fail("Git author and committer identity are required. Configure user.name and user.email separately, then repeat init; init writes no Git configuration.");
+    throw error;
+  }
   const stateHome = env.FLOW_LOCAL_CLIENT_STATE_HOME ?? env.XDG_STATE_HOME ?? join(env.HOME ?? homedir(), ".local/state");
   if (!isAbsolute(stateHome)) fail("Choose an absolute machine-local state directory");
   const actualStateHome = canonicalDestination(stateHome);

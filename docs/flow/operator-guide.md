@@ -13,7 +13,8 @@ For work on the personal and work MacBooks, start with the
 [Mac verification handoff](mac-verification-handoff.md). Its ownership diagnostic
 is unadmitted; Mac native execution remains unsupported.
 
-For installed npm, Python or Go suites, see [registered project checks](project-checks.md).
+For installed npm, Python or Go suites, start with
+[`flow-supervised init`](guided-setup.md), or use [manual registered project checks](project-checks.md).
 The additive v2 check runs in `verify` mode and reports GREEN-only command
 evidence; the v1 test-first contract and plain content-only `verify` remain distinct.
 

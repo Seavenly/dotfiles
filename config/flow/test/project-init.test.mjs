@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import test from "node:test";
 import { digest } from "../../../tools/flow/src/canonical.mjs";
 import { createProjectInitPlan, parseInitArguments, renderProjectInitPlan } from "../src/project-init.mjs";
 import { installedExecutableMounts, projectCheckPreset, projectSignals } from "../src/project-check-presets.mjs";
+import { fileURLToPath } from "node:url";
 
 const linux = { skip: process.platform !== "linux" && "Guided registered project checks require the Linux backend" };
 function fixture(t, files = { "package.json": JSON.stringify({ scripts: { test: "node --test math.test.mjs" } }), "math.test.mjs": "import 'node:test';\n", "feature.mjs": "export const answer = 42;\n" }) {
@@ -96,4 +97,32 @@ test("Git filename discovery stays literal and terminal previews escape reposito
   assert.match(rendered, /\\u001b\[2J/u);
   assert.match(rendered, /Private configuration parent:/u);
   assert.match(rendered, /Client link:/u);
+});
+
+test("public init refuses Git filters before status can run project code", linux, t => {
+  const f = fixture(t);
+  writeFileSync(join(f.repository, ".gitattributes"), "filtered.txt filter=marker\n");
+  writeFileSync(join(f.repository, "filtered.txt"), "tracked\n");
+  f.git(["add", "."]); f.git(["commit", "--quiet", "-m", "Existing filtered input"]);
+  const marker = join(f.root, "filter-executed"), filter = join(f.root, "filter");
+  writeFileSync(filter, `#!/bin/sh\nprintf hit >> '${marker}'\ncat\n`, { mode: 0o700 });
+  f.git(["config", "filter.marker.clean", filter]);
+  // Same clean bytes with a different inode force Git's refresh/filter path.
+  unlinkSync(join(f.repository, "filtered.txt")); writeFileSync(join(f.repository, "filtered.txt"), "tracked\n");
+  const cli = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
+  const result = spawnSync(process.execPath, [cli, "init", "--repository", f.repository, "--summary", "A feature", "--acceptance", "Suite passes", "--codex-executable", f.executable, "--json"], { env: f.env, encoding: "utf8", timeout: 30000 });
+  assert.equal(existsSync(marker), false, "Discovery must not invoke the configured clean filter");
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /Git.*filter|external_filter/u);
+  assert.equal(existsSync(join(f.state, "flow-init")), false);
+  assert.equal(existsSync(join(f.state, "flow-local")), false);
+});
+
+test("missing Git identity is actionable and creates no configuration", linux, t => {
+  const f = fixture(t);
+  f.git(["config", "--unset", "user.name"]); f.git(["config", "--unset", "user.email"]);
+  const home = join(f.root, "empty-home"); mkdirSync(home);
+  assert.throws(() => createProjectInitPlan(f.options([]), { env: { ...f.env, HOME: home, XDG_CONFIG_HOME: join(home, "config") } }), /Configure user.name and user.email separately/u);
+  assert.equal(existsSync(join(f.state, "flow-init")), false);
+  assert.equal(existsSync(join(f.state, "flow-local")), false);
 });

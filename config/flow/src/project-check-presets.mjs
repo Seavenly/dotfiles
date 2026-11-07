@@ -6,10 +6,10 @@ import { assertProjectReadPath, projectPath } from "./production-project-check.m
 const fail = message => { throw new Error(message); };
 const text = path => readFileSync(path, "utf8");
 const canonical = path => realpathSync(path);
-const gitEnvironment = { PATH: "/usr/bin:/bin", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_OPTIONAL_LOCKS: "0" };
-export function projectGit(repository, args) {
-  return execFileSync("/usr/bin/git", ["-c", "core.fsmonitor=false", "-C", repository, ...args], {
-    env: gitEnvironment, timeout: 10000, maxBuffer: 16 * 1024 * 1024, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+const gitEnvironment = { PATH: "/usr/bin:/bin", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_OPTIONAL_LOCKS: "0" };
+export function projectGit(repository, args, options = {}) {
+  return execFileSync("/usr/bin/git", ["-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null", "-C", repository, ...args], {
+    timeout: 10000, maxBuffer: 16 * 1024 * 1024, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...options, env: gitEnvironment,
   });
 }
 
@@ -122,6 +122,7 @@ export function projectCheckPreset({ repository, kind, criteria, options = {}, e
   } else if (kind === "python") {
     const requested = options.toolExecutable ?? (existsSync(join(repository, ".venv/bin/python")) ? join(repository, ".venv/bin/python") : undefined);
     executable = findInstalledExecutable("python3", { env, selected: requested });
+    assertProjectReadPath(executable, { authorityDirectory, home: env.HOME });
     const prefix = dirname(dirname(executable));
     const includes = existsSync(join(prefix, "include")) ? readdirSync(join(prefix, "include")).filter(path => /^python3\.\d+[a-z]*$/u.test(path)) : [];
     if (includes.length !== 1) fail("Python preset needs an installed prefix with one include/python3.x/patchlevel.h. Select --tool-executable or use manual registration for this layout.");
@@ -170,6 +171,7 @@ export function projectCheckPreset({ repository, kind, criteria, options = {}, e
     const tests = files.filter(file => file.endsWith("_test.go"));
     if (!tests.length) fail("No committed Go *_test.go files found");
     executable = findInstalledExecutable("go", { env, selected: options.toolExecutable });
+    assertProjectReadPath(executable, { authorityDirectory, home: env.HOME });
     const prefix = dirname(dirname(executable));
     const release = existsSync(join(prefix, "VERSION")) && text(join(prefix, "VERSION")).split("\n")[0];
     if (!/^go\d+\.\d+(?:\.\d+)?$/u.test(release)) fail("Go preset needs installed GOROOT VERSION metadata; select --tool-executable or use manual registration");

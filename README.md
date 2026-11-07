@@ -440,6 +440,11 @@ It does not alter strict qualification, normal-use authorization, global CLI
 permissions, the default launcher, or remote-mutation authority. The strict
 direct route described below remains withheld.
 
+Run [`flow-supervised init`](docs/flow/guided-setup.md) inside an existing clean
+project for guided npm, Python or Go test selection, a plain-text feature brief,
+and a concrete setup preview before confirmation. It installs nothing and starts
+no tests, owner or model work.
+
 `flow local setup --execution-trust supervised-native-cli --repository PATH
 --brief JSON_FILE --codex-executable PATH` creates a private, reusable client for
 an existing repository and prints four preparation commands. An optional

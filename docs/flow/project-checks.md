@@ -1,5 +1,9 @@
 # Registered project checks
 
+Start with [`flow-supervised init`](guided-setup.md) for guided installed-tool
+selection, a plain-text brief and a concrete confirmation. The manual path below
+remains available for custom recipes.
+
 Issue [#93](https://github.com/Seavenly/dotfiles/issues/93) adds GREEN-only project
 commands to explicitly supervised Linux `feature verify`. Plain `verify` still
 runs Git-backed content observations and independent critique without project
