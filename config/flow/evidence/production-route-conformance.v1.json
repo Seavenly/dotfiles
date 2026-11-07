@@ -2,8 +2,8 @@
   "schema": "flow.production-route-conformance-evidence/v1",
   "release_id": "flow-release-1.0-dark/v1",
   "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e",
-  "candidate_tree_sha": "7b6efaec39f90fff25e127fb31851e09dbe71b25",
-  "release_content_digest": "sha256:5929b0c1fed96f2df85bf71796cd82f312b7a63e3082396f0b7f744a0ec247f9",
+  "candidate_tree_sha": "462439197910a814585e1bdbced9275e63846a8b",
+  "release_content_digest": "sha256:483aad18ec2343b8bd685c2762191ce684f2a658811626a65ff85132a91f6869",
   "status": "not_run",
   "scope": "production_public_route_conformance",
   "routes": [
@@ -25,12 +25,12 @@
   "generation_id": null,
   "generation_binding_sha256": null,
   "recipe": null,
-  "captured_at": "2026-11-05T22:03:42Z",
+  "captured_at": "2026-11-07T13:18:51Z",
   "environment": {
-    "os": "darwin",
-    "architecture": "arm64",
+    "os": "linux",
+    "architecture": "x64",
     "node": "v22.23.1",
     "npm": "10.9.8",
-    "git": "2.50.1 (Apple Git-155)"
+    "git": "2.53.0"
   }
 }

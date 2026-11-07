@@ -24,7 +24,9 @@ export function createRejection({
     run_id: runId,
     bundle_digest: bundleDigest,
     authority_watermark: authorityWatermark,
-    authority_watermark_domain: authorityWatermarkDomain,
+    authority_watermark_domain: authorityWatermarkDomain === "run"
+      ? "run"
+      : "host",
     legal_actions: legalActions,
   };
   if (findings !== undefined) rejection.findings = findings;

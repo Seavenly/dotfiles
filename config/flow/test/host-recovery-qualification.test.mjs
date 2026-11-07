@@ -35,6 +35,8 @@ import {
   runBackupRestoreReconciliation,
 } from "../src/host-recovery-runtime-scenarios.mjs";
 import { publicQualificationIsAvailable } from "../../../tools/flow/src/transition-projection.mjs";
+import { copyQualifiedRuntimeFixture } from
+  "../test-support/qualified-release-fixture.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "flow-issue-46-harness-test-"));
@@ -823,27 +825,423 @@ test("aggregate generation rejects a catalog subset and binds the candidate rele
   }
 });
 
-test("tracked issue-46 aggregate consumer binds schema, current tools, digest, and ledger status", () => {
-  try {
-    const result = validateTrackedHostRecoveryEvidence({ worktreeRoot: WORKTREE });
-    assert.equal(result.schema, "flow.tracked-host-recovery-consumer-result/v1");
-    assert.equal(result.status, "passed");
-    assert.match(result.evidence_digest, /^sha256:[0-9a-f]{64}$/u);
-    assert.match(result.evidence_sha256, /^[0-9a-f]{64}$/u);
-  } catch (error) {
-    // The tracked artifact is regenerated only after a clean candidate and a
-    // fresh external qualification run.  A dirty review worktree must remain
-    // fail-closed rather than silently accepting stale evidence.
-    if (error?.code === "release_candidate_dirty") {
-      assert.match(
-        error.message,
-        /candidate|aggregate|ledger/u,
-        `unexpected fail-closed issue-46 consumer error: ${error.code}`,
-      );
-      return;
-    }
-    throw error;
+test("selected host qualification derives and carries the explicit dark-test release", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "flow-selected-host-release-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const candidate = await makePinnedDirtyWorktree(WORKTREE, join(root, "candidate"));
+  const configDirectory = join(candidate, "config/flow/releases/1.1-dark-test");
+  await execFile(process.execPath, [
+    join(candidate, "config/flow/scripts/generate-release-content.mjs"),
+    "--config-directory", configDirectory, "--repository-root", candidate,
+  ], { cwd: candidate, maxBuffer: 4 * 1024 * 1024 });
+  const release = derivePinnedReleaseIdentity({ worktreeRoot: candidate, configDirectory });
+  assert.equal(release.release_id, "flow-release-1.1-dark-test/v1");
+  const isolation = createQualificationIsolation({
+    worktreeRoot: candidate, configDirectory,
+    xdgStateHome: join(root, "state"), authorityDirectory: join(root, "authority"),
+    socketPath: join(root, "authority/owner.sock"), endpointPath: join(root, "authority/owner.json"),
+    backupDirectory: join(root, "backup"), repositoryRoot: join(root, "repository"),
+    drovrConfigDirectory: join(root, "drovr"), herdrSession: "herdr:selected-host-release",
+    runId: "run:selected-host-release",
+  });
+  assert.equal(isolatedQualificationEnvironment(isolation).FLOW_CONFIG_DIRECTORY, configDirectory);
+  assert.equal(derivePinnedReleaseIdentity({ worktreeRoot: candidate }).release_id, "flow-release-1.0-dark/v1");
+});
+
+test("selected host tracked generator refuses an unflagged missing-aggregate binding with current eight receipts", async (t) => {
+  const f = await selectedHostFixture(t);
+  await writeCompleteSelectedFixtureReceipts(f);
+  const script = join(f.candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs");
+  // Model an incomplete selected tracked pair. The guarded first binding must
+  // preserve the accepted historical aggregate; absence cannot grant a bypass.
+  const aggregatePath = join(f.configDirectory, "evidence/host-recovery-qualification.v1.json");
+  await assert.rejects(execFile(process.execPath, [script, "--worktree", f.candidate,
+    "--config-directory", f.configDirectory, "--raw-root", f.rawRoot], { cwd: f.candidate }),
+  /selected tracked output requires/u);
+  assert.deepEqual(await readFile(aggregatePath), f.historicalBytes);
+  assert.deepEqual(await readFile(join(f.configDirectory, "transition-ledger.v1.json")), f.ledgerBytes);
+  await rm(aggregatePath);
+  const argv = [script, "--worktree", f.candidate, "--config-directory", f.configDirectory,
+    "--raw-root", f.rawRoot];
+  const startedAt = new Date().toISOString();
+  const execution = execFile(process.execPath, argv, { cwd: f.candidate });
+  let result; let rejected;
+  try { result = await execution; } catch (error) { rejected = error; }
+  const aggregate = await pathExists(aggregatePath) ? await readFile(aggregatePath) : null;
+  const ledger = await readFile(join(f.configDirectory, "transition-ledger.v1.json"));
+  t.diagnostic(JSON.stringify({ command: [process.execPath, ...argv], pid: execution.child.pid,
+    started_at: startedAt, finished_at: new Date().toISOString(), callback_terminal_observed: true,
+    exit_code: rejected?.code ?? 0, stdout: result?.stdout ?? rejected?.stdout,
+    stderr: rejected?.stderr ?? result?.stderr,
+    aggregate_created: aggregate !== null,
+    ledger_bytes_changed: !ledger.equals(f.ledgerBytes), fixture_only: true }));
+  assert.ok(rejected, "selected tracked output must refuse an unflagged missing-aggregate binding");
+  assert.match(rejected.stderr, /selected tracked output requires.*initialize-selected-release.*replace-tracked-successor/u);
+  assert.equal(aggregate, null);
+  assert.deepEqual(ledger, f.ledgerBytes);
+  assert.equal(await pathExists(f.preserveDirectory), false);
+});
+
+test("selected host tracked refresh requires successor while external diagnostics remain available", async (t) => {
+  const f = await selectedHostFixture(t);
+  await writeCompleteSelectedFixtureReceipts(f);
+  const script = join(f.candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs");
+  const initialized = await execFile(process.execPath, [script, ...selectedGeneratorArgs(f)], { cwd: f.candidate });
+  assert.equal(JSON.parse(initialized.stdout).status, "passed");
+  const aggregatePath = join(f.configDirectory, "evidence/host-recovery-qualification.v1.json");
+  const ledgerPath = join(f.configDirectory, "transition-ledger.v1.json");
+  const aggregate = await readFile(aggregatePath);
+  const ledger = await readFile(ledgerPath);
+  const common = [script, "--worktree", f.candidate, "--config-directory", f.configDirectory,
+    "--raw-root", f.rawRoot];
+  const unbound = JSON.parse(ledger);
+  Object.assign(unbound.evidence.find(({ id }) => id === "issue_46_host_recovery"), {
+    path: null, sha256: null, evidence_digest: null, status: "not_run",
+  });
+  const unboundBytes = Buffer.from(`${JSON.stringify(unbound, null, 2)}\n`);
+  await writeFile(ledgerPath, unboundBytes);
+  const startedAt = new Date().toISOString();
+  const execution = execFile(process.execPath, common, { cwd: f.candidate });
+  let result; let rejected;
+  try { result = await execution; } catch (error) { rejected = error; }
+  t.diagnostic(JSON.stringify({ command: [process.execPath, ...common], pid: execution.child.pid,
+    started_at: startedAt, finished_at: new Date().toISOString(), callback_terminal_observed: true,
+    exit_code: rejected?.code ?? 0, stdout: result?.stdout ?? rejected?.stdout,
+    stderr: rejected?.stderr ?? result?.stderr,
+    aggregate_bytes_changed: !(await readFile(aggregatePath)).equals(aggregate),
+    unbound_ledger_bytes_changed: !(await readFile(ledgerPath)).equals(unboundBytes), fixture_only: true }));
+  assert.ok(rejected, "identical current selected aggregate cannot bind an unbound ledger without guarded promotion");
+  assert.match(rejected.stderr, /selected tracked output requires/u);
+  assert.deepEqual(await readFile(aggregatePath), aggregate);
+  assert.deepEqual(await readFile(ledgerPath), unboundBytes);
+  await writeFile(ledgerPath, ledger);
+  for (const flags of [[], ["--allow-external-output"], ["--output", aggregatePath]]) {
+    await assert.rejects(execFile(process.execPath, [...common, ...flags], { cwd: f.candidate }),
+      /selected tracked output requires/u);
+    assert.deepEqual(await readFile(aggregatePath), aggregate);
+    assert.deepEqual(await readFile(ledgerPath), ledger);
   }
+  const output = join(f.root, "diagnostic.json");
+  const diagnostic = await execFile(process.execPath, [...common, "--output", output,
+    "--allow-external-output"], { cwd: f.candidate });
+  assert.equal(JSON.parse(diagnostic.stdout).status, "passed");
+  assert.equal(JSON.parse(await readFile(output, "utf8")).release.release_id, f.release.release_id);
+  assert.deepEqual(await readFile(aggregatePath), aggregate);
+  assert.deepEqual(await readFile(ledgerPath), ledger);
+  const successor = await execFile(process.execPath, [...common, "--replace-tracked-successor"], { cwd: f.candidate });
+  assert.equal(JSON.parse(successor.stdout).status, "passed");
+  assert.equal(validateTrackedHostRecoveryEvidence({ worktreeRoot: f.candidate, configDirectory: f.configDirectory }).status, "passed");
+  assert.deepEqual(await readFile(join(JSON.parse(initialized.stdout).historical_receipt, "aggregate.json")), f.historicalBytes);
+  assert.deepEqual(await readFile(join(f.candidate, "config/flow/evidence/host-recovery-qualification.v1.json")), f.rootHistoricalBytes);
+});
+
+test("root host ordinary tracked generator retains its default ledger binding behavior", async (t) => {
+  const f = await selectedHostFixture(t);
+  const receipt = structuredClone(f.receipt);
+  receipt.release = derivePinnedReleaseIdentity({ worktreeRoot: f.candidate });
+  writeRawQualificationReceipt("root.json", receipt, { rawRoot: f.rawRoot });
+  await rm(join(f.candidate, "config/flow/evidence/host-recovery-qualification.v1.json"));
+  const script = join(f.candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs");
+  const { stdout } = await execFile(process.execPath, [script, "--worktree", f.candidate,
+    "--raw-root", f.rawRoot, "--receipt", "root.json"], { cwd: f.candidate });
+  assert.equal(JSON.parse(stdout).status, "blocked", "one receipt preserves all eight required predicates");
+  const root = validateTrackedHostRecoverySuccessor({ worktreeRoot: f.candidate });
+  assert.equal(root.evidence.release.release_id, "flow-release-1.0-dark/v1");
+  assert.equal(root.ledgerEvidence.sha256, createHash("sha256").update(root.aggregateBytes).digest("hex"));
+  assert.deepEqual(await readFile(join(f.configDirectory, "evidence/host-recovery-qualification.v1.json")), f.historicalBytes);
+  assert.deepEqual(await readFile(join(f.configDirectory, "transition-ledger.v1.json")), f.ledgerBytes);
+});
+
+test("selected host generator explicitly initializes from current raw evidence and preserves historical bytes", async (t) => {
+  const fixture = await selectedHostFixture(t);
+  const { candidate, configDirectory, rawRoot, receiptPaths, historicalBytes, ledgerBytes, preserveDirectory } = fixture;
+  const result = await execFile(process.execPath, [
+    join(candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs"),
+    "--worktree", candidate, "--config-directory", configDirectory,
+    "--raw-root", rawRoot, "--receipt", receiptPaths[0],
+    "--initialize-selected-release", "--preserve-historical-directory", preserveDirectory,
+  ], { cwd: candidate, maxBuffer: 4 * 1024 * 1024 });
+  const summary = JSON.parse(result.stdout);
+  assert.equal(summary.status, "blocked", "one receipt cannot pass the eight scenarios");
+  assert.equal(summary.scenario_count, 8);
+  assert.deepEqual(await readFile(join(summary.historical_receipt, "aggregate.json")), historicalBytes);
+  assert.deepEqual(await readFile(join(summary.historical_receipt, "ledger.json")), ledgerBytes);
+  const successor = validateTrackedHostRecoverySuccessor({ worktreeRoot: candidate, configDirectory });
+  assert.equal(successor.evidence.release.release_id, "flow-release-1.1-dark-test/v1");
+  assert.equal(successor.ledgerEvidence.status, "blocked");
+  assert.throws(() => validateTrackedHostRecoveryEvidence({ worktreeRoot: candidate, configDirectory }),
+    (error) => error.code === "tracked_aggregate_unqualified");
+  assert.deepEqual(await readFile(join(candidate, "config/flow/evidence/host-recovery-qualification.v1.json")), fixture.rootHistoricalBytes);
+});
+
+test("selected host collection validates explicit configuration before owning any resources", async (t) => {
+  const { root, candidate, isolation, rawRoot } = await selectedHostFixture(t);
+  const script = join(candidate, "config/flow/scripts/run-host-recovery-qualification.mjs");
+  await assert.rejects(execFile(process.execPath, [script,
+    "--worktree", candidate, "--config-directory", root,
+    "--raw-root", rawRoot, "--scenario", "concurrent_runs_owner_restart",
+    "--run-id", isolation.run_id, "--herdr-session", isolation.herdr_session,
+    "--xdg-state-home", isolation.xdg_state_home, "--authority-directory", isolation.authority_directory,
+    "--socket", isolation.socket_path, "--endpoint", isolation.endpoint_path,
+    "--backup-directory", isolation.backup_directory, "--repository-root", isolation.repository_root,
+    "--drovr-config-directory", isolation.drovr_config_directory], { cwd: candidate }),
+  /selected configuration must remain below/u);
+  assert.equal(await pathExists(isolation.authority_directory), false);
+});
+
+test("selected host child CLIs retain explicit selection and reject it before provider or owner startup", async (t) => {
+  const f = await selectedHostFixture(t);
+  const common = ["--worktree", f.candidate, "--config-directory", f.root,
+    "--raw-root", f.rawRoot, "--xdg-state-home", f.isolation.xdg_state_home,
+    "--authority-directory", f.isolation.authority_directory, "--socket", f.isolation.socket_path,
+    "--endpoint", f.isolation.endpoint_path, "--backup-directory", f.isolation.backup_directory,
+    "--repository-root", f.isolation.repository_root, "--drovr-config-directory", f.isolation.drovr_config_directory,
+    "--qualification-workspace", f.isolation.qualification_workspace,
+    "--herdr-session", f.isolation.herdr_session, "--run-id", f.isolation.run_id];
+  for (const [name, args] of [
+    ["run-host-recovery-reader-probe.mjs", [...common, "--probe", "projection"]],
+    ["run-host-recovery-native-probe.mjs", [...common, "--temporary-root", f.root, "--probe", "drovr_lock"]],
+    ["run-host-recovery-provider-scenarios.mjs", ["--worktree", f.candidate, "--config-directory", f.root,
+      "--scenario", "concurrent_runs_owner_restart", "--run-id", f.isolation.run_id,
+      "--owner-isolation-root", join(f.root, "provider-owner"), "--authority-directory", f.isolation.authority_directory]],
+  ]) {
+    await assert.rejects(execFile(process.execPath, [join(f.candidate, "config/flow/scripts", name), ...args], { cwd: f.candidate }),
+      /selected configuration must remain below/u, name);
+    assert.equal(await pathExists(f.isolation.authority_directory), false, name);
+    assert.equal(await pathExists(join(f.root, "provider-owner")), false, name);
+  }
+});
+
+test("selected host paths reject wrong configuration, symlinks, and output escapes", async (t) => {
+  const f = await selectedHostFixture(t);
+  assert.throws(() => derivePinnedReleaseIdentity({ worktreeRoot: f.candidate, configDirectory: f.root }), /selected configuration/u);
+  const link = join(f.candidate, "config/flow/releases/selected-link");
+  await symlink(f.configDirectory, link);
+  assert.throws(() => derivePinnedReleaseIdentity({ worktreeRoot: f.candidate, configDirectory: link }), /symlink/u);
+  await rm(link);
+  for (const outputPath of [join(f.candidate, "config/flow/evidence/escaped.json"), join(f.candidate, "escaped.json")]) {
+    assert.throws(() => generateHostRecoveryEvidence({ worktreeRoot: f.candidate, configDirectory: f.configDirectory,
+      rawRoot: f.rawRoot, receiptPaths: f.receiptPaths, outputPath, expectedRelease: f.release }), /selected configuration evidence/u);
+    assert.equal(await pathExists(outputPath), false);
+  }
+  assert.throws(() => validateTrackedHostRecoveryEvidence({ worktreeRoot: f.candidate, configDirectory: f.configDirectory,
+    evidencePath: join(f.candidate, "config/flow/evidence/host-recovery-qualification.v1.json") }), /inside the worktree/u);
+  const path = join(f.configDirectory, "evidence/host-recovery-qualification.v1.json");
+  await rm(path); await symlink(join(f.candidate, "config/flow/evidence/host-recovery-qualification.v1.json"), path);
+  assert.throws(() => validateTrackedHostRecoverySuccessor({ worktreeRoot: f.candidate, configDirectory: f.configDirectory }), /symlink/u);
+});
+
+test("selected host first binding rejects missing, stale, wrong-release, and tool-drift raw receipts", async (t) => {
+  const f = await selectedHostFixture(t);
+  const script = join(f.candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs");
+  const args = selectedGeneratorArgs(f);
+  for (const [name, mutate, pattern] of [
+    ["missing", null, /raw|receipt|ENOENT/u],
+    ["wrong-release", (receipt) => { receipt.release = derivePinnedReleaseIdentity({ worktreeRoot: f.candidate }); }, /release identity mismatch/u],
+    ["stale-tree", (receipt) => { receipt.release.pinned_git_tree_sha = "0".repeat(40); }, /release identity mismatch/u],
+    ["tool-drift", (receipt) => { receipt.tools.flow_host.sha256 = "0".repeat(64); }, /identity.*pinned worktree/u],
+  ]) {
+    const receipt = structuredClone(f.receipt);
+    if (mutate !== null) { mutate(receipt); writeRawQualificationReceipt(`${name}.json`, receipt, { rawRoot: f.rawRoot }); }
+    await assert.rejects(execFile(process.execPath, [script, ...args, "--receipt", `${name}.json`], { cwd: f.candidate }), pattern, name);
+    assert.deepEqual(await readFile(join(f.configDirectory, "evidence/host-recovery-qualification.v1.json")), f.historicalBytes, name);
+    assert.deepEqual(await readFile(join(f.configDirectory, "transition-ledger.v1.json")), f.ledgerBytes, name);
+  }
+  await writeFile(join(f.candidate, "config/flow/src/cli.mjs"), "// actual governed drift\n");
+  await assert.rejects(execFile(process.execPath, [script, ...args, "--receipt", f.receiptPaths[0]], { cwd: f.candidate }), /governed release files/u);
+});
+
+test("selected host first binding never adopts an unbound or already bound ledger", async (t) => {
+  const f = await selectedHostFixture(t);
+  const script = join(f.candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs");
+  const ledgerPath = join(f.configDirectory, "transition-ledger.v1.json");
+  await assert.rejects(execFile(process.execPath, [script, "--worktree", f.candidate,
+    "--config-directory", f.configDirectory, "--raw-root", f.rawRoot, "--replace-tracked-successor"], { cwd: f.candidate }), /predecessor.*bound|historical copied/u);
+  for (const mutation of [
+    (record) => { record.sha256 = "0".repeat(64); },
+    (record) => { record.status = "passed"; },
+    (record) => { record.path = "evidence/host-recovery-qualification.v1.json"; },
+  ]) {
+    const ledger = JSON.parse(f.ledgerBytes); mutation(ledger.evidence.find(({ id }) => id === "issue_46_host_recovery"));
+    await writeFile(ledgerPath, JSON.stringify(ledger));
+    await assert.rejects(execFile(process.execPath, [script, ...selectedGeneratorArgs(f)], { cwd: f.candidate }), /unqualified selected 1.1 ledger/u);
+    assert.deepEqual(await readFile(join(f.configDirectory, "evidence/host-recovery-qualification.v1.json")), f.historicalBytes);
+  }
+  await writeFile(ledgerPath, f.ledgerBytes);
+  await assert.rejects(execFile(process.execPath, [script, ...selectedGeneratorArgs(f, f.candidate)], { cwd: f.candidate }), /disjoint from the pinned worktree/u);
+  await assert.rejects(execFile(process.execPath, [script, "--worktree", f.candidate, "--raw-root", f.rawRoot,
+    "--initialize-selected-release", "--preserve-historical-directory", f.preserveDirectory], { cwd: f.candidate }), /requires --config-directory/u);
+});
+
+test("selected host promotions compare both original aggregate and ledger bytes", async (t) => {
+  const f = await selectedHostFixture(t);
+  const script = join(f.candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs");
+  const aggregatePath = join(f.configDirectory, "evidence/host-recovery-qualification.v1.json");
+  const ledgerPath = join(f.configDirectory, "transition-ledger.v1.json");
+  for (const target of [aggregatePath, ledgerPath]) {
+    await writeFile(aggregatePath, f.historicalBytes); await writeFile(ledgerPath, f.ledgerBytes);
+    const preload = join(f.root, "inject-cas-drift.mjs");
+    await writeFile(preload, `import fs from "node:fs"; import { syncBuiltinESMExports } from "node:module";
+const original = fs.readFileSync; let reads = 0;
+fs.readFileSync = function(path, ...rest) {
+  if (String(path) === ${JSON.stringify(target)} && ++reads === 2) fs.appendFileSync(path, "\\n");
+  return original.call(this, path, ...rest);
+}; syncBuiltinESMExports();`);
+    await assert.rejects(execFile(process.execPath, ["--import", preload, script, ...selectedGeneratorArgs(f)], { cwd: f.candidate }), /aggregate or ledger changed/u);
+    const other = target === aggregatePath ? ledgerPath : aggregatePath;
+    assert.deepEqual(await readFile(other), target === aggregatePath ? f.ledgerBytes : f.historicalBytes);
+  }
+});
+
+test("selected host interrupted promotion preserves history and leaves consumers unqualified", async (t) => {
+  const f = await selectedHostFixture(t);
+  const script = join(f.candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs");
+  const preload = join(f.root, "interrupt-ledger-rename.mjs");
+  const ledgerPath = join(f.configDirectory, "transition-ledger.v1.json");
+  await writeFile(preload, `import fs from "node:fs"; import { syncBuiltinESMExports } from "node:module";
+const rename = fs.renameSync;
+fs.renameSync = function(source, destination) {
+ if (String(destination) === ${JSON.stringify(ledgerPath)}) throw new Error("injected interrupted pair");
+ return rename.call(this, source, destination);
+}; syncBuiltinESMExports();`);
+  await assert.rejects(execFile(process.execPath, ["--import", preload, script, ...selectedGeneratorArgs(f)], { cwd: f.candidate }), /injected interrupted pair/u);
+  assert.deepEqual(await readFile(ledgerPath), f.ledgerBytes);
+  assert.throws(() => validateTrackedHostRecoveryEvidence({ worktreeRoot: f.candidate, configDirectory: f.configDirectory }), /bind a passed/u);
+  assert.throws(() => validateTrackedHostRecoverySuccessor({ worktreeRoot: f.candidate, configDirectory: f.configDirectory }), /predecessor.*bound/u);
+});
+
+test("selected host complete fixture receipts bind all eight predicates and the final selected consumer", async (t) => {
+  // These shaped receipts exercise validation only; they are not native qualification.
+  const f = await selectedHostFixture(t);
+  await writeCompleteSelectedFixtureReceipts(f);
+  const script = join(f.candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs");
+  const { stdout } = await execFile(process.execPath, [script, ...selectedGeneratorArgs(f)], { cwd: f.candidate });
+  const summary = JSON.parse(stdout);
+  assert.equal(summary.status, "passed");
+  assert.equal(summary.scenario_count, 8);
+  const selected = validateTrackedHostRecoveryEvidence({ worktreeRoot: f.candidate, configDirectory: f.configDirectory });
+  assert.equal(selected.status, "passed");
+  assert.equal(selected.release.release_id, f.release.release_id);
+  assert.throws(() => validateTrackedHostRecoveryEvidence({ worktreeRoot: f.candidate }), /current pinned worktree release/u);
+  const preserved = JSON.parse(await readFile(join(summary.historical_receipt, "receipt.json"), "utf8"));
+  assert.equal(preserved.original_release.release_id, "flow-release-1.0-dark/v1");
+  assert.deepEqual(await readFile(join(summary.historical_receipt, "aggregate.json")), f.historicalBytes);
+
+  const markerPath = join(f.root, "selected-final-phase-one-started");
+  let watcher;
+  const markerSeen = new Promise((resolveMarker, rejectMarker) => {
+    watcher = watch(f.root, (event, filename) => {
+      if (filename?.toString() === basename(markerPath)) { watcher.close(); resolveMarker(); }
+    });
+    watcher.on("error", rejectMarker);
+  });
+  const startedAt = new Date().toISOString();
+  const child = spawn(process.execPath, [join(f.candidate, "config/flow/scripts/generate-qualification-evidence.mjs"),
+    "--config-directory", f.configDirectory, "--repository-root", f.candidate], {
+    cwd: f.candidate, env: { ...process.env, FLOW_QUALIFICATION_TEST_PHASE1_SYNC: markerPath },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout.resume(); let stderr = ""; child.stderr.on("data", (bytes) => { stderr += bytes; });
+  const exit = new Promise(resolveExit => child.once("close", (code, signal) => resolveExit({ code, signal })));
+  let result;
+  try {
+    await Promise.race([markerSeen, exit.then(value => { throw new Error(`selected final gate failed before phase one: ${JSON.stringify(value)} ${stderr}`); })]);
+    const ledger = JSON.parse(await readFile(join(f.configDirectory, "transition-ledger.v1.json"), "utf8"));
+    assert.equal(ledger.evidence.find(({ id }) => id === "deterministic_qualification").status, "not_run");
+    assert.equal(ledger.evidence.find(({ id }) => id === "issue_46_host_recovery").sha256, selected.evidence_sha256);
+    assert.equal(child.kill("SIGKILL"), true);
+    result = await exit;
+    assert.deepEqual(result, { code: null, signal: "SIGKILL" });
+  } finally {
+    watcher.close();
+    if (result === undefined) { child.kill("SIGKILL"); result = await exit; }
+    t.diagnostic(JSON.stringify({ child_command: "selected final generator paused before phases", pid: child.pid,
+      started_at: startedAt, finished_at: new Date().toISOString(), close_observed: true, ...result }));
+  }
+  assert.deepEqual(await readFile(join(f.candidate, "config/flow/evidence/host-recovery-qualification.v1.json")), f.rootHistoricalBytes);
+});
+
+test("selected host consumption rejects missing bindings and current receipt or source drift", async (t) => {
+  const f = await selectedHostFixture(t);
+  await writeCompleteSelectedFixtureReceipts(f);
+  const script = join(f.candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs");
+  await execFile(process.execPath, [script, ...selectedGeneratorArgs(f)], { cwd: f.candidate });
+  const aggregatePath = join(f.configDirectory, "evidence/host-recovery-qualification.v1.json");
+  const ledgerPath = join(f.configDirectory, "transition-ledger.v1.json");
+  const bytes = await readFile(aggregatePath); const ledgerBytes = await readFile(ledgerPath);
+  const ledger = JSON.parse(ledgerBytes);
+  ledger.evidence = ledger.evidence.filter(({ id }) => id !== "issue_46_host_recovery");
+  await writeFile(ledgerPath, JSON.stringify(ledger));
+  assert.throws(() => validateTrackedHostRecoveryEvidence({ worktreeRoot: f.candidate, configDirectory: f.configDirectory }), /bind a passed/u);
+  await writeFile(ledgerPath, ledgerBytes);
+  await writeFile(aggregatePath, Buffer.concat([bytes, Buffer.from("\n")]));
+  assert.throws(() => validateTrackedHostRecoveryEvidence({ worktreeRoot: f.candidate, configDirectory: f.configDirectory }), /bind a passed/u);
+  await writeFile(aggregatePath, bytes);
+  const historical = JSON.parse(f.historicalBytes);
+  await writeFile(aggregatePath, f.historicalBytes);
+  const boundHistorical = JSON.parse(ledgerBytes); Object.assign(boundHistorical.evidence.find(({ id }) => id === "issue_46_host_recovery"), {
+    sha256: createHash("sha256").update(f.historicalBytes).digest("hex"), evidence_digest: historical.evidence_digest, status: "passed" });
+  await writeFile(ledgerPath, JSON.stringify(boundHistorical));
+  assert.throws(() => validateTrackedHostRecoverySuccessor({ worktreeRoot: f.candidate, configDirectory: f.configDirectory }), /historical copied/u);
+  await writeFile(aggregatePath, bytes); await writeFile(ledgerPath, ledgerBytes);
+  const ownerPath = join(f.candidate, "config/flow/src/owner-process.mjs");
+  await writeFile(ownerPath, Buffer.concat([await readFile(ownerPath), Buffer.from("\n// actual host tool drift\n")]));
+  assert.throws(() => validateTrackedHostRecoveryEvidence({ worktreeRoot: f.candidate, configDirectory: f.configDirectory }), /governed release files/u);
+});
+
+test("selected host historical preservation rejects symlinks and immutable byte conflicts before replacement", async (t) => {
+  const f = await selectedHostFixture(t);
+  const script = join(f.candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs");
+  const archive = join(f.root, "archive-target"); await mkdir(archive);
+  await symlink(archive, f.preserveDirectory);
+  await assert.rejects(execFile(process.execPath, [script, ...selectedGeneratorArgs(f)], { cwd: f.candidate }), /symlink/u);
+  await rm(f.preserveDirectory);
+  const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+  const receiptDirectory = join(f.preserveDirectory, `${hash(f.historicalBytes)}-${hash(f.ledgerBytes)}-${hash(Buffer.from(canonicalDigest(f.release)))}`);
+  await mkdir(receiptDirectory, { recursive: true });
+  const aggregatePath = join(receiptDirectory, "aggregate.json");
+  await writeFile(aggregatePath, "unowned historical bytes\n");
+  await assert.rejects(execFile(process.execPath, [script, ...selectedGeneratorArgs(f)], { cwd: f.candidate }), /immutable historical receipt conflicts/u);
+  await rm(aggregatePath);
+  const outside = join(f.root, "foreign-history.json"); await writeFile(outside, f.historicalBytes);
+  await symlink(outside, aggregatePath);
+  await assert.rejects(execFile(process.execPath, [script, ...selectedGeneratorArgs(f)], { cwd: f.candidate }), /symlink/u);
+  assert.deepEqual(await readFile(join(f.configDirectory, "evidence/host-recovery-qualification.v1.json")), f.historicalBytes);
+  assert.deepEqual(await readFile(join(f.configDirectory, "transition-ledger.v1.json")), f.ledgerBytes);
+});
+
+test("root host successor also refuses ledger byte changes before promotion", async (t) => {
+  const f = await selectedHostFixture(t);
+  await bindEphemeralIssue46Aggregate(f.candidate);
+  const ledgerPath = join(f.candidate, "config/flow/transition-ledger.v1.json");
+  const aggregatePath = join(f.candidate, "config/flow/evidence/host-recovery-qualification.v1.json");
+  const before = await readFile(aggregatePath);
+  const receipt = structuredClone(f.receipt);
+  receipt.release = derivePinnedReleaseIdentity({ worktreeRoot: f.candidate });
+  writeRawQualificationReceipt("root.json", receipt, { rawRoot: f.rawRoot });
+  const preload = join(f.root, "root-cas-drift.mjs");
+  await writeFile(preload, `import fs from "node:fs"; import { syncBuiltinESMExports } from "node:module";
+const read = fs.readFileSync; let reads = 0;
+fs.readFileSync = function(path, ...rest) { if (String(path) === ${JSON.stringify(ledgerPath)} && ++reads === 2) fs.appendFileSync(path, "\\n"); return read.call(this, path, ...rest); };
+syncBuiltinESMExports();`);
+  await assert.rejects(execFile(process.execPath, ["--import", preload,
+    join(f.candidate, "config/flow/scripts/generate-host-recovery-evidence.mjs"),
+    "--worktree", f.candidate, "--raw-root", f.rawRoot, "--receipt", "root.json", "--replace-tracked-successor"], { cwd: f.candidate }), /aggregate or ledger changed/u);
+  assert.deepEqual(await readFile(aggregatePath), before);
+});
+
+test("tracked issue-46 aggregate consumer rejects the historical release for current source", async () => {
+  const historical = JSON.parse(await readFile(join(
+    WORKTREE, "config/flow/evidence/host-recovery-qualification.v1.json",
+  ), "utf8"));
+  const current = derivePinnedReleaseIdentity({ worktreeRoot: WORKTREE });
+  assert.equal(historical.status, "passed");
+  assert.equal(historical.release.release_id, current.release_id);
+  assert.notEqual(historical.release.candidate_tree_sha, current.candidate_tree_sha);
+  assert.notEqual(historical.release.release_content_digest, current.release_content_digest);
+  assert.notEqual(historical.release.release_content_bytes_sha256, current.release_content_bytes_sha256);
+  assert.throws(() => validateTrackedHostRecoveryEvidence({ worktreeRoot: WORKTREE }),
+    (error) => error?.code === "tracked_aggregate_release_mismatch");
 });
 
 test("tracked issue-46 consumer remains valid after landing the aggregate commit", async (t) => {
@@ -1103,7 +1501,7 @@ test("tracked issue-46 successor generation requires an exact predecessor ledger
   }
 });
 
-test("tracked issue-46 successor generator atomically replaces a bound predecessor", async (t) => {
+test("tracked issue-46 successor generator replaces a bound predecessor with exact binding", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "flow-issue-46-successor-generator-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const candidate = await makeEphemeralPinnedWorktree(WORKTREE, join(root, "candidate"));
@@ -1612,7 +2010,9 @@ test("provider recovery scenarios run through one native subprocess and bind obs
 test("qualification runner records the native headless probe after public captures", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "flow-issue-46-headless-runner-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const worktree = WORKTREE;
+  const worktree = await copyQualifiedRuntimeFixture({
+    sourceRoot: WORKTREE, destination: join(root, "worktree"),
+  });
   const rawRoot = join(root, "raw");
   const paths = {
     state: join(root, "state"),
@@ -1737,19 +2137,70 @@ test("qualification runner records the native projection reader probe", async (t
   }
 });
 
-async function makeEphemeralPinnedWorktree(source, destination) {
-  await execFile("git", ["clone", "--quiet", source, destination], {
-    cwd: source,
-    maxBuffer: 2 * 1024 * 1024,
-  });
-  const { stdout } = await execFile("git", [
-    "-C", source, "ls-files", "--cached", "--others", "--exclude-standard", "-z",
-  ], { maxBuffer: 64 * 1024 * 1024 });
-  for (const path of stdout.split("\0").filter(Boolean)) {
-    const target = join(destination, path);
-    await mkdir(dirname(target), { recursive: true });
-    await cp(join(source, path), target, { recursive: true, force: true });
+async function writeCompleteSelectedFixtureReceipts(f) {
+  for (const [index, definition] of HOST_RECOVERY_SCENARIOS.entries()) {
+    const receipt = validReceipt({ scenarioId: definition.id, rawRoot: f.rawRoot,
+      logPath: "logs/owner-status.json", isolation: f.isolation });
+    receipt.release = f.release;
+    for (const observation of receipt.observations) {
+      if (["query", "watch"].includes(observation.kind)) observation.content.provenance = "public_process";
+      if (["views", "latency"].includes(observation.kind)) observation.content.provenance = "native_provider";
+      observation.content_digest = canonicalDigest(observation.content);
+    }
+    if (definition.required_capture_kinds.length > 0) {
+      receipt.captures = await Promise.all(definition.required_capture_kinds.map(async (kind) => {
+        const bytes = Buffer.from(`controlled fixture only: ${kind}\n`);
+        const path = `logs/${kind}.txt`; await writeFile(join(f.rawRoot, path), bytes);
+        return { id: `fixture-${kind}`, kind, format: "text", path,
+          sha256: createHash("sha256").update(bytes).digest("hex"), legibility: "pass",
+          provenance: "native_provider", watermark: canonicalDigest({ kind }), legal_actions: "pass" };
+      }));
+      for (const assertion of receipt.assertions) assertion.evidence_refs = [
+        ...receipt.commands.map(({ id }) => `command:${id}`),
+        ...receipt.observations.map(({ id }) => `observation:${id}`),
+        ...receipt.captures.map(({ id }) => `capture:${id}`),
+      ];
+    }
+    writeRawQualificationReceipt(index === 0 ? f.receiptPaths[0] : `${definition.id}.json`, receipt, { rawRoot: f.rawRoot });
   }
+}
+
+function selectedGeneratorArgs(f, preserveDirectory = f.preserveDirectory) {
+  return ["--worktree", f.candidate, "--config-directory", f.configDirectory,
+    "--raw-root", f.rawRoot, "--initialize-selected-release", "--preserve-historical-directory", preserveDirectory];
+}
+
+async function selectedHostFixture(t) {
+  const root = await mkdtemp(join(tmpdir(), "flow-selected-host-binding-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const candidate = await makePinnedDirtyWorktree(WORKTREE, join(root, "candidate"));
+  const configDirectory = join(candidate, "config/flow/releases/1.1-dark-test");
+  await execFile(process.execPath, [join(candidate, "config/flow/scripts/generate-release-content.mjs"),
+    "--config-directory", configDirectory, "--repository-root", candidate], { cwd: candidate });
+  const historicalBytes = await readFile(join(configDirectory, "evidence/host-recovery-qualification.v1.json"));
+  const rootHistoricalBytes = await readFile(join(candidate, "config/flow/evidence/host-recovery-qualification.v1.json"));
+  const ledgerBytes = await readFile(join(configDirectory, "transition-ledger.v1.json"));
+  const rawRoot = join(root, "raw");
+  await mkdir(join(rawRoot, "logs"), { recursive: true });
+  await writeFile(join(rawRoot, "logs/owner-status.json"), "live\n");
+  const isolation = createQualificationIsolation({ worktreeRoot: candidate, configDirectory,
+    xdgStateHome: join(root, "state"), authorityDirectory: join(root, "authority"),
+    socketPath: join(root, "authority/owner.sock"), endpointPath: join(root, "authority/owner.json"),
+    backupDirectory: join(root, "backup"), repositoryRoot: join(root, "repository"),
+    drovrConfigDirectory: join(root, "drovr"), herdrSession: "herdr:selected-host-binding",
+    runId: "run:issue-46-test-run" });
+  const release = derivePinnedReleaseIdentity({ worktreeRoot: candidate, configDirectory });
+  const receipt = validReceipt({ scenarioId: "concurrent_runs_owner_restart", rawRoot,
+    logPath: "logs/owner-status.json", isolation });
+  receipt.release = release;
+  const receiptPaths = ["selected.json"];
+  writeRawQualificationReceipt(receiptPaths[0], receipt, { rawRoot });
+  return { root, candidate, configDirectory, rawRoot, isolation, release, receipt, receiptPaths,
+    historicalBytes, rootHistoricalBytes, ledgerBytes, preserveDirectory: join(root, "historical") };
+}
+
+async function makeEphemeralPinnedWorktree(source, destination) {
+  await makeWorkingTreeCopy(source, destination);
   await execFile("git", ["-C", destination, "config", "user.email", "flow@example.test"]);
   await execFile("git", ["-C", destination, "config", "user.name", "Flow Qualification"]);
   await execFile(process.execPath, [
@@ -1796,10 +2247,20 @@ async function makeWorkingTreeCopy(source, destination) {
     cwd: source,
     maxBuffer: 2 * 1024 * 1024,
   });
+  // A clone contains HEAD's files. Reproduce working-tree deletions before
+  // copying the remaining tracked and untracked candidate files.
+  const { stdout: deletedListing } = await execFile("git", [
+    "-C", source, "diff", "HEAD", "--name-only", "--diff-filter=D", "-z",
+  ]);
+  const deletedPaths = new Set(deletedListing.split("\0").filter(Boolean));
+  for (const path of deletedPaths) {
+    await rm(join(destination, path), { recursive: true, force: true });
+  }
   const { stdout } = await execFile("git", [
     "-C", source, "ls-files", "--cached", "--others", "--exclude-standard", "-z",
   ], { maxBuffer: 64 * 1024 * 1024 });
   for (const path of stdout.split("\0").filter(Boolean)) {
+    if (deletedPaths.has(path)) continue;
     const target = join(destination, path);
     await mkdir(dirname(target), { recursive: true });
     await cp(join(source, path), target, { recursive: true, force: true });
@@ -1837,3 +2298,44 @@ async function pathExists(path) {
     throw error;
   }
 }
+
+test("tracked issue-46 aggregate consumer binds schema, current tools, digest, and ledger status", async () => {
+  const ledger = JSON.parse(await readFile(
+    join(WORKTREE, "config/flow/transition-ledger.v1.json"),
+    "utf8",
+  ));
+  const deferredIssue46 = ledger.not_run.find(({ id }) => id === "issue-46");
+  if (deferredIssue46?.status === "not_run") {
+    assert.throws(
+      () => validateTrackedHostRecoveryEvidence({ worktreeRoot: WORKTREE }),
+      (error) => {
+        assert.ok([
+          "release_candidate_dirty",
+          "tracked_aggregate_release_mismatch",
+        ].includes(error?.code));
+        return true;
+      },
+    );
+    return;
+  }
+  try {
+    const result = validateTrackedHostRecoveryEvidence({ worktreeRoot: WORKTREE });
+    assert.equal(result.schema, "flow.tracked-host-recovery-consumer-result/v1");
+    assert.equal(result.status, "passed");
+    assert.match(result.evidence_digest, /^sha256:[0-9a-f]{64}$/u);
+    assert.match(result.evidence_sha256, /^[0-9a-f]{64}$/u);
+  } catch (error) {
+    // The tracked artifact is regenerated only after a clean candidate and a
+    // fresh external qualification run.  A dirty review worktree must remain
+    // fail-closed rather than silently accepting stale evidence.
+    if (error?.code === "release_candidate_dirty") {
+      assert.match(
+        error.message,
+        /candidate|aggregate|ledger/u,
+        `unexpected fail-closed issue-46 consumer error: ${error.code}`,
+      );
+      return;
+    }
+    throw error;
+  }
+});

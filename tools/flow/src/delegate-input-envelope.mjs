@@ -45,6 +45,7 @@ export const DELEGATE_RESOURCE_CONTRACTS = Object.freeze({
 const RESOURCE_ACCESS = new Set(["read_only", "mutation"]);
 const MUTATING_CAPABILITIES = new Set([
   "workspace-write",
+  "workspace-write-denied",
   "auto",
   "unrestricted",
 ]);

@@ -9,7 +9,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 
 import { digest as canonicalDigest } from "../../../tools/flow/src/canonical.mjs";
 import {
-  DETERMINISTIC_QUALIFICATION_ASSERTIONS,
+  deterministicQualificationAssertionsForRelease,
   DETERMINISTIC_QUALIFICATION_SCOPE,
 } from "../../../tools/flow/src/qualification-recipe.mjs";
 import { createFlowRuntime } from "../src/runtime.mjs";
@@ -62,6 +62,7 @@ test("public host and reboot admission schemas compile in strict mode", async ()
     "work.review-target-refresh-command.v1.schema.json",
     "flow.review-integration-evidence.v1.schema.json",
     "flow.review-provenance.v1.schema.json",
+    "flow.review-preparation-facts.v1.schema.json",
     "flow.review-inbox-watermark.v1.schema.json",
     "flow.review-inbox-projection.v1.schema.json",
     "flow.review-inbox-item.v1.schema.json",
@@ -74,6 +75,17 @@ test("public host and reboot admission schemas compile in strict mode", async ()
 
   for (const schema of schemas) ajv.addSchema(schema);
   for (const schema of schemas) assert.equal(typeof ajv.getSchema(schema.$id), "function");
+});
+
+test("review preparation schema references the canonical time-fact schema", async () => {
+  const schema = JSON.parse(await readFile(
+    join(root, "schemas", "flow.review-preparation-facts.v1.schema.json"),
+    "utf8",
+  ));
+  assert.deepEqual(schema.properties.time_facts.items, {
+    "$ref": "flow.time-fact.v1.schema.json",
+  });
+  assert.equal(schema.$defs.timeFact, undefined);
 });
 
 test("release transition contracts validate the managed manifest and receipt", async () => {
@@ -115,7 +127,7 @@ test("release transition contracts validate the managed manifest and receipt", a
   qualification.candidate_tree_sha =
     releaseContent.git_binding.candidate_tree_sha ?? "a".repeat(40);
   qualification.scope = DETERMINISTIC_QUALIFICATION_SCOPE;
-  qualification.assertions = DETERMINISTIC_QUALIFICATION_ASSERTIONS;
+  qualification.assertions = deterministicQualificationAssertionsForRelease(qualification.release_id);
   const digest = `sha256:${"a".repeat(64)}`;
   const capabilityManifest = {
     schema: "flow.capability-manifest/v1",
@@ -276,6 +288,34 @@ test("public host schemas accept exact frames, status, and ordinary preparation"
     schema: "flow.query/v1",
     query: "review_inbox",
   }), true);
+  assert.equal(validate("flow.query.v1", {
+    schema: "flow.query/v1",
+    query: "review_preparation_facts",
+    candidate_id: "candidate:sealed",
+    candidate_fingerprint: `sha256:${"a".repeat(64)}`,
+    selection: {
+      schema: "flow.review-preparation-selection/v1",
+      lenses: ["security"],
+      routes: {
+        lenses: { security: { launch: { harness: "codex" } } },
+        critic: { description: { schema: "drovr.delegated-agent-description/v1" } },
+      },
+    },
+  }), true);
+  assert.equal(validate("flow.query.v1", {
+    schema: "flow.query/v1",
+    query: "review_preparation_facts",
+    candidate_id: "candidate:sealed",
+    candidate_fingerprint: `sha256:${"a".repeat(64)}`,
+    selection: {
+      schema: "flow.review-preparation-selection/v1",
+      lenses: ["security"],
+      routes: {
+        lenses: { security: { route: { agent_id: "caller" } } },
+        critic: { launch: { harness: "claude" } },
+      },
+    },
+  }), false);
   assert.equal(validate("flow.query.v1", {
     schema: "flow.query/v1",
     query: "autonomous_runner_status",
@@ -1518,7 +1558,7 @@ test("predecessor evidence schema branches reject unknown fields", async () => {
         evidence_safety_receipt: {
           schema: "flow.evidence-safety-receipt/v1",
           policy_id: "flow.evidence-safety-policy/v1",
-          catalog_id: "flow.contract-catalog/v1@34",
+          catalog_id: "flow.contract-catalog/v1@38",
           classification: "delegate_evidence",
           allowed_use: ["delegate_transfer"],
           input_digest: `sha256:${"e".repeat(64)}`,
@@ -1778,6 +1818,7 @@ test("published Flow projections satisfy their JSON schemas", async (t) => {
     caller_metadata: { run_id: "run:contract", card_id: "review" },
   };
   const delegatedProjection = await createFlowRuntime({
+    executionBackend: "drovr",
     env: {
       ...process.env,
       DROVR_CONFIG_DIR: join(root, "../drovr"),

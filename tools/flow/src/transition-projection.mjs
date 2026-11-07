@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { codexExecutionAdapter } from "./codex-execution-adapter.mjs";
 import { execFileSync } from "node:child_process";
 import {
   lstatSync,
@@ -24,13 +25,11 @@ import {
   auditLegacyBaselinesSync,
 } from "./legacy-baselines.mjs";
 import {
-  DETERMINISTIC_QUALIFICATION_ASSERTIONS,
+  deterministicQualificationAssertionsForRelease,
   DETERMINISTIC_QUALIFICATION_COMMANDS,
   DETERMINISTIC_QUALIFICATION_SCOPE,
-  PRODUCTION_ROUTE_CONFORMANCE_ASSERTIONS,
-  PRODUCTION_ROUTE_CONFORMANCE_COMMANDS,
-  PRODUCTION_ROUTE_CONFORMANCE_ROUTES,
   PRODUCTION_ROUTE_CONFORMANCE_SCOPE,
+  productionRouteConformanceForRelease,
 } from "./qualification-recipe.mjs";
 import {
   projectCapabilityManifest,
@@ -68,6 +67,7 @@ const REQUIRED_PREREQUISITES = Object.freeze([
   [29, "a4a9a88", "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"],
 ]);
 export async function queryTransition({
+  executionBackend = process.env.FLOW_EXECUTION_BACKEND ?? "direct",
   configDirectory,
   repositoryRoot,
   homeDirectory,
@@ -224,7 +224,9 @@ export async function queryTransition({
     environment_fingerprint: ledger.environment_fingerprint,
     dark_opt_in: {
       schema: "flow.dark-opt-in/v1",
-      available: qualificationClear,
+      // Source prerequisites do not establish official native permission.
+      available: qualificationClear && (executionBackend === "drovr" ||
+        (executionBackend === "direct" && codexExecutionAdapter.nativeQualificationIssue() === null)),
       scope: releaseManifest.scope,
       not_authorized_before_issue: releaseManifest.not_authorized_before_issue,
       routes: releaseManifest.supported_routes.map(({ flow, mode }) => ({
@@ -755,7 +757,7 @@ function validateQualificationEvidence({
       evidence.scope !== DETERMINISTIC_QUALIFICATION_SCOPE ||
       !isDeepStrictEqual(
         evidence.assertions,
-        DETERMINISTIC_QUALIFICATION_ASSERTIONS,
+        deterministicQualificationAssertionsForRelease(ledger.release.id),
       ) ||
       !isDeepStrictEqual(evidence.routes?.supported, supportedRoutes) ||
       !isDeepStrictEqual(evidence.routes?.negative_classes, negativeRoutes) ||
@@ -791,6 +793,7 @@ function validateProductionRouteEvidence({
   releaseContent,
   generationSession,
 }) {
+  const conformance = productionRouteConformanceForRelease(ledger.release.id);
   const record = ledger.evidence.find(({ id }) =>
     id === "production_route_conformance");
   if (record === undefined) {
@@ -826,9 +829,9 @@ function validateProductionRouteEvidence({
         releaseContent?.git_binding?.candidate_tree_sha ||
       evidence.release_content_digest !== ledger.release.content.digest ||
       evidence.scope !== PRODUCTION_ROUTE_CONFORMANCE_SCOPE ||
-      !isDeepStrictEqual(evidence.routes, PRODUCTION_ROUTE_CONFORMANCE_ROUTES) ||
+      !isDeepStrictEqual(evidence.routes, conformance.routes) ||
       !isDeepStrictEqual(evidence.assertions,
-        PRODUCTION_ROUTE_CONFORMANCE_ASSERTIONS) ||
+        conformance.assertions) ||
       !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(
         evidence.captured_at ?? "") ||
       !qualificationEnvironmentMatches(evidence.environment) ||
@@ -855,7 +858,7 @@ function validateProductionRouteEvidence({
         configDirectory,
         evidence.recipe,
         "flow.production-route-conformance-recipe/v1",
-        PRODUCTION_ROUTE_CONFORMANCE_COMMANDS,
+        conformance.commands,
       )) {
     return false;
   }

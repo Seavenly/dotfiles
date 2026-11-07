@@ -18,6 +18,7 @@ import {
   assertExternalQualificationRoot,
   assertQualificationPathDisjoint,
   isolatedQualificationEnvironment,
+  resolveQualificationConfigDirectory,
   runPinnedPublicCommand,
 } from "./host-recovery-qualification.mjs";
 import { digest as canonicalDigest } from "../../../tools/flow/src/canonical.mjs";
@@ -48,6 +49,7 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const LOCK_SCHEMA = "drovr.registry-lock/v1";
 const SUPPORT_SCHEMA = "flow.host-recovery-live-support/v1";
 const DROVR_CLI_PATH = fileURLToPath(new URL("../../../tools/drovr/src/cli.mjs", import.meta.url));
+const PINNED_WORKTREE_ROOT = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MIN_TIMEOUT_MS = 100;
 const MAX_TIMEOUT_MS = 300_000;
@@ -526,6 +528,20 @@ export async function runProductionBackupRestoreProbe({
   }
   const statusSandboxDirectory = join(drovrConfigDirectory, "status-sandbox");
   assertDisposableRoot(statusSandboxDirectory, "drovrStatusSandboxDirectory");
+  const runtimeSelection = {};
+  if (env.FLOW_CONFIG_DIRECTORY !== undefined) {
+    runtimeSelection.FLOW_CONFIG_DIRECTORY = resolveQualificationConfigDirectory({
+      worktreeRoot: PINNED_WORKTREE_ROOT,
+      configDirectory: env.FLOW_CONFIG_DIRECTORY,
+    });
+    if (env.FLOW_QUALIFICATION_REPOSITORY_ROOT !== PINNED_WORKTREE_ROOT) {
+      throw new LiveSupportConfigurationError(
+        "backup_qualification_root_invalid",
+        "selected backup qualification must use the pinned worktree repository root",
+      );
+    }
+    runtimeSelection.FLOW_QUALIFICATION_REPOSITORY_ROOT = PINNED_WORKTREE_ROOT;
+  }
   await mkdir(rawRoot, { recursive: true, mode: 0o700 });
   const environment = {
     ...sanitizedDrovrStatusEnvironment(env, statusSandboxDirectory),
@@ -534,12 +550,14 @@ export async function runProductionBackupRestoreProbe({
     FLOW_REPOSITORY_ROOT: repositoryRoot,
     DROVR_CONFIG_DIR: drovrConfigDirectory,
   };
+  const runtimeEnvironment = { ...environment, ...runtimeSelection };
   const drovrSeed = await seedDrovrObligationState(stateDirectory(environment));
   // Direct registry writes are setup-only. The production qualification must
   // observe that setup through the pinned public `drovr status` command; a
   // closure over the seed would merely compare fabricated state to itself.
-  const statusRunner = drovrStatusRunner ?? ((request = {}) =>
-    runPinnedDrovrStatus(request.env ?? environment));
+  const statusRunner = (request = {}) => drovrStatusRunner === undefined
+    ? runPinnedDrovrStatus(environment)
+    : drovrStatusRunner({ ...request, env: environment });
   const backupOperationContract = "flow.operation/issue-46-backup-seed/v1";
   const backupOperationRegistration = {
     [backupOperationContract]: {
@@ -593,7 +611,7 @@ export async function runProductionBackupRestoreProbe({
       });
     }
     runtime = createFlowRuntime({
-      env: environment,
+      env: runtimeEnvironment,
       authorityDirectory,
       authorityOptions: { drovrStatusRunner: statusRunner },
       registeredOperations: backupOperationRegistration,
@@ -604,7 +622,7 @@ export async function runProductionBackupRestoreProbe({
       authorityDirectory,
       operationContract: backupOperationContract,
       operationRegistration: backupOperationRegistration,
-      environment,
+      environment: runtimeEnvironment,
     });
     backup = runtime.command({ type: "backup_create" });
     if (backup?.accepted !== true || !isRecord(backup.manifest) ||
@@ -642,7 +660,7 @@ export async function runProductionBackupRestoreProbe({
       return productionBackupBlock("protected_state_changed_or_loss_unproven", { loss });
     }
     restoreRuntime = createFlowRuntime({
-      env: environment,
+      env: runtimeEnvironment,
       authorityDirectory,
       authorityOptions: { drovrStatusRunner: statusRunner },
       autonomous: false,

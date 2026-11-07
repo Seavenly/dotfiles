@@ -11,7 +11,8 @@ directories.
 - `skills/` contains the effective, version-controlled Agent Skills exposed to
   supported harnesses.
 - `profiles/` groups role definitions by purpose, with full native variants for
-  Claude Code, Codex, and Hermes as needed.
+  Claude Code and Codex as needed. The retained Hermes variants are frozen
+  historical evidence and are no longer installed.
 
 Repository guidance remains in the root `AGENTS.md`. A root `CLAUDE.md` symlink
 exposes the same guidance to Claude Code. When a repository needs Claude-only
@@ -36,7 +37,10 @@ does not discover a real skill directory whose `SKILL.md` is itself a symlink:
 
 - `~/.agents/skills/` for Codex and the agent-neutral user scope.
 - `~/.claude/skills/` for Claude Code.
-- `~/.hermes/skills/` for Hermes Agent.
 
 The repository package is authoritative. Do not edit a linked copy under a
 harness directory; update the effective package and its lineage here.
+
+Hermes and its agent-flow skills are retired from convergence and discovery.
+The frozen packages remain in Git for Flow baseline audits and read-only legacy
+inventory; they are not supported launch paths.

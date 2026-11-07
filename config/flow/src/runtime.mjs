@@ -11,6 +11,7 @@ import {
 import {
   createDrovrDelegatedAgentResourcePort,
 } from "../../../tools/flow/src/drovr-delegated-agent-resource-port.mjs";
+import { createDirectDelegatedAgentPort } from "../../../tools/flow/src/direct-delegated-agent-port.mjs";
 import { contentDigest } from "./canonical-json.mjs";
 import {
   FilesystemLegacyCompatibilityAdapter,
@@ -43,6 +44,12 @@ import {
 import {
   qualificationRepositoryRootFor,
 } from "./owner-runtime-binding.mjs";
+import {
+  executionTrustFromEnvironment,
+  supervisedAdmissionIssue,
+  SUPERVISED_NATIVE_CONTRACT,
+  SUPERVISED_NATIVE_POSTURE,
+} from "./supervised-native-trust.mjs";
 
 const RUNNER_CAPACITY_LIMIT = 64;
 const FLOW_CONFIG_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -51,9 +58,13 @@ const RUNNER_CAPACITY_ENV = Object.freeze({
   operationCapacity: "FLOW_RUNNER_OPERATION_CAPACITY",
 });
 
+import { assertCompatibleLocalCheck } from "./local-client-state.mjs";
+
 export function createFlowRuntime({
   env = process.env,
   delegatedAgentPort = null,
+  executionBackend = env.FLOW_EXECUTION_BACKEND ?? "direct",
+  directExecutionOptions = {},
   delegatedAgentResourcePort = null,
   delegateOutputValidators = {},
   registeredOperations = {},
@@ -67,7 +78,11 @@ export function createFlowRuntime({
   autonomous = undefined,
   runnerOptions = undefined,
   runnerErrorSink = undefined,
+  featureTestCheck = undefined,
+  localClientCheck = undefined,
+  gitIdentity = undefined,
 } = {}) {
+  const executionTrust = executionTrustFromEnvironment(env);
   if (runnerErrorSink !== undefined && typeof runnerErrorSink !== "function") {
     throw new TypeError("production FlowRuntime runnerErrorSink must be a function");
   }
@@ -85,11 +100,18 @@ export function createFlowRuntime({
       ? defaultLegacyRoots(env)
       : legacyRoots,
   });
-  const delegationPort = delegatedAgentPort ?? createDrovrDelegatedAgentPort({
-    dependencies: { env },
-  });
-  const composition = createProductionComposition({
+  if (!["direct", "drovr"].includes(executionBackend)) throw new TypeError("unsupported execution backend");
+  let composition;
+  const delegationPort = delegatedAgentPort ?? (executionBackend === "drovr"
+    ? createDrovrDelegatedAgentPort({ dependencies: { env } })
+    : createDirectDelegatedAgentPort({ ...directExecutionOptions, env,
+      executionTrust: executionTrust === SUPERVISED_NATIVE_POSTURE ? executionTrust : undefined,
+      taskDirectory: join(resolvedAuthorityDirectory, "direct-tasks"),
+      resolveWorkspace: (claim, request) => composition.resolveDelegatedWorkspaceClaim(claim, request),
+    }));
+  composition = createProductionComposition({
     delegatedAgentPort: delegationPort,
+    executionTrust,
     env,
     authorityDirectory: resolvedAuthorityDirectory,
     // Default compatibility roots are ambient legacy state. Only caller
@@ -100,12 +122,14 @@ export function createFlowRuntime({
     registeredAuthorities,
     predefinedDefinitions,
     delegateOutputValidators,
+    featureTestCheck,
+    gitIdentity,
   });
   const delegationResourcePort = delegatedAgentResourcePort ??
-    createDrovrDelegatedAgentResourcePort({
+    (delegationPort.backend === "direct" ? null : createDrovrDelegatedAgentResourcePort({
       resolveWorkspace: composition.resolveDelegatedWorkspaceClaim,
       dependencies: { env },
-    });
+    }));
   const ownsAuthority = runAuthority === undefined;
   let authority = null;
   let coreRuntime = null;
@@ -123,6 +147,7 @@ export function createFlowRuntime({
         })
       : runAuthority;
     authorityLeaseAcquired = ownsAuthority;
+    if (localClientCheck !== undefined) assertCompatibleLocalCheck(authority, localClientCheck);
     // Core runtime construction performs synchronous same-boot recovery. Bind
     // production registrations before that sweep so provider-backed recovery
     // can use the exact durable authority rather than being dropped as an
@@ -136,6 +161,7 @@ export function createFlowRuntime({
       registeredOperations: composition.operations,
       predefinedDefinitions: composition.definitions,
       registeredAuthorities: composition.authorities,
+      reviewPreparationProvider: composition.reviewPreparationProvider,
       autonomous: autonomous ?? ownsAuthority,
       runnerOptions: coreRunnerOptions,
       registeredQueries: {
@@ -206,8 +232,10 @@ export function createFlowRuntime({
           operation: "prepare",
           request: proposal,
           composition,
+          delegationPort,
           authority,
           env,
+          executionTrust,
         });
         if (gate?.schema === "flow.rejection/v1") return gate;
         const publicProposal = withoutDarkOptIn(proposal);
@@ -235,15 +263,13 @@ export function createFlowRuntime({
           operation: "launch",
           request,
           composition,
+          delegationPort,
           authority,
           env,
+          executionTrust,
         });
         if (gate?.schema === "flow.rejection/v1") return gate;
         const publicRequest = withoutDarkOptIn(request);
-        const adopted = typeof authority?.adoptExactLaunch === "function"
-          ? authority.adoptExactLaunch(publicRequest)
-          : null;
-        if (adopted !== null && adopted !== undefined) return adopted;
         let launchPreparation = null;
         try {
           launchPreparation = composition.beforeLaunch?.(publicRequest, authority) ?? null;
@@ -262,10 +288,19 @@ export function createFlowRuntime({
         }
         try {
           const receipt = coreRuntime.launch(publicRequest);
-          if (receipt?.schema === "flow.rejection/v1") {
-            launchPreparation?.rollback?.();
+          const settle = (value) => {
+            if (value?.schema === "flow.rejection/v1") {
+              launchPreparation?.rollback?.();
+            }
+            return value;
+          };
+          if (isPromiseLike(receipt)) {
+            return receipt.then(settle).catch((error) => {
+              launchPreparation?.rollback?.();
+              throw error;
+            });
           }
-          return receipt;
+          return settle(receipt);
         } catch (error) {
           launchPreparation?.rollback?.();
           throw error;
@@ -316,14 +351,37 @@ function publicReplacementGate({
   operation,
   request,
   composition,
+  delegationPort,
   authority,
   env,
+  executionTrust,
 }) {
   const route = classifyPublicRoute(request);
+  const supervisedIssue = supervisedAdmissionIssue({
+    operation, request, route, executionTrust, backend: delegationPort.backend,
+  });
+  if (supervisedIssue) {
+    return createRejection({
+      operation,
+      code: supervisedIssue,
+      outcome: "disabled",
+      reason: "supervised native execution requires the matching host posture, explicit request acknowledgment and exact prepared contract",
+      authorityWatermark: safeAuthorityWatermark(authority),
+      authorityWatermarkDomain: "host",
+    });
+  }
+  const supervised = executionTrust === SUPERVISED_NATIVE_POSTURE;
   const configDirectory = env.FLOW_CONFIG_DIRECTORY ?? FLOW_CONFIG_DIRECTORY;
   let selection;
   try {
-    selection = resolvePublicLaunchPolicy({
+    selection = supervised ? {
+      schema: "flow.supervised-launch-selection/v1",
+      execution_contract: SUPERVISED_NATIVE_CONTRACT,
+      route,
+      normal_use_authorized: false,
+      remote_mutations_authorized: false,
+      qualification: "not_claimed",
+    } : resolvePublicLaunchPolicy({
       policyPath: env.FLOW_LAUNCH_POLICY_PATH ??
         join(configDirectory, "launch-policy.v1.json"),
       releaseManifestPath: env.FLOW_RELEASE_MANIFEST_PATH ??
@@ -385,6 +443,19 @@ function publicReplacementGate({
     });
   }
 
+  if (operation === "prepare" && route.flow === "feature" &&
+      route.mode === "test" &&
+      request?.schema !== "flow.feature-preparation-request/v1") {
+    return createRejection({
+      operation,
+      code: "invalid_preparation_request",
+      outcome: "unsupported",
+      reason: "public test preparation requires an ordinary brief and trusted check selection",
+      authorityWatermark: safeAuthorityWatermark(authority),
+      authorityWatermarkDomain: "host",
+    });
+  }
+
   let qualificationAvailable = false;
   try {
     const qualificationRepositoryRoot = qualificationRepositoryRootFor({
@@ -407,7 +478,7 @@ function publicReplacementGate({
   } catch {
     qualificationAvailable = false;
   }
-  if (!qualificationAvailable) {
+  if (!qualificationAvailable && !supervised) {
     return createRejection({
       operation,
       code: "qualification_withheld",
@@ -418,14 +489,39 @@ function publicReplacementGate({
       legalActions: [],
     });
   }
+  let nativeIssue;
+  try {
+    const repository = request?.repository;
+    nativeIssue = delegationPort?.nativeAdmissionIssue?.({
+      workspacePath: typeof repository === "string" ? repository : repository?.path,
+    });
+  } catch {
+    nativeIssue = "native_qualification_unproven";
+  }
+  if (nativeIssue) {
+    return createRejection({
+      operation,
+      code: nativeIssue === "unproved_ambient_authority" ? nativeIssue : "qualification_withheld",
+      outcome: "disabled",
+      reason: `official native execution is unavailable: ${nativeIssue}`,
+      authorityWatermark: safeAuthorityWatermark(authority),
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+
   return selection;
 }
 
 function withoutDarkOptIn(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value) ||
-      !Object.hasOwn(value, "dark_opt_in")) return value;
-  const { dark_opt_in: _darkOptIn, ...withoutOptIn } = value;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const { dark_opt_in: _darkOptIn, execution_trust: _executionTrust, ...withoutOptIn } = value;
   return withoutOptIn;
+}
+
+function isPromiseLike(value) {
+  return value !== null && (typeof value === "object" ||
+    typeof value === "function") && typeof value.then === "function";
 }
 
 function safeAuthorityWatermark(authority) {

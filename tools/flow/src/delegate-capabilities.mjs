@@ -7,6 +7,7 @@ const DROVR_TO_FLOW_GRANTS = new Map([
   ["read-only", []],
   ["on-approve", ["scope:approve"]],
   ["workspace-write", ["repository:write"]],
+  ["workspace-write-denied", ["repository:write"]],
   ["auto", ["repository:write"]],
   // Flow has no finite grant that represents unrestricted host authority.
   ["unrestricted", null],

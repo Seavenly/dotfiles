@@ -921,10 +921,15 @@ function hasExactKeys(value, keys) {
 }
 
 function assertEffectReceipt(receipt, intent) {
+  // An explicit complete absence closes a failed attempt without pretending
+  // the requested effect succeeded. The domain operation owns that proof.
+  const knownAbsent = receipt?.outcome === "not_created" &&
+    receipt.provider_receipt?.schema === "flow.provider-observation/v1" &&
+    receipt.provider_receipt.found === false && receipt.provider_receipt.complete === true;
   if (receipt?.schema !== "flow.effect-receipt/v1" ||
       receipt.effect_id !== intent.effect_id ||
       receipt.idempotency_key !== intent.idempotency_key ||
-      receipt.outcome !== "succeeded" ||
+      !(receipt.outcome === "succeeded" || knownAbsent) ||
       receipt.provider_receipt === undefined) {
     const error = new Error("registered operation returned an invalid effect receipt");
     error.code = "invalid_effect_receipt";

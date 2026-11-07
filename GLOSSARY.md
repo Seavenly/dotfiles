@@ -37,6 +37,24 @@ _Avoid_: Recording stack
 A named, repeatable agent strategy for producing and reviewing a software outcome.
 _Avoid_: Workflow when referring to both interactive preparation and automated execution
 
+**Execution backend**:
+The exact versioned mechanism selected for one Flow delegated attempt. Direct
+CLI tasks are primary; Drovr is an explicit optional adapter. Backend identity
+is distinct from an opaque registered authority-provider identity.
+_Avoid_: Authority provider, scheduler
+
+**Direct task**:
+One immutable caller-key-reserved official CLI invocation with exact executable,
+workspace, input, schema and authority bindings, owned by a bounded detached
+process. It owns output and retirement evidence without owning Flow admission.
+_Avoid_: Native session, background scheduler
+
+**Task terminal receipt**:
+Atomic digest-bound evidence of exact raw output, native exit and positive
+retirement of the whole owned process tree. Flow independently validates the
+structured result before settlement; absence of this receipt proves no absence.
+_Avoid_: Successful exit, dead parent, latest output
+
 **Flow run**:
 One durable execution of a flow, including its approved inputs, internal execution history, and resulting artifacts.
 _Avoid_: Job, session
@@ -53,6 +71,15 @@ the routes named by one qualified capability manifest. It is not normal-use
 authorization and does not prove that deferred real scenarios ran.
 _Avoid_: Replacement default, approval
 
+**Production feature test check**:
+One trusted host selection of committed acceptance and positive health checks,
+their exact criteria and intended failure, and the bounded runner identity. A
+public preparation request names only its `check_id`; preparation binds the
+selection but does not observe health or RED. The Linux pilot requires real
+health and expected RED before its writer, then the same acceptance check GREEN
+before seal. Changed check bindings refuse launch before workspace claims.
+_Avoid_: Caller command, claimed health, generic test registry
+
 **Transition ledger**:
 The durable release/environment record that binds prerequisites, contracts,
 manifest and content digests, qualification evidence, legacy inventory, and
@@ -64,6 +91,13 @@ Digest-backed deterministic recipe and receipt evidence for one exact release
 content set. It can make a dark opt-in available only when every required
 record is passed; it does not authorize scope expansion or remote mutation.
 _Avoid_: Synthetic pass, production run
+
+**Supervised native execution**:
+An explicit per-run trust choice in which the operator supervises the official
+agent CLI and trusts its requested permissions and ambient startup behavior.
+It does not claim independently enforced workspace or tool-network boundaries,
+or provide qualification evidence for the strict execution contract.
+_Avoid_: Qualified native execution, permission bypass
 
 **Run ownership**:
 The authority-recorded relationship that identifies a flow run as top-level or
@@ -163,6 +197,18 @@ The canonical public rejection and admission fact containing the owning
 authority identity, contract, provider identity, watermark or generation, and
 closed legal actions.
 _Avoid_: Free-form error detail, caller-supplied authority
+
+**Review preparation facts**:
+The immutable `flow.review-preparation-facts/v1` envelope derived after
+RunAuthority joins the retained source run, ReviewAuthority supplies the
+sealed candidate, and WorkspaceAuthority supplies the exact workspace
+generation and Git fingerprint. Its route, catalog, operation, validator,
+four-part time, authority-fact, watermark, and digest fields are exact
+authority bindings; public queries and route snapshots are non-authoritative
+projections that cannot mint or replace them. A local-review caller may select
+the bounded review inputs and limits, but may not supply explicit facts or
+replace the derived envelope.
+_Avoid_: Latest projection, caller-supplied facts, forged authority envelope
 
 **Plan fingerprint**:
 The content digest of the canonical finite run-plan graph. It identifies the
@@ -717,6 +763,12 @@ The append-only ReviewAuthority result of one automated review, bound separately
 to the candidate seal watermark and review lifecycle generation; it records
 automated completion only and never grants human approval or integration power.
 _Avoid_: Approval record, merge decision
+
+**Automated review attempt**:
+One accepted local review flow run for an exact candidate and lifecycle, distinct
+from earlier reviews of the unchanged candidate. An attempt preserves earlier
+incomplete evidence and never implies human approval.
+_Avoid_: Candidate generation, replacement record, latest review
 
 **GitHub pull-request snapshot**:
 An immutable review target binding one open repository pull request to its base

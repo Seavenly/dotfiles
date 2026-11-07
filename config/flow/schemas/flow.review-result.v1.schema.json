@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.review-result.v1.schema.json",
+  "title": "flow.review-result/v1",
+  "description": "Structured local-review delegate output. Independent review semantics validate finding identities, location ordering, selected lenses and coverage reasons; evidence safety validates opaque evidence before transfer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "findings"],
+  "not": { "required": ["coverage", "terminal_disposition"] },
+  "properties": {
+    "schema": { "const": "flow.review-result/v1" },
+    "posture": { "enum": ["no_findings", "findings", "review_incomplete", "blocked", null] },
+    "findings": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/finding" } },
+    "coverage": { "$ref": "#/$defs/coverage" },
+    "terminal_disposition": { "$ref": "#/$defs/coverage" },
+    "evidence": { "$ref": "#/$defs/json-value" },
+    "cap_reasons": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/cap-reason" } }
+  },
+  "$defs": {
+    "safe-text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!\\s)(?!#{1,6}(?:\\s|$)|[-+*](?:\\s|$)|~{3,}|\\d+[.)](?:\\s|$))[^\\r\\n\\u2028\\u2029`<>]*[^\\s\\r\\n\\u2028\\u2029`<>]$"
+    },
+    "lens": { "$ref": "#/$defs/safe-text", "maxLength": 128 },
+    "urgency": { "enum": ["critical", "high", "medium", "low", "info"] },
+    "classification": { "enum": ["blocking", "non_blocking"] },
+    "summary": { "$ref": "#/$defs/safe-text", "maxLength": 240 },
+    "detail": { "$ref": "#/$defs/safe-text", "maxLength": 4000 },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "allOf": [
+        { "anyOf": [{ "required": ["urgency"] }, { "required": ["severity"] }] },
+        { "anyOf": [{ "required": ["summary"] }, { "required": ["title"] }] },
+        { "anyOf": [{ "required": ["detail"] }, { "required": ["description"] }] }
+      ],
+      "properties": {
+        "schema": { "const": "flow.review-finding/v1" },
+        "finding_id": { "type": "string", "pattern": "^finding:[0-9a-f]{64}$" },
+        "lens": { "$ref": "#/$defs/lens" },
+        "urgency": { "$ref": "#/$defs/urgency" },
+        "severity": { "$ref": "#/$defs/urgency" },
+        "classification": { "$ref": "#/$defs/classification" },
+        "blocking": { "type": "boolean" },
+        "summary": { "$ref": "#/$defs/summary" },
+        "title": { "$ref": "#/$defs/summary" },
+        "detail": { "$ref": "#/$defs/detail" },
+        "description": { "$ref": "#/$defs/detail" },
+        "location": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/location" }] },
+        "inline": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/location" }] },
+        "source": { "enum": ["lens", "critic", "review"] }
+      }
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "start_line"],
+      "properties": {
+        "path": { "$ref": "#/$defs/safe-text", "maxLength": 2048 },
+        "start_line": { "$ref": "#/$defs/positive-integer" },
+        "end_line": { "$ref": "#/$defs/positive-integer" },
+        "start_column": { "$ref": "#/$defs/positive-integer" },
+        "end_column": { "$ref": "#/$defs/positive-integer" }
+      }
+    },
+    "positive-integer": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "coverage": {
+      "anyOf": [
+        { "enum": ["produced", null] },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "if": {
+            "anyOf": [
+              { "required": ["status"], "properties": { "status": { "enum": ["degraded", "unavailable"] } } },
+              { "required": ["disposition"], "properties": { "status": { "type": "null" }, "disposition": { "enum": ["degraded", "unavailable"] } } },
+              { "required": ["terminal_disposition"], "properties": { "status": { "type": "null" }, "disposition": { "type": "null" }, "terminal_disposition": { "enum": ["degraded", "unavailable"] } } }
+            ]
+          },
+          "then": {
+            "anyOf": [
+              { "required": ["reason"], "properties": { "reason": { "$ref": "#/$defs/coverage-reason" } } },
+              { "required": ["code"], "properties": { "reason": { "type": "null" }, "code": { "$ref": "#/$defs/coverage-reason" } } }
+            ]
+          },
+          "properties": {
+            "schema": { "const": "flow.review-coverage/v1" },
+            "status": { "enum": ["produced", "degraded", "unavailable", null] },
+            "disposition": { "enum": ["produced", "degraded", "unavailable", null] },
+            "terminal_disposition": { "enum": ["produced", "degraded", "unavailable", null] },
+            "reason": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/coverage-reason" }] },
+            "code": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/coverage-reason" }] }
+          }
+        }
+      ]
+    },
+    "coverage-reason": { "$ref": "#/$defs/safe-text", "maxLength": 256 },
+    "cap-reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "detail"],
+      "properties": {
+        "code": { "$ref": "#/$defs/safe-text", "maxLength": 128 },
+        "detail": { "$ref": "#/$defs/safe-text", "maxLength": 512 },
+        "count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "omitted_urgencies": { "type": "array", "items": { "$ref": "#/$defs/urgency" } },
+        "overflow_urgencies": { "type": "array", "items": { "$ref": "#/$defs/urgency" } }
+      }
+    },
+    "json-value": {
+      "type": ["null", "boolean", "number", "string", "array", "object"],
+      "items": { "$ref": "#/$defs/json-value" },
+      "additionalProperties": { "$ref": "#/$defs/json-value" }
+    }
+  }
+}

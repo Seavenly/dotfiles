@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.task-observation.v1.schema.json",
+  "title": "flow.task-observation/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "flow.task-observation/v1"
+    },
+    "status": {
+      "enum": [
+        "proven_absent",
+        "still_running",
+        "completed",
+        "cancelled",
+        "quarantined",
+        "blocked",
+        "retired"
+      ]
+    },
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "code"
+      ]
+    },
+    "task": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "status"
+  ]
+}

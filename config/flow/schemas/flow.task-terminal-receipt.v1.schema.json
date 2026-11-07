@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.task-terminal-receipt.v1.schema.json",
+  "title": "flow.task-terminal-receipt/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "flow.task-terminal-receipt/v1"
+    },
+    "descriptor_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "input_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "stdout_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "stderr_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "exit_code": {
+      "type": "integer"
+    },
+    "worker_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start": {
+          "type": "string",
+          "minLength": 1
+        },
+        "group": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "boot": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "pid",
+        "start",
+        "group",
+        "boot"
+      ]
+    },
+    "child_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start": {
+          "type": "string",
+          "minLength": 1
+        },
+        "group": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "boot": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "pid",
+        "start",
+        "group",
+        "boot"
+      ]
+    },
+    "tree_retired": {
+      "const": true
+    },
+    "cancelled": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema",
+    "descriptor_digest",
+    "input_sha256",
+    "stdout_sha256",
+    "stderr_sha256",
+    "exit_code",
+    "worker_identity",
+    "child_identity",
+    "tree_retired",
+    "cancelled"
+  ]
+}

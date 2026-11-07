@@ -28,6 +28,24 @@ import {
 } from "./projection-builder.mjs";
 import { normalizeResultBindingRecord } from "./result-bindings.mjs";
 
+// An unresolved invocation is a continuation, not another physical attempt.
+// Durable admission separately requires a new owner on the same boot.
+export function unobservedCallerIdempotentInvocation(intent, events) {
+  if (intent.classification !== "caller_idempotent") return null;
+  let latest = null;
+  for (const event of events) {
+    if (event.effect_id !== intent.effect_id) continue;
+    if (["effect_invocation_started", "effect_invocation_resumed"].includes(
+      event.type,
+    )) latest = event;
+    else if (["effect_observation_recorded", "effect_receipt_recorded"].includes(
+      event.type,
+    )) latest = null;
+  }
+  return latest !== null && validateTimeFacts(latest.time_facts) &&
+      latest.time_facts.length > 0 ? latest : null;
+}
+
 export function foldRun(run, { watermark = runWatermark(run) } = {}) {
   const launchEvent = run.events.find(({ type }) => type === "run_launched");
   const launchOwnership = launchEvent?.run_ownership;
@@ -276,11 +294,15 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       : run.events.some(({ type }) => type === "run_succeeded")
         ? "succeeded"
         : "active";
-  const resourceDispositions = cancellationEvent?.resource_dispositions ??
+  const resourceDispositions = cancellationEvent?.resource_dispositions?.map(entry => ({ ...entry })) ??
     resourceClaims.map((claim) => ({
       claim,
       disposition: phase === "active" ? "held" : "released",
     }));
+  for (const event of run.events.filter(event => event.type === "cancelled_workspace_settled")) {
+    const item = resourceDispositions.find(item => digest(item.claim) === digest(event.resource_claim));
+    if (item) item.disposition = "released";
+  }
   const declinedGatedRevisions = revisionEvents.filter((revision) =>
     revision.repair?.checkpoint_id !== undefined &&
     revision.repair.checkpoint_id !== null &&
@@ -866,6 +888,9 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
 
   return freezeCanonical({
     schema: "flow.run-fold/v1",
+    ...(run.prepared.trust_posture?.execution_contract === "flow.supervised-native-cli/v1" &&
+      run.prepared.trust_posture.verification_scope?.schema === "flow.supervised-verification-scope/v1"
+      ? { trust_posture: run.prepared.trust_posture } : {}),
     run_id: run.run_id,
     ...(run.lineage === undefined ? {} : { parent: run.lineage }),
     run_ownership: runOwnership,
@@ -1187,6 +1212,18 @@ function activeElapsedBounds(events, currentFacts) {
       "effect_invocation_started",
       "effect_invocation_resumed",
     ].includes(event.type)) continue;
+    // A takeover resumes the same interval. Keep its original start so
+    // elapsed time is neither reset nor counted again over the overlap.
+    if (event.type === "effect_invocation_resumed") {
+      const previousIndex = events.slice(0, index).findLastIndex(candidate =>
+        candidate.effect_id === event.effect_id &&
+        ["effect_invocation_started", "effect_invocation_resumed"].includes(candidate.type));
+      const previous = events[previousIndex];
+      if (validateTimeFacts(event.time_facts) && event.time_facts.length > 0 &&
+          previous !== undefined && validateTimeFacts(previous.time_facts) && previous.time_facts.length > 0 &&
+          !events.slice(previousIndex + 1, index).some(candidate => candidate.type === "run_cancelled" ||
+            candidate.effect_id === event.effect_id && ["effect_observation_recorded", "effect_receipt_recorded"].includes(candidate.type))) continue;
+    }
     const settled = events.slice(index + 1).find((candidate) =>
       candidate.type === "run_cancelled" ||
       candidate.effect_id === event.effect_id && [

@@ -1,0 +1,25 @@
+# shellcheck shell=bash
+
+# Issue 46's retained live consumer proof is pinned independently of the normal
+# managed Tuicr version. Discover installed bytes only; check never provisions.
+dotfiles_flow_check_tuicr_directory() {
+  local directory executable version
+  if ! directory="$(MISE_AUTO_INSTALL=false mise where github:agavra/tuicr@0.19.0 2>/dev/null)" \
+    || [[ "$directory" != /* || ! -d "$directory" ]]; then
+    printf '%s\n' 'check: Flow prerequisite missing: install Tuicr 0.19.0 side by side as documented in config/flow/qualification/README.md; check never installs it.' >&2
+    return 1
+  fi
+  directory="$(cd -P "$directory" && pwd)"
+  executable="$directory/tuicr"
+  if [[ "$directory" != */github-agavra-tuicr/0.19.0 \
+    || ! -f "$executable" || ! -x "$executable" || -L "$executable" ]]; then
+    printf '%s\n' 'check: Flow prerequisite invalid: Tuicr must be the installed regular github-agavra-tuicr/0.19.0/tuicr executable; see config/flow/qualification/README.md.' >&2
+    return 1
+  fi
+  if ! version="$("$executable" --version 2>/dev/null)" \
+    || [[ "$version" != 'tuicr 0.19.0' ]]; then
+    printf '%s\n' 'check: Flow prerequisite invalid: the historical executable must report tuicr 0.19.0; see config/flow/qualification/README.md.' >&2
+    return 1
+  fi
+  printf '%s\n' "$directory"
+}

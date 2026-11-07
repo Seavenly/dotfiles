@@ -1,0 +1,271 @@
+{
+  "schema": "flow.c34-inflight-operation-store-fixture/v1",
+  "source_commit": "c34c6e881ce375691d4f3e4ca626c1af9eef81cc",
+  "source_proof": [
+    {
+      "path": "tools/flow/src/run-authority.mjs",
+      "sha256": "3cd14c016e4220cd880ad681ea89a195bc3b8a204356ac325c6dd0553935fcaf",
+      "exact_commit_bytes": true
+    },
+    {
+      "path": "tools/flow/src/run-projection.mjs",
+      "sha256": "7ef0882efddf661d2d8e73080eac40b056b8edd30c80c39fb943d7251b7fb96a",
+      "exact_commit_bytes": true
+    },
+    {
+      "path": "tools/flow/src/sqlite-authority-replay.mjs",
+      "sha256": "76719d10960acd8744a7a63c5b8a5f7e661a7b133a5f27730e0e068a7107ecee",
+      "exact_commit_bytes": true
+    },
+    {
+      "path": "tools/flow/test-support/fixed-host-identity.mjs",
+      "sha256": "785f0319920102f7f86957601ac2c9312637ce94ae024f46007e05cabb4f8aef",
+      "exact_commit_bytes": true
+    },
+    {
+      "path": "tools/flow/test-support/registered-operation.mjs",
+      "sha256": "93c07b6c8c5d76b898d836d8de31a62d14c00544469bf6fb6e020c735e231453",
+      "exact_commit_bytes": true
+    }
+  ],
+  "capture": {
+    "generator": "capture-old-store.mjs",
+    "node": "v22.23.1",
+    "host": "fixed nonsecret boot-a/process-a test identity",
+    "time": "fixed test wall/monotonic facts; not native host qualification",
+    "real_old_writer": true,
+    "no_native_provider_calls": true
+  },
+  "run_id": "run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86",
+  "intent": {
+    "attempt_id": "run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86:record-outcome:attempt:1",
+    "authority_boot_id": "boot-a",
+    "authority_epoch": 1,
+    "capability_envelopes": [],
+    "card_id": "record-outcome",
+    "card_identity": "sha256:d5633e30f49ff29b22a383851eaac740f3ac1c3b21535a77ae49387a1479616f",
+    "catalog_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "classification": "caller_idempotent",
+    "command_digest": "sha256:2ed099bcae886d783ab9382552ac39ab098577749a04680a060763e9bff2f3e6",
+    "decision_digest": "sha256:9c184025704f83782351d1b5ed9c051226a2647081c760bdfd9e408fb943c7c1",
+    "deferred_events": [
+      {
+        "attempt_id": "run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86:record-outcome:attempt:1",
+        "card_id": "record-outcome",
+        "type": "operation_completed"
+      },
+      {
+        "type": "run_succeeded"
+      }
+    ],
+    "effect_id": "effect:c18578e8d283b773c0b72e030ae3b18a628ca249e51083bd3d8245317e9656d0",
+    "idempotency_key": "operation:c18578e8d283b773c0b72e030ae3b18a628ca249e51083bd3d8245317e9656d0",
+    "max_attempts": 1,
+    "operation_contract": "flow.operation/conformance-record/v1",
+    "operation_contracts": [
+      "flow.operation/conformance-record/v1"
+    ],
+    "operation_input": {
+      "value": "accepted"
+    },
+    "resource_claims": [
+      {
+        "id": "outcome",
+        "kind": "test-record"
+      }
+    ],
+    "revision_ordinal": 0,
+    "route_binding": {
+      "adapter": "conformance-recorder"
+    },
+    "route_snapshot": {
+      "bindings": [],
+      "watermark": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "run_id": "run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86",
+    "schema": "flow.effect-intent/v1",
+    "source_authority_watermark": "sha256:ef29560714419447069393896e5e2f824073ff3dfa21621917be0b298e80dfa3",
+    "subject_generations": [],
+    "time_facts": [
+      {
+        "clock_source_id": "wall:host-a",
+        "kind": "wall_clock",
+        "schema": "flow.time-fact/v1",
+        "uncertainty_ms": 0,
+        "value_ms": 1700000000000
+      },
+      {
+        "clock_source_id": "mono:host-a",
+        "kind": "suspend_excluding_monotonic",
+        "schema": "flow.time-fact/v1",
+        "uncertainty_ns": "0",
+        "value_ns": "1000000000"
+      },
+      {
+        "boot_id": "boot-a",
+        "kind": "boot",
+        "schema": "flow.time-fact/v1"
+      },
+      {
+        "identity": "clockset:host-a:v1",
+        "kind": "clock_source",
+        "schema": "flow.time-fact/v1"
+      }
+    ],
+    "validator_contracts": [
+      "flow.validator/checkpoint-decision/v1",
+      "flow.validator/operation-receipt/v1"
+    ]
+  },
+  "tables": [
+    {
+      "name": "authority_events",
+      "sql": "CREATE TABLE authority_events (\n      stream_id TEXT NOT NULL,\n      sequence INTEGER NOT NULL CHECK (sequence > 0),\n      generation INTEGER NOT NULL CHECK (generation > 0),\n      contract TEXT NOT NULL,\n      payload_json TEXT NOT NULL,\n      payload_digest TEXT NOT NULL,\n      previous_digest TEXT NOT NULL,\n      record_digest TEXT NOT NULL,\n      authority_epoch INTEGER NOT NULL CHECK (authority_epoch > 0),\n      boot_id TEXT NOT NULL,\n      process_identity TEXT NOT NULL,\n      PRIMARY KEY (stream_id, sequence),\n      FOREIGN KEY (stream_id) REFERENCES authority_streams(stream_id)\n    )",
+      "rows": [
+        {
+          "stream_id": "host:admission",
+          "sequence": 1,
+          "generation": 1,
+          "contract": "flow.host-admission-event/v1",
+          "payload_json": "{\"authority_epoch\":1,\"boot_id\":\"boot-a\",\"declared_capacity\":4,\"process_identity\":\"process-a\",\"type\":\"authority_acquired\"}",
+          "payload_digest": "sha256:49f37a8fbcdb04315d5bf12203f2eb63e92711899102c52aebd41df4b44d67c8",
+          "previous_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "record_digest": "sha256:47935302e53ce311ebcf44fbcdfee5c73f1035a09baa6138cd5becc321ba6d29",
+          "authority_epoch": 1,
+          "boot_id": "boot-a",
+          "process_identity": "process-a"
+        },
+        {
+          "stream_id": "run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86",
+          "sequence": 1,
+          "generation": 1,
+          "contract": "flow.run-event/v1",
+          "payload_json": "{\"admission_time_facts\":[{\"clock_source_id\":\"wall:host-a\",\"kind\":\"wall_clock\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ms\":0,\"value_ms\":1700000000000},{\"clock_source_id\":\"mono:host-a\",\"kind\":\"suspend_excluding_monotonic\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ns\":\"0\",\"value_ns\":\"1000000000\"},{\"boot_id\":\"boot-a\",\"kind\":\"boot\",\"schema\":\"flow.time-fact/v1\"},{\"identity\":\"clockset:host-a:v1\",\"kind\":\"clock_source\",\"schema\":\"flow.time-fact/v1\"}],\"bundle_digest\":\"sha256:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\",\"closed_fact_observation_digest\":\"sha256:ee9c9a5f1d6285a83958c5194062ea74a3b6a1e2f1cdf966574c8485681d415f\",\"confirmation_digest\":\"sha256:0774be354fd2123ea6fa0b1d55cde455b6443626c0ab5b5999fd78139b9d787f\",\"plan_fingerprint\":\"sha256:a8ae322b01e550403caec848f527b66edeca9eb5e58c70219764f5b16f2e5573\",\"prepared\":{\"bundle_digest\":\"sha256:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\",\"confirmation\":{\"bundle_digest\":\"sha256:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\",\"execution_time_accounting\":{\"active_execution\":{\"definition\":\"sum_of_admitted_invocation_intervals\",\"excludes\":[\"human_checkpoint_wait\",\"passive_retained_wait\"]},\"authority\":{\"expansion\":\"exact_human_checkpoint_or_revision_authority\",\"limits\":\"exact_confirmed_run_and_attempt_bounds\",\"timer_ownership_transfer\":\"forbidden\"},\"fresh_observation_boundaries\":[\"admission\",\"before_dispatch\",\"receipt_or_failure\",\"cancellation_or_settlement\",\"timer_evaluation\"],\"schema\":\"flow.execution-time-accounting/v1\",\"uncertainty\":{\"missing_or_invalid_fact\":\"block_new_admission\",\"representation\":\"lower_upper_bounds\",\"straddling_decision\":\"block_new_admission\"},\"wall_elapsed\":{\"cross_boot_source\":\"wall_clock\",\"includes\":[\"accepted_baseline_to_current_observation\",\"human_checkpoint_wait\",\"passive_retained_wait\"],\"same_boot_source\":\"suspend_excluding_monotonic\"}},\"explicit_facts\":{\"block_observations\":[],\"capability_envelopes\":[],\"catalog_fingerprint\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"elapsed_seconds\":0,\"limits\":{\"max_capabilities\":0,\"max_cards\":1,\"max_cards_per_revision\":0,\"max_elapsed_seconds\":0,\"max_resources\":1,\"max_revisions\":0},\"operation_contracts\":[\"flow.operation/conformance-record/v1\"],\"resource_claims\":[{\"id\":\"outcome\",\"kind\":\"test-record\"}],\"route_snapshot\":{\"bindings\":[],\"watermark\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"},\"subject_generations\":[],\"time_facts\":[{\"clock_source_id\":\"wall:host-a\",\"kind\":\"wall_clock\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ms\":0,\"value_ms\":1700000000000},{\"clock_source_id\":\"mono:host-a\",\"kind\":\"suspend_excluding_monotonic\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ns\":\"0\",\"value_ns\":\"1000000000\"},{\"boot_id\":\"boot-a\",\"kind\":\"boot\",\"schema\":\"flow.time-fact/v1\"},{\"identity\":\"clockset:host-a:v1\",\"kind\":\"clock_source\",\"schema\":\"flow.time-fact/v1\"}],\"validator_contracts\":[\"flow.validator/checkpoint-decision/v1\",\"flow.validator/operation-receipt/v1\"]},\"graph\":{\"cards\":[{\"data_references\":[],\"dependencies\":[],\"evidence_references\":[],\"executor\":{\"contract\":\"flow.operation/conformance-record/v1\",\"effect_classification\":\"caller_idempotent\",\"kind\":\"operation\"},\"id\":\"record-outcome\",\"inputs\":{\"value\":\"accepted\"},\"limits\":{\"max_attempts\":1},\"outputs\":[\"receipt\"],\"recovery\":\"caller_idempotent\",\"resource_claims\":[{\"id\":\"outcome\",\"kind\":\"test-record\"}],\"route\":{\"adapter\":\"conformance-recorder\"},\"success_criteria\":[\"receipt:succeeded\"],\"validators\":[\"flow.validator/operation-receipt/v1\"]}],\"schema\":\"flow.run-plan/v1\"},\"requested_authority\":{\"capabilities\":[],\"commands\":[\"checkpoint_decision\",\"operation_execute\"],\"mutations\":[\"flow.operation/conformance-record/v1\"]},\"revision_templates\":[],\"schema\":\"flow.dynamic-plan-confirmation/v1\"},\"confirmation_digest\":\"sha256:0774be354fd2123ea6fa0b1d55cde455b6443626c0ab5b5999fd78139b9d787f\",\"explicit_facts\":{\"block_observations\":[],\"capability_envelopes\":[],\"catalog_fingerprint\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"elapsed_seconds\":0,\"limits\":{\"max_capabilities\":0,\"max_cards\":1,\"max_cards_per_revision\":0,\"max_elapsed_seconds\":0,\"max_resources\":1,\"max_revisions\":0},\"operation_contracts\":[\"flow.operation/conformance-record/v1\"],\"resource_claims\":[{\"id\":\"outcome\",\"kind\":\"test-record\"}],\"route_snapshot\":{\"bindings\":[],\"watermark\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"},\"subject_generations\":[],\"time_facts\":[{\"clock_source_id\":\"wall:host-a\",\"kind\":\"wall_clock\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ms\":0,\"value_ms\":1700000000000},{\"clock_source_id\":\"mono:host-a\",\"kind\":\"suspend_excluding_monotonic\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ns\":\"0\",\"value_ns\":\"1000000000\"},{\"boot_id\":\"boot-a\",\"kind\":\"boot\",\"schema\":\"flow.time-fact/v1\"},{\"identity\":\"clockset:host-a:v1\",\"kind\":\"clock_source\",\"schema\":\"flow.time-fact/v1\"}],\"validator_contracts\":[\"flow.validator/checkpoint-decision/v1\",\"flow.validator/operation-receipt/v1\"]},\"graph\":{\"cards\":[{\"data_references\":[],\"dependencies\":[],\"evidence_references\":[],\"executor\":{\"contract\":\"flow.operation/conformance-record/v1\",\"effect_classification\":\"caller_idempotent\",\"kind\":\"operation\"},\"id\":\"record-outcome\",\"inputs\":{\"value\":\"accepted\"},\"limits\":{\"max_attempts\":1},\"outputs\":[\"receipt\"],\"recovery\":\"caller_idempotent\",\"resource_claims\":[{\"id\":\"outcome\",\"kind\":\"test-record\"}],\"route\":{\"adapter\":\"conformance-recorder\"},\"success_criteria\":[\"receipt:succeeded\"],\"validators\":[\"flow.validator/operation-receipt/v1\"]}],\"schema\":\"flow.run-plan/v1\"},\"kind\":\"dynamic\",\"plan_fingerprint\":\"sha256:a8ae322b01e550403caec848f527b66edeca9eb5e58c70219764f5b16f2e5573\",\"requested_authority\":{\"capabilities\":[],\"commands\":[\"checkpoint_decision\",\"operation_execute\"],\"mutations\":[\"flow.operation/conformance-record/v1\"]},\"revision_templates\":[],\"schema\":\"flow.prepared-run/v1\"},\"run_ownership\":{\"parent_run_id\":null,\"schema\":\"flow.run-ownership/v1\",\"scope\":\"top_level\"},\"type\":\"run_launched\"}",
+          "payload_digest": "sha256:6e7c40c6dbdb24c63efc8911c99086566b57716a2002462b250d0c59269d513e",
+          "previous_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "record_digest": "sha256:614d2736e33c29c1eb67648c107515932776a99c233ff00444d447e767aac9a1",
+          "authority_epoch": 1,
+          "boot_id": "boot-a",
+          "process_identity": "process-a"
+        },
+        {
+          "stream_id": "host:runs",
+          "sequence": 1,
+          "generation": 1,
+          "contract": "flow.host-run-event/v1",
+          "payload_json": "{\"bundle_digest\":\"sha256:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\",\"run_id\":\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\",\"type\":\"run_registered\"}",
+          "payload_digest": "sha256:43d710d8ecbeae09d7652dd989a2554c9b9a3a957d36e2f4bd797c0db48a4c7a",
+          "previous_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "record_digest": "sha256:3510ad015d54fd0fd6d1e93ef438b6011b232c842409ea7b25932ba98d469f85",
+          "authority_epoch": 1,
+          "boot_id": "boot-a",
+          "process_identity": "process-a"
+        },
+        {
+          "stream_id": "host:admission",
+          "sequence": 2,
+          "generation": 1,
+          "contract": "flow.host-admission-event/v1",
+          "payload_json": "{\"run_id\":\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\",\"type\":\"run_capacity_reserved\"}",
+          "payload_digest": "sha256:aac5a15bd261d562cef72f60ae4c0bd66a94ff039a99d1e6bbb8a5d6f93e388a",
+          "previous_digest": "sha256:47935302e53ce311ebcf44fbcdfee5c73f1035a09baa6138cd5becc321ba6d29",
+          "record_digest": "sha256:196ae830e9ecc1428041db6e9c90dd5c197ded94fac7258ef5c1b47d8241fbde",
+          "authority_epoch": 1,
+          "boot_id": "boot-a",
+          "process_identity": "process-a"
+        },
+        {
+          "stream_id": "run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86",
+          "sequence": 2,
+          "generation": 1,
+          "contract": "flow.run-event/v1",
+          "payload_json": "{\"intent\":{\"attempt_id\":\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86:record-outcome:attempt:1\",\"authority_boot_id\":\"boot-a\",\"authority_epoch\":1,\"capability_envelopes\":[],\"card_id\":\"record-outcome\",\"card_identity\":\"sha256:d5633e30f49ff29b22a383851eaac740f3ac1c3b21535a77ae49387a1479616f\",\"catalog_fingerprint\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"classification\":\"caller_idempotent\",\"command_digest\":\"sha256:2ed099bcae886d783ab9382552ac39ab098577749a04680a060763e9bff2f3e6\",\"decision_digest\":\"sha256:9c184025704f83782351d1b5ed9c051226a2647081c760bdfd9e408fb943c7c1\",\"deferred_events\":[{\"attempt_id\":\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86:record-outcome:attempt:1\",\"card_id\":\"record-outcome\",\"type\":\"operation_completed\"},{\"type\":\"run_succeeded\"}],\"effect_id\":\"effect:c18578e8d283b773c0b72e030ae3b18a628ca249e51083bd3d8245317e9656d0\",\"idempotency_key\":\"operation:c18578e8d283b773c0b72e030ae3b18a628ca249e51083bd3d8245317e9656d0\",\"max_attempts\":1,\"operation_contract\":\"flow.operation/conformance-record/v1\",\"operation_contracts\":[\"flow.operation/conformance-record/v1\"],\"operation_input\":{\"value\":\"accepted\"},\"resource_claims\":[{\"id\":\"outcome\",\"kind\":\"test-record\"}],\"revision_ordinal\":0,\"route_binding\":{\"adapter\":\"conformance-recorder\"},\"route_snapshot\":{\"bindings\":[],\"watermark\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"},\"run_id\":\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\",\"schema\":\"flow.effect-intent/v1\",\"source_authority_watermark\":\"sha256:ef29560714419447069393896e5e2f824073ff3dfa21621917be0b298e80dfa3\",\"subject_generations\":[],\"time_facts\":[{\"clock_source_id\":\"wall:host-a\",\"kind\":\"wall_clock\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ms\":0,\"value_ms\":1700000000000},{\"clock_source_id\":\"mono:host-a\",\"kind\":\"suspend_excluding_monotonic\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ns\":\"0\",\"value_ns\":\"1000000000\"},{\"boot_id\":\"boot-a\",\"kind\":\"boot\",\"schema\":\"flow.time-fact/v1\"},{\"identity\":\"clockset:host-a:v1\",\"kind\":\"clock_source\",\"schema\":\"flow.time-fact/v1\"}],\"validator_contracts\":[\"flow.validator/checkpoint-decision/v1\",\"flow.validator/operation-receipt/v1\"]},\"type\":\"effect_intent_recorded\"}",
+          "payload_digest": "sha256:746b35d63dd4e32f43a75a429d68d8eef7e76e33222c23190e64e6346cd8ae9c",
+          "previous_digest": "sha256:614d2736e33c29c1eb67648c107515932776a99c233ff00444d447e767aac9a1",
+          "record_digest": "sha256:e9b83e31a1196c94fa3335bcbb277858aaa6c7e0452755a02f93d189c6f213a2",
+          "authority_epoch": 1,
+          "boot_id": "boot-a",
+          "process_identity": "process-a"
+        },
+        {
+          "stream_id": "run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86",
+          "sequence": 3,
+          "generation": 1,
+          "contract": "flow.run-event/v1",
+          "payload_json": "{\"authority_epoch\":1,\"effect_id\":\"effect:c18578e8d283b773c0b72e030ae3b18a628ca249e51083bd3d8245317e9656d0\",\"time_facts\":[{\"clock_source_id\":\"wall:host-a\",\"kind\":\"wall_clock\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ms\":0,\"value_ms\":1700000000000},{\"clock_source_id\":\"mono:host-a\",\"kind\":\"suspend_excluding_monotonic\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ns\":\"0\",\"value_ns\":\"1000000000\"},{\"boot_id\":\"boot-a\",\"kind\":\"boot\",\"schema\":\"flow.time-fact/v1\"},{\"identity\":\"clockset:host-a:v1\",\"kind\":\"clock_source\",\"schema\":\"flow.time-fact/v1\"}],\"type\":\"effect_invocation_started\"}",
+          "payload_digest": "sha256:704c788b40859b6744c6152fa136fd32b3a0325c2e80a85c551460e106ee25c4",
+          "previous_digest": "sha256:e9b83e31a1196c94fa3335bcbb277858aaa6c7e0452755a02f93d189c6f213a2",
+          "record_digest": "sha256:3aaade9ff89765ab2629c4263684202640a4ff56d903b3592063e579ccb226e2",
+          "authority_epoch": 1,
+          "boot_id": "boot-a",
+          "process_identity": "process-a"
+        }
+      ]
+    },
+    {
+      "name": "authority_metadata",
+      "sql": "CREATE TABLE authority_metadata (\n      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),\n      contract TEXT NOT NULL,\n      schema_version INTEGER NOT NULL CHECK (schema_version > 0),\n      transition_release_json TEXT NOT NULL,\n      transition_sequence INTEGER NOT NULL CHECK (transition_sequence > 0)\n    )",
+      "rows": [
+        {
+          "singleton": 1,
+          "contract": "flow.sqlite-authority-store/v1",
+          "schema_version": 2,
+          "transition_release_json": "{\"schema\":\"flow.runtime-release/v1\",\"id\":\"flow-runtime-authority-schema/v2\",\"catalog_version\":8}",
+          "transition_sequence": 1
+        }
+      ]
+    },
+    {
+      "name": "authority_schema_transitions",
+      "sql": "CREATE TABLE authority_schema_transitions (\n      sequence INTEGER PRIMARY KEY CHECK (sequence > 0),\n      contract TEXT NOT NULL,\n      from_version INTEGER NOT NULL CHECK (from_version >= 0),\n      to_version INTEGER NOT NULL CHECK (to_version > from_version),\n      transition_release_json TEXT NOT NULL,\n      previous_digest TEXT NOT NULL,\n      record_digest TEXT NOT NULL\n    )",
+      "rows": [
+        {
+          "sequence": 1,
+          "contract": "flow.sqlite-authority-store/v1",
+          "from_version": 0,
+          "to_version": 2,
+          "transition_release_json": "{\"schema\":\"flow.runtime-release/v1\",\"id\":\"flow-runtime-authority-schema/v2\",\"catalog_version\":8}",
+          "previous_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "record_digest": "sha256:1c54331ffe8f5081073a392bbba39f59781628f0eb29ae449997958d4e70d898"
+        }
+      ]
+    },
+    {
+      "name": "authority_streams",
+      "sql": "CREATE TABLE authority_streams (\n      stream_id TEXT PRIMARY KEY,\n      stream_kind TEXT NOT NULL,\n      generation INTEGER NOT NULL CHECK (generation > 0),\n      head_sequence INTEGER NOT NULL CHECK (head_sequence >= 0),\n      head_digest TEXT NOT NULL,\n      fold_contract TEXT,\n      fold_json TEXT,\n      fold_digest TEXT\n    )",
+      "rows": [
+        {
+          "stream_id": "host:admission",
+          "stream_kind": "host_admission",
+          "generation": 1,
+          "head_sequence": 2,
+          "head_digest": "sha256:196ae830e9ecc1428041db6e9c90dd5c197ded94fac7258ef5c1b47d8241fbde",
+          "fold_contract": "flow.host-admission-fold/v1",
+          "fold_json": "{\"active_runs\":[\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\"],\"authority_epoch\":1,\"boot_id\":\"boot-a\",\"declared_capacity\":4,\"process_identity\":\"process-a\",\"schema\":\"flow.host-admission-fold/v1\",\"watermark\":\"sha256:196ae830e9ecc1428041db6e9c90dd5c197ded94fac7258ef5c1b47d8241fbde\"}",
+          "fold_digest": "sha256:896d87f71f2fbc68aa0a564114593a5345400908eb84361c09fb5beb1c42bc90"
+        },
+        {
+          "stream_id": "run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86",
+          "stream_kind": "run",
+          "generation": 1,
+          "head_sequence": 3,
+          "head_digest": "sha256:3aaade9ff89765ab2629c4263684202640a4ff56d903b3592063e579ccb226e2",
+          "fold_contract": "flow.run-fold/v1",
+          "fold_json": "{\"active_plan\":{\"cards\":[{\"data_references\":[],\"dependencies\":[],\"evidence_references\":[],\"executor\":{\"contract\":\"flow.operation/conformance-record/v1\",\"effect_classification\":\"caller_idempotent\",\"kind\":\"operation\"},\"id\":\"record-outcome\",\"inputs\":{\"value\":\"accepted\"},\"limits\":{\"max_attempts\":1},\"outputs\":[\"receipt\"],\"recovery\":\"caller_idempotent\",\"resource_claims\":[{\"id\":\"outcome\",\"kind\":\"test-record\"}],\"route\":{\"adapter\":\"conformance-recorder\"},\"success_criteria\":[\"receipt:succeeded\"],\"validators\":[\"flow.validator/operation-receipt/v1\"]}],\"schema\":\"flow.run-plan/v1\"},\"admission_capability_bindings\":[],\"admission_limits\":{\"max_capabilities\":0,\"max_cards\":1,\"max_cards_per_revision\":0,\"max_elapsed_seconds\":0,\"max_resources\":1,\"max_revisions\":0},\"admission_resource_claims\":[{\"id\":\"outcome\",\"kind\":\"test-record\"}],\"attempts\":[{\"attempt_id\":\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86:record-outcome:attempt:1\",\"card_id\":\"record-outcome\",\"effect_id\":\"effect:c18578e8d283b773c0b72e030ae3b18a628ca249e51083bd3d8245317e9656d0\",\"retry\":{\"consumed_attempts\":1,\"max_attempts\":1,\"not_before\":null,\"remaining_attempts\":0,\"schema\":\"flow.operation-retry-projection/v1\",\"status\":\"exhausted\"},\"status\":\"active\"}],\"blocks\":[],\"bundle_digest\":\"sha256:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\",\"capabilities\":[],\"capability_bindings\":[],\"capability_envelopes\":[],\"cards\":[{\"executor_kind\":\"operation\",\"id\":\"record-outcome\",\"status\":\"executing\"}],\"current_revision\":{\"ordinal\":0,\"plan_fingerprint\":\"sha256:a8ae322b01e550403caec848f527b66edeca9eb5e58c70219764f5b16f2e5573\"},\"delegate_attempts\":[],\"effect_intents\":[{\"attempt_id\":\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86:record-outcome:attempt:1\",\"authority_boot_id\":\"boot-a\",\"authority_epoch\":1,\"capability_envelopes\":[],\"card_id\":\"record-outcome\",\"card_identity\":\"sha256:d5633e30f49ff29b22a383851eaac740f3ac1c3b21535a77ae49387a1479616f\",\"catalog_fingerprint\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"classification\":\"caller_idempotent\",\"command_digest\":\"sha256:2ed099bcae886d783ab9382552ac39ab098577749a04680a060763e9bff2f3e6\",\"decision_digest\":\"sha256:9c184025704f83782351d1b5ed9c051226a2647081c760bdfd9e408fb943c7c1\",\"deferred_events\":[{\"attempt_id\":\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86:record-outcome:attempt:1\",\"card_id\":\"record-outcome\",\"type\":\"operation_completed\"},{\"type\":\"run_succeeded\"}],\"effect_id\":\"effect:c18578e8d283b773c0b72e030ae3b18a628ca249e51083bd3d8245317e9656d0\",\"idempotency_key\":\"operation:c18578e8d283b773c0b72e030ae3b18a628ca249e51083bd3d8245317e9656d0\",\"max_attempts\":1,\"operation_contract\":\"flow.operation/conformance-record/v1\",\"operation_contracts\":[\"flow.operation/conformance-record/v1\"],\"operation_input\":{\"value\":\"accepted\"},\"resource_claims\":[{\"id\":\"outcome\",\"kind\":\"test-record\"}],\"revision_ordinal\":0,\"route_binding\":{\"adapter\":\"conformance-recorder\"},\"route_snapshot\":{\"bindings\":[],\"watermark\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"},\"run_id\":\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\",\"schema\":\"flow.effect-intent/v1\",\"source_authority_watermark\":\"sha256:ef29560714419447069393896e5e2f824073ff3dfa21621917be0b298e80dfa3\",\"subject_generations\":[],\"time_facts\":[{\"clock_source_id\":\"wall:host-a\",\"kind\":\"wall_clock\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ms\":0,\"value_ms\":1700000000000},{\"clock_source_id\":\"mono:host-a\",\"kind\":\"suspend_excluding_monotonic\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ns\":\"0\",\"value_ns\":\"1000000000\"},{\"boot_id\":\"boot-a\",\"kind\":\"boot\",\"schema\":\"flow.time-fact/v1\"},{\"identity\":\"clockset:host-a:v1\",\"kind\":\"clock_source\",\"schema\":\"flow.time-fact/v1\"}],\"validator_contracts\":[\"flow.validator/checkpoint-decision/v1\",\"flow.validator/operation-receipt/v1\"]}],\"effects\":[{\"attempt_id\":\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86:record-outcome:attempt:1\",\"card_id\":\"record-outcome\",\"classification\":\"caller_idempotent\",\"disposition\":\"accepted\",\"effect_id\":\"effect:c18578e8d283b773c0b72e030ae3b18a628ca249e51083bd3d8245317e9656d0\",\"effect_kind\":\"operation\",\"idempotency_key\":\"operation:c18578e8d283b773c0b72e030ae3b18a628ca249e51083bd3d8245317e9656d0\",\"invocation_started\":true,\"last_observation\":null,\"operation_contract\":\"flow.operation/conformance-record/v1\",\"operation_input\":{\"value\":\"accepted\"},\"receipt\":null,\"retry\":{\"consumed_attempts\":1,\"max_attempts\":1,\"not_before\":null,\"remaining_attempts\":0,\"schema\":\"flow.operation-retry-projection/v1\",\"status\":\"exhausted\"},\"route_binding\":{\"adapter\":\"conformance-recorder\"},\"run_id\":\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\",\"source_authority_watermark\":\"sha256:ef29560714419447069393896e5e2f824073ff3dfa21621917be0b298e80dfa3\",\"status\":\"unresolved\"}],\"elapsed_seconds\":0,\"grants\":[],\"handoffs\":[],\"legal_actions\":[],\"limits\":{\"max_capabilities\":0,\"max_cards\":1,\"max_cards_per_revision\":0,\"max_elapsed_seconds\":0,\"max_resources\":1,\"max_revisions\":0},\"phase\":\"active\",\"plan_fingerprint\":\"sha256:a8ae322b01e550403caec848f527b66edeca9eb5e58c70219764f5b16f2e5573\",\"progress\":\"executing\",\"quarantined_delegate_outputs\":[],\"resource_claims\":[{\"id\":\"outcome\",\"kind\":\"test-record\"}],\"resource_dispositions\":[{\"claim\":{\"id\":\"outcome\",\"kind\":\"test-record\"},\"disposition\":\"held\"}],\"resource_handoff_bindings\":[],\"result_bindings\":[],\"revision_outcomes\":[],\"revision_reservations\":{\"capability_additions\":[],\"limit_changes\":{},\"resource_additions\":[]},\"revision_templates\":[],\"revisions\":[],\"run_id\":\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\",\"run_ownership\":{\"parent_run_id\":null,\"schema\":\"flow.run-ownership/v1\",\"scope\":\"top_level\"},\"schema\":\"flow.run-fold/v1\",\"sequence\":3,\"subruns\":[],\"superseded_cards\":[],\"time_facts\":[{\"clock_source_id\":\"wall:host-a\",\"kind\":\"wall_clock\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ms\":0,\"value_ms\":1700000000000},{\"clock_source_id\":\"mono:host-a\",\"kind\":\"suspend_excluding_monotonic\",\"schema\":\"flow.time-fact/v1\",\"uncertainty_ns\":\"0\",\"value_ns\":\"1000000000\"},{\"boot_id\":\"boot-a\",\"kind\":\"boot\",\"schema\":\"flow.time-fact/v1\"},{\"identity\":\"clockset:host-a:v1\",\"kind\":\"clock_source\",\"schema\":\"flow.time-fact/v1\"}],\"watermark\":\"sha256:3aaade9ff89765ab2629c4263684202640a4ff56d903b3592063e579ccb226e2\"}",
+          "fold_digest": "sha256:bdf6c68fa49ee90c2e4b3ffb2754e733b5c9a459e4ece684a766246616eca4b9"
+        },
+        {
+          "stream_id": "host:runs",
+          "stream_kind": "host_runs",
+          "generation": 1,
+          "head_sequence": 1,
+          "head_digest": "sha256:3510ad015d54fd0fd6d1e93ef438b6011b232c842409ea7b25932ba98d469f85",
+          "fold_contract": "flow.run-index-projection/v1",
+          "fold_json": "{\"runs\":[\"run:b7949b63241b42ce0310462f77554bddc56beb3c75b55b8130b59fe97bfacb86\"],\"schema\":\"flow.run-index-projection/v1\",\"watermark\":\"sha256:3510ad015d54fd0fd6d1e93ef438b6011b232c842409ea7b25932ba98d469f85\"}",
+          "fold_digest": "sha256:8f3cf1af4d83d996515297461c72f8807b5db9df435396693100a0e8c7e2655b"
+        }
+      ]
+    }
+  ],
+  "tables_sha256": "3758ea9c03c0988e51cd591faf0cce672658d1ac38305954d7ce0abedd0d2f38"
+}

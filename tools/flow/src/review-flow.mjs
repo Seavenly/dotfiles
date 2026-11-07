@@ -1,3 +1,4 @@
+import { isDirectDescription, directDescriptionIssue } from "./execution-contract.mjs";
 import {
   digest,
   freezeCanonical,
@@ -22,6 +23,10 @@ import { validateReviewCandidate } from "./review-candidate.mjs";
 import {
   SHIPPED_PREDEFINED_AUTHORITY_REQUIREMENTS,
 } from "./authority-bindings.mjs";
+import {
+  reviewExplicitFactsFromPreparationFacts,
+  validateReviewPreparationFacts,
+} from "./review-preparation-facts.mjs";
 import {
   DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA,
   DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
@@ -325,7 +330,13 @@ export function createReviewDefinition() {
 }
 
 export function compileReviewSelection({ inputs, explicit_facts: explicitFacts }) {
-  const selection = validateReviewInputs(inputs, explicitFacts);
+  const materializedFacts = explicitFacts ??
+    (inputs?.preparation_facts === undefined
+      ? explicitFacts
+      : reviewExplicitFactsFromPreparationFacts(inputs.preparation_facts, {
+          limits: inputs.limits,
+        }));
+  const selection = validateReviewInputs(inputs, materializedFacts);
   const cards = reviewCards(selection);
   return {
     schema: "flow.dynamic-plan-proposal/v1",
@@ -349,7 +360,7 @@ export function compileReviewSelection({ inputs, explicit_facts: explicitFacts }
           : []),
       ],
     },
-    explicit_facts: explicitFacts,
+    explicit_facts: materializedFacts,
     revision_templates: [],
   };
 }
@@ -393,6 +404,35 @@ export function validateReviewInputs(inputs, explicitFacts) {
       "invalid_review_target",
       "review/v1 requires one exact local candidate or GitHub pull-request snapshot",
     );
+  }
+  if (inputs.preparation_facts !== undefined) {
+    const preparationValidation = validateReviewPreparationFacts(
+      inputs.preparation_facts,
+    );
+    if (!preparationValidation.valid) {
+      invalidReview(
+        preparationValidation.issues[0]?.code ?? "facts_changed",
+        preparationValidation.issues[0]?.reason ??
+          "review preparation facts are invalid",
+      );
+    }
+    if (targetKind === "local" &&
+        (inputs.preparation_facts.candidate.candidate_id !==
+          target.candidate.candidate_id ||
+         inputs.preparation_facts.candidate.candidate_fingerprint !==
+          target.candidate_fingerprint)) {
+      invalidReview(
+        "preparation_facts_candidate_mismatch",
+        "review preparation facts do not identify the exact review target",
+      );
+    }
+    if (targetKind === "local" &&
+        !preparationDelegationMatches(inputs, inputs.preparation_facts)) {
+      invalidReview(
+        "preparation_facts_route_mismatch",
+        "review delegation routes are not the exact authority-observed selections",
+      );
+    }
   }
   if (!Array.isArray(inputs.lenses) || inputs.lenses.length === 0 ||
       new Set(inputs.lenses).size !== inputs.lenses.length ||
@@ -491,6 +531,34 @@ export function validateReviewInputs(inputs, explicitFacts) {
     orientation,
     diagrams,
     create_pending_review: createPendingReview,
+  });
+}
+
+function preparationDelegationMatches(inputs, facts) {
+  const expected = new Map((facts.route?.bindings ?? []).map((binding) => [
+    binding.card_id,
+    { route: binding.route, description: binding.description },
+  ]));
+  const actual = [];
+  for (const lens of inputs.lenses ?? []) {
+    const binding = inputs.delegation?.lenses?.[lens];
+    actual.push({
+      card_id: `review-lens-${lens}`,
+      route: binding?.route,
+      description: binding?.description,
+    });
+  }
+  actual.push({
+    card_id: "review-critic",
+    route: inputs.delegation?.critic?.route,
+    description: inputs.delegation?.critic?.description,
+  });
+  if (expected.size !== actual.length) return false;
+  return actual.every(({ card_id, route, description }) => {
+    const observed = expected.get(card_id);
+    return observed !== undefined &&
+      isDeepEqualDigest(observed.route, route) &&
+      isDeepEqualDigest(observed.description, description);
   });
 }
 
@@ -764,7 +832,7 @@ function terminalCandidateLifecycleProjection(projection) {
   });
 }
 
-function reviewCandidateProjectionIssue(target, projection) {
+export function reviewCandidateProjectionIssue(target, projection) {
   const lifecycleStatus = candidateLifecycleStatus(projection);
   if (projection?.schema !== "work.review-candidate-projection/v1" ||
       projection.contract !== "work.review/v1" ||
@@ -1388,8 +1456,14 @@ function validateDelegation(delegation, lenses, explicitFacts) {
 function validateBinding(binding, role, explicitFacts) {
   const description = binding?.description;
   const route = binding?.route;
+  let directDescriptionValid = false;
+  if (isDirectDescription(description)) {
+    try { directDescriptionValid = directDescriptionIssue(description) === null; }
+    catch { directDescriptionValid = false; }
+  }
   if (!isRecord(binding) || !isRecord(description) ||
-      description.schema !== "drovr.delegated-agent-description/v1" ||
+      (description.schema !== "drovr.delegated-agent-description/v1" &&
+        !directDescriptionValid) ||
       !isDigest(description.description_digest) ||
       !isDigest(description.comparison_keys?.launch) ||
       !isDigest(description.comparison_keys?.effective_authority) ||
@@ -1499,10 +1573,22 @@ export function createReviewOperationRegistration({
         throw reviewValidationError(candidateIssue.code, candidateIssue.reason);
       }
       const materialized = input.authority_materialized_evidence;
-      const current = reviewAuthority.query({
+      const legacy = reviewAuthority.query({
         contract: "work.review/v1",
         subject_id: reviewSubjectId(target),
       });
+      // Recovery must adopt an exact pre-attempt-identity record, never create
+      // a second result for an already recorded effect in the same run.
+      if (legacy?.schema === "flow.review-projection/v1" &&
+          legacy.source_run_id === intent.run_id &&
+          (legacy.operation_effect_id !== intent.effect_id ||
+           legacy.operation_attempt_id !== intent.attempt_id ||
+           legacy.operation_idempotency_key !== intent.idempotency_key)) {
+        throw reviewValidationError("idempotency_conflict", "review run already owns a different recorded attempt");
+      }
+      const subjectId = reviewSubjectId(target, intent.run_id);
+      const current = legacy?.schema === "flow.review-projection/v1" && legacy.source_run_id === intent.run_id
+        ? legacy : reviewAuthority.query({ contract: "work.review/v1", subject_id: subjectId });
       const previousWatermark = current?.schema === "flow.review-projection/v1"
         ? current.watermark
         : EMPTY_WATERMARK;
@@ -1589,7 +1675,7 @@ export function createReviewOperationRegistration({
       });
       const eventBody = {
         schema: "flow.review-record/v1",
-        review_id: reviewSubjectId(target),
+        review_id: subjectId,
         candidate_fingerprint: target.candidate.candidate_fingerprint,
         candidate_authority_watermark: target.candidate_authority_watermark,
         lifecycle_generation: target.lifecycle_generation,
@@ -1623,8 +1709,8 @@ export function createReviewOperationRegistration({
         schema: "work.review-record-command/v1",
         type: "review_record",
         contract: "work.review/v1",
-        subject_id: reviewSubjectId(target),
-        command_id: `review-record:${target.candidate.candidate_fingerprint}:${target.lifecycle_generation}`,
+        subject_id: subjectId,
+        command_id: reviewRecordCommandId(target.candidate.candidate_fingerprint, target.lifecycle_generation, intent.run_id),
         expected_watermark: previousWatermark,
         candidate_fingerprint: target.candidate.candidate_fingerprint,
         candidate_authority_watermark: target.candidate_authority_watermark,
@@ -4040,13 +4126,16 @@ export function validateReviewRecordCommand(command) {
       "review record requires an exact RunAuthority source run",
     );
   }
-  if (!nonEmpty(command.command_id) ||
-      command.command_id !==
-        `review-record:${command.candidate_fingerprint}:${command.lifecycle_generation}` ||
+  const legacyIdentity = command.subject_id ===
+      `review:${command.candidate_fingerprint}:${command.lifecycle_generation}` &&
+    command.command_id === reviewRecordCommandId(command.candidate_fingerprint, command.lifecycle_generation);
+  const attemptIdentity = command.subject_id ===
+      `review:${command.candidate_fingerprint}:${command.lifecycle_generation}${reviewAttemptSuffix(command.source_run_id)}` &&
+    command.command_id === reviewRecordCommandId(command.candidate_fingerprint, command.lifecycle_generation, command.source_run_id);
+  if (!(legacyIdentity || attemptIdentity) ||
       !isDigest(command.candidate_fingerprint) ||
       !isDigest(command.candidate_authority_watermark) ||
       !Number.isSafeInteger(command.lifecycle_generation) || command.lifecycle_generation < 1 ||
-      command.subject_id !== `review:${command.candidate_fingerprint}:${command.lifecycle_generation}` ||
       command.operation_contract !== REVIEW_OPERATION_CONTRACTS.record ||
       !nonEmpty(command.operation_effect_id) ||
       !nonEmpty(command.operation_attempt_id) ||
@@ -4613,10 +4702,20 @@ function oneShot(value) {
   };
 }
 
-export function reviewSubjectId(target) {
+export function reviewSubjectId(target, sourceRunId = null) {
   return reviewTargetKind(target) === "github"
     ? `review:github:${target.snapshot_fingerprint}:${target.lifecycle_generation}`
-    : `review:${target.candidate.candidate_fingerprint}:${target.lifecycle_generation}`;
+    : `review:${target.candidate.candidate_fingerprint}:${target.lifecycle_generation}${reviewAttemptSuffix(sourceRunId)}`;
+}
+
+function reviewAttemptSuffix(sourceRunId) {
+  if (sourceRunId === null) return "";
+  if (!nonEmpty(sourceRunId)) throw reviewValidationError("invalid_review_record", "review attempt requires its exact source run");
+  return `:run:${digest(sourceRunId).slice(7)}`;
+}
+
+function reviewRecordCommandId(fingerprint, lifecycleGeneration, sourceRunId = null) {
+  return `review-record:${fingerprint}:${lifecycleGeneration}${reviewAttemptSuffix(sourceRunId)}`;
 }
 
 export function reviewEventWatermark({ previousWatermark, event }) {

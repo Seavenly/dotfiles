@@ -51,6 +51,7 @@ import {
 } from "./reboot-revalidation.mjs";
 import { validateTimeFacts } from "./reboot-facts.mjs";
 import {
+  unobservedCallerIdempotentInvocation,
   applyExecutionTimeObservation,
   foldRun,
   projectRun,
@@ -519,6 +520,22 @@ export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {})
       return hostProjection();
     },
 
+    queryByReviewCandidateReference(reference = {}) {
+      return queryRetainedSourceRunByReviewCandidateReference({
+        reference,
+        hostProjection: hostProjection(),
+        readRun: (runId) => {
+          const run = runs.get(runId);
+          if (!run) return null;
+          return projectRunWithHostBarrier(projectRun({
+            authorityEventStreamDigest: runWatermark(run),
+            fold: foldRun(run),
+            events: run.events,
+          }), hostProjection());
+        },
+      });
+    },
+
     watch(runId, { unrefPollTimer = false } = {}) {
       const run = runs.get(runId);
       if (!run) {
@@ -696,7 +713,7 @@ export function createDurableRunAuthority({
   const bootId = hostIdentity.boot_id;
   const processIdentity = hostIdentity.process_identity;
   const recoveryAdapter = snapshotBackupRestoreAdapter(backupRestoreAdapter);
-  const fenceRun = (database, stream) => fencedRunFold(
+  const fenceRun = (database, stream) => withCancelledWorkspaceSettlement(database, stream, fencedRunFold(
     database,
     stream,
     rebootObservationAdapter,
@@ -705,7 +722,7 @@ export function createDurableRunAuthority({
       retryTimeObservation: observeRetryTime(retryTimeAdapter),
       executionTimeObservation: observeExecutionTime(timeObservationAdapter, bootId),
     },
-  );
+  ));
   const fenceRunWithoutAuthorityRevalidation = (database, stream) =>
     fencedRunFold(
       database,
@@ -1508,6 +1525,13 @@ export function createDurableRunAuthority({
           );
         }
         const fold = fenceRun(database, stream);
+        if (command?.type === "recovery" && command.recovery === "settle_cancelled_workspace") {
+          const result = settleCancelledWorkspace(database, stream, command, {
+            fenceRun, gitWorkspaceObservationAdapter, lockDatabase, authorityEpoch, bootId, processIdentity,
+          });
+          for (const watcher of watchers.get(command.run_id) ?? []) watcher.publish(this.query(command.run_id));
+          return result;
+        }
         let canonicalCommand;
         let commandDigest;
         try {
@@ -2148,6 +2172,14 @@ export function createDurableRunAuthority({
       }
     },
 
+    queryByReviewCandidateReference(reference = {}) {
+      return queryRetainedSourceRunByReviewCandidateReference({
+        reference,
+        hostProjection: this.query(),
+        readRun: (runId) => this.query(runId),
+      });
+    },
+
     watch(runId, { unrefPollTimer = false } = {}) {
       assertOpen();
       const initial = this.query(runId);
@@ -2269,6 +2301,12 @@ export function createDurableRunAuthority({
           latestInvocation?.type === "effect_invocation_started" &&
           (!validateTimeFacts(latestInvocation.time_facts) ||
             latestInvocation.time_facts.length === 0);
+        const unobservedInvocation = unobservedCallerIdempotentInvocation(intent, runEventsFromRecords(stream.records));
+        const resumesUnobservedIdempotentInvocation = reconciliation === null &&
+          adapter?.operatorRecovery === true && intent.authority_boot_id === bootId &&
+          intent.authority_epoch < authorityEpoch &&
+          unobservedInvocation !== null && unobservedInvocation.authority_epoch < authorityEpoch;
+        const resumesInvocation = resumesUnknownInvocation || resumesUnobservedIdempotentInvocation;
         const observedPresence = validateEffectObservation(
           latestObservation,
           intent,
@@ -2344,7 +2382,7 @@ export function createDurableRunAuthority({
           payload.effect_id === intent.effect_id);
         if (reconciliation !== "adopt_present" &&
             reconciliation !== "settle_absent" &&
-            !resumesUnknownInvocation &&
+            !resumesInvocation &&
             (intent.effect_kind === undefined || intent.effect_kind === "operation")) {
           const invocationCount = stream.records.filter(({ payload }) =>
             payload.type === "effect_invocation_started" &&
@@ -2457,10 +2495,10 @@ export function createDurableRunAuthority({
             );
           }
           assertDurableHostRestoreClear(database);
-          const recordsInvocationStart = !resumesUnknownInvocation &&
+          const recordsInvocationStart = !resumesInvocation &&
             (!settleCancelled ||
               effectiveIntent.effect_kind === "delegate_cancellation");
-          if (recordsInvocationStart || resumesUnknownInvocation) {
+          if (recordsInvocationStart || resumesInvocation) {
             // beforeEffect is the last injected boundary before dispatch. It
             // may advance time or invalidate an authority fence, so it must
             // run before the final typed time observation and invocation
@@ -5219,6 +5257,33 @@ function fencedRunFold(
     authority_epoch: admission.authority_epoch,
     authority_boot_id: admission.boot_id,
   });
+  // Recovery under a newer owner is a fenced query decision. Keep the
+  // persisted reducer output compatible with stores written before takeover
+  // recovery was supported.
+  const runEvents = runEventsFromRecords(stream.records);
+  const recoveryActions = stream.fold.phase === "active"
+    ? stream.fold.effect_intents.flatMap((intent) => {
+        const effect = stream.fold.effects.find(({ effect_id: effectId }) =>
+          effectId === intent.effect_id);
+        const invocation = unobservedCallerIdempotentInvocation(intent, runEvents);
+        if (effect?.retry?.status !== "exhausted" || effect.receipt !== null ||
+            invocation === null || intent.authority_boot_id !== admission.boot_id ||
+            intent.authority_epoch >= admission.authority_epoch ||
+            invocation.authority_epoch >= admission.authority_epoch ||
+            stream.fold.legal_actions.some((action) =>
+              action.type === "recovery" && action.effect_id === intent.effect_id)) {
+          return [];
+        }
+        return [{
+          schema: "flow.command/v1",
+          type: "recovery",
+          run_id: stream.fold.run_id,
+          effect_id: intent.effect_id,
+          recovery: effectClassPolicy(intent.classification).recovery,
+          expected_watermark: watermark,
+        }];
+      })
+    : [];
   const legalActions = hostRestoreBarrier
     ? []
     : suspendedAfterReboot
@@ -5232,7 +5297,7 @@ function fencedRunFold(
         expected_generation: stream.generation,
         revalidation,
       }]
-    : stream.fold.legal_actions.map((action) => ({
+    : [...stream.fold.legal_actions, ...recoveryActions].map((action) => ({
         ...action,
         expected_watermark: watermark,
       }));
@@ -5240,7 +5305,7 @@ function fencedRunFold(
     stream.fold,
     legalActions,
     executionTimeObservation,
-    runEventsFromRecords(stream.records),
+    runEvents,
   );
   const retryProjection = applyRetryTimeObservation(
     stream.fold,
@@ -6039,6 +6104,74 @@ function unknownRunRejection(operation, runId, authorityEvents, commandType) {
   });
 }
 
+/**
+ * Resolve the retained completed run that published one exact review
+ * candidate reference.  The candidate projection intentionally does not
+ * carry source_run_id, so callers must use this RunAuthority-owned index
+ * rather than guessing a run from caller input.
+ */
+export function queryRetainedSourceRunByReviewCandidateReference({
+  reference,
+  hostProjection,
+  readRun,
+} = {}) {
+  const watermark = hostProjection?.watermark ?? EMPTY_WATERMARK;
+  if (!isPlainRecord(reference) ||
+      typeof reference.candidate_id !== "string" ||
+      reference.candidate_id.length === 0 ||
+      !isDigestValue(reference.candidate_fingerprint)) {
+    return createRejection({
+      operation: "query",
+      code: "source_run_missing",
+      reason: "RunAuthority has no exact retained source run reference",
+      authorityWatermark: watermark,
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+  if (typeof readRun !== "function" || !Array.isArray(hostProjection?.runs)) {
+    return createRejection({
+      operation: "query",
+      code: "source_run_unavailable",
+      reason: "RunAuthority cannot inspect retained source runs",
+      authorityWatermark: watermark,
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+  const matches = [];
+  for (const runId of hostProjection.runs) {
+    const projection = readRun(runId);
+    const candidateReference = projection?.review_candidate_reference;
+    if (projection?.schema !== "flow.run-projection/v1" ||
+        projection.phase !== "succeeded" ||
+        candidateReference?.candidate_id !== reference.candidate_id ||
+        candidateReference?.candidate_fingerprint !==
+          reference.candidate_fingerprint ||
+        reference.review_authority_watermark !== undefined &&
+          candidateReference.review_authority_watermark !==
+            reference.review_authority_watermark) {
+      continue;
+    }
+    matches.push(projection);
+  }
+  if (matches.length === 1) return matches[0];
+  return createRejection({
+    operation: "query",
+    code: matches.length === 0 ? "source_run_missing" : "source_run_ambiguous",
+    reason: matches.length === 0
+      ? "RunAuthority has no retained completed source run for this candidate"
+      : "RunAuthority retained more than one source run for this candidate",
+    authorityWatermark: watermark,
+    authorityWatermarkDomain: "host",
+    legalActions: [],
+  });
+}
+
+function isDigestValue(value) {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+}
+
 function launchRejection(code, prepared, authorityEvents, reason = null) {
   return createRejection({
     operation: "launch",
@@ -6162,4 +6295,94 @@ function authorityWatermark(events) {
     schema: "flow.host-run-authority-stream/v1",
     events,
   });
+}
+
+
+// This operator-only action has no effect_id, so autonomous effect recovery
+// cannot select it. Historical cancelled folds remain unchanged until the
+// explicit, atomically recorded settlement below.
+function cancelledWorkspaceSettlement(database, stream, fold) {
+  if (fold.phase !== "cancelled") return { code: "run_not_cancelled" };
+  const claims = fold.resource_claims.filter(claim => claim.kind === "workspace");
+  if (claims.length !== 1 || fold.resource_claims.length !== 1) return { code: "cancelled_workspace_scope_unsupported" };
+  const resource = claims[0];
+  const identity = workStreamIdentity("work.workspace/v1", resource.id);
+  const workspace = readStream(database, identity.streamId)?.fold;
+  if (!workspace || workspace.taint !== null || workspace.claims.length !== 1 ||
+      workspace.claims[0].holder !== fold.run_id || workspace.generation !== resource.generation ||
+      workspace.mutation_epoch !== resource.mutation_epoch || digest({ git: workspace.git }) !== resource.fingerprint) {
+    return { code: "cancelled_workspace_claim_mismatch" };
+  }
+  for (const effect of fold.effects) {
+    if (effect.invocation_started === false && ["not_created", "abandoned"].includes(effect.status)) continue;
+    if (!effect.receipt || !["succeeded", "late_succeeded", "quarantined", "late_quarantined"].includes(effect.status)) return { code: "cancelled_workspace_unsettled_effects" };
+    if (!["delegate", "delegate_cancellation"].includes(effect.effect_kind)) return { code: "cancelled_workspace_external_operation_requires_resolution" };
+    const evidence = effect.receipt.provider_receipt;
+    const retirement = evidence?.terminal_disposition;
+    if (retirement?.schema !== "flow.resource-retirement/v1" || retirement.retired !== true ||
+        retirement.proof !== "linux_subreaper_echild" || retirement.resource?.type !== "direct_task" ||
+        typeof evidence.turn_id !== "string" || !evidence.turn_id.startsWith("task:") || evidence.turn_id.length <= 5 ||
+        retirement.resource.id !== evidence.turn_id || !/^sha256:[a-f0-9]{64}$/u.test(retirement.terminal_receipt_digest ?? "")) {
+      return { code: "cancelled_workspace_retirement_unproven" };
+    }
+    if (effect.effect_kind === "delegate_cancellation") {
+      const original = fold.effects.find(candidate => candidate.effect_id === evidence.delegate_effect_id);
+      if (original?.receipt?.provider_receipt?.turn_id !== evidence.turn_id ||
+          digest(original.receipt.provider_receipt.terminal_disposition) !== digest(retirement)) return { code: "cancelled_workspace_retirement_unproven" };
+    }
+  }
+  if (fold.effects.length === 0) return { code: "cancelled_workspace_retirement_unproven" };
+  return { workspace, resource, claim: workspace.claims[0], action: {
+    schema: "flow.command/v1", type: "recovery", recovery: "settle_cancelled_workspace",
+    run_id: fold.run_id, expected_watermark: fold.watermark,
+    workspace_subject_id: resource.id, expected_workspace_watermark: workspace.watermark,
+    claim_id: workspace.claims[0].claim_id, expected_generation: resource.generation,
+    expected_mutation_epoch: resource.mutation_epoch, expected_fingerprint: resource.fingerprint,
+  } };
+}
+
+function withCancelledWorkspaceSettlement(database, stream, fold) {
+  if (fold.phase !== "cancelled" || fold.admission === "suspended_host_reconciliation") return fold;
+  const result = cancelledWorkspaceSettlement(database, stream, fold);
+  return result.action ? freezeCanonical({ ...fold, legal_actions: [...fold.legal_actions, result.action] }) : fold;
+}
+
+function settleCancelledWorkspace(database, stream, command, context) {
+  const { fenceRun, gitWorkspaceObservationAdapter, lockDatabase, authorityEpoch, bootId, processIdentity } = context;
+  const reject = code => createRejection({ operation: "command", code, runId: stream.fold.run_id,
+    commandType: "recovery", authorityWatermark: fenceRun(database, stream).watermark, authorityWatermarkDomain: "run", legalActions: [] });
+  const commandDigest = digest(command);
+  const previous = stream.records.find(({ payload }) => payload.type === "cancelled_workspace_settled" && payload.command_digest === commandDigest);
+  if (previous) return freezeCanonical({ schema: "flow.command-receipt/v1", command_type: "recovery", run_id: stream.fold.run_id, accepted: true, replayed: true, authority_watermark: fenceRun(database, stream).watermark });
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    assertMutationFence(lockDatabase, database, { authorityEpoch, bootId, processIdentity });
+    assertDurableHostRestoreClear(database);
+    stream = readStream(database, command.run_id);
+    const fold = fenceRun(database, stream);
+    if (command.expected_watermark !== fold.watermark) { database.exec("ROLLBACK"); return reject("stale_authority_watermark"); }
+    const state = cancelledWorkspaceSettlement(database, stream, fold);
+    if (!state.action) { database.exec("ROLLBACK"); return reject(state.code); }
+    if (command.expected_workspace_watermark !== state.workspace.watermark) { database.exec("ROLLBACK"); return reject("stale_workspace_observation"); }
+    if (digest(command) !== digest(state.action)) { database.exec("ROLLBACK"); return reject("cancelled_workspace_settlement_mismatch"); }
+    let observation;
+    try { observation = gitWorkspaceObservationAdapter.observe({ repository_id: state.workspace.repository.canonical_id,
+      workspace_path: state.workspace.workspace.canonical_path, ref: state.workspace.git.ref }); } catch { observation = null; }
+    if (observation?.schema !== "work.git-observation/v1" || observation.git?.clean !== true ||
+        digest(observation.git) !== digest(state.workspace.git)) { database.exec("ROLLBACK"); return reject("cancelled_workspace_git_changed"); }
+    const fence = { authorityEpoch, bootId, processIdentity };
+    const settlement = { type: "cancelled_workspace_settled", command_digest: commandDigest,
+      workspace_subject_id: state.resource.id, claim_id: state.claim.claim_id,
+      resource_claim: state.resource, workspace_watermark: state.workspace.watermark, git_observation: observation };
+    appendAuthorityEvents(database, { streamId: workStreamIdentity("work.workspace/v1", state.resource.id).streamId,
+      streamKind: "workspace", events: [{ contract: "work.workspace-event/v1", payload: {
+        type: "workspace_claim_released", claim_id: state.claim.claim_id, holder: fold.run_id,
+        reason: "cancelled_workspace_settlement", settlement_command_digest: commandDigest,
+      } }], ...fence });
+    appendAuthorityEvents(database, { streamId: fold.run_id, streamKind: "run",
+      events: [{ contract: "flow.run-event/v1", payload: settlement }], ...fence });
+    database.exec("COMMIT");
+    return freezeCanonical({ schema: "flow.command-receipt/v1", command_type: "recovery", run_id: fold.run_id,
+      authority_watermark: fenceRun(database, readStream(database, fold.run_id)).watermark, accepted: true });
+  } catch (error) { if (database.isTransaction) database.exec("ROLLBACK"); throw error; }
 }

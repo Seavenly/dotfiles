@@ -1,0 +1,369 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.execution-description.v1.schema.json",
+  "title": "flow.execution-description/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "flow.execution-description/v1"
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "const": "flow.direct-task/v1"
+        },
+        "id": {
+          "const": "direct"
+        },
+        "harness": {
+          "enum": [
+            "codex",
+            "claude"
+          ]
+        },
+        "adapter": {
+          "type": "string",
+          "minLength": 1
+        },
+        "adapter_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "native_session_strategy": {
+          "const": "fresh_ephemeral"
+        },
+        "executable": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "version"
+          ]
+        },
+        "trust_contract": {
+          "const": "flow.supervised-native-cli/v1"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "harness",
+        "adapter",
+        "adapter_version",
+        "native_session_strategy",
+        "executable"
+      ]
+    },
+    "launch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "harness": {
+          "enum": [
+            "codex",
+            "claude"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effort": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
+        },
+        "capability": {
+          "enum": [
+            "read-only",
+            "workspace-write-denied"
+          ]
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trust_posture": {
+          "const": "supervised-native-cli"
+        }
+      },
+      "required": [
+        "harness",
+        "model",
+        "effort",
+        "capability"
+      ]
+    },
+    "caller_metadata": {
+      "type": "object"
+    },
+    "effective_authority": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "approvals": {
+              "const": "denied"
+            },
+            "capability": {
+              "enum": [
+                "read-only",
+                "workspace-write-denied"
+              ]
+            },
+            "escalation": {
+              "const": false
+            },
+            "filesystem": {
+              "enum": [
+                "read_only",
+                "workspace_write"
+              ]
+            },
+            "network": {
+              "const": "disabled"
+            },
+            "protected_paths": {
+              "const": [
+                ".git",
+                ".agents",
+                ".codex"
+              ]
+            },
+            "writable_roots": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "authority_workspace",
+                  "task_scratch"
+                ]
+              }
+            }
+          },
+          "required": [
+            "approvals",
+            "capability",
+            "escalation",
+            "filesystem",
+            "network",
+            "protected_paths",
+            "writable_roots"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "capability": {
+              "enum": [
+                "read-only",
+                "workspace-write-denied"
+              ]
+            },
+            "assurance": {
+              "const": "operator_supervised_cli"
+            },
+            "approvals": {
+              "const": "cli_requested_never"
+            },
+            "filesystem": {
+              "enum": [
+                "cli_requested_read_only",
+                "cli_requested_workspace_write"
+              ]
+            },
+            "network": {
+              "const": "not_independently_verified"
+            },
+            "writable_roots": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "authority_workspace",
+                  "task_scratch"
+                ]
+              }
+            },
+            "protected_paths": {
+              "const": []
+            },
+            "escalation": {
+              "const": "not_independently_verified"
+            },
+            "ambient_startup": {
+              "const": "trusted_official_cli"
+            }
+          },
+          "required": [
+            "capability",
+            "assurance",
+            "approvals",
+            "filesystem",
+            "network",
+            "writable_roots",
+            "protected_paths",
+            "escalation",
+            "ambient_startup"
+          ]
+        }
+      ]
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "initial_input": {
+          "const": true
+        },
+        "structured_output": {
+          "const": true
+        },
+        "steering": {
+          "const": false
+        },
+        "session_reuse": {
+          "const": false
+        },
+        "backend_failover": {
+          "const": false
+        }
+      },
+      "required": [
+        "initial_input",
+        "structured_output",
+        "steering",
+        "session_reuse",
+        "backend_failover"
+      ]
+    },
+    "comparison_keys": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "launch": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "effective_authority": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "launch",
+        "effective_authority"
+      ]
+    },
+    "watermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "flow.execution-watermark/v1"
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "schema",
+        "content_sha256"
+      ]
+    },
+    "description_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "schema",
+    "backend",
+    "launch",
+    "caller_metadata",
+    "effective_authority",
+    "capabilities",
+    "comparison_keys",
+    "watermark",
+    "description_digest"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "launch": {
+            "required": [
+              "trust_posture"
+            ],
+            "type": "object",
+            "properties": {
+              "trust_posture": {}
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "backend": {
+            "required": [
+              "trust_contract"
+            ],
+            "type": "object",
+            "properties": {
+              "trust_contract": {}
+            }
+          },
+          "effective_authority": {
+            "required": [
+              "assurance"
+            ],
+            "type": "object",
+            "properties": {
+              "assurance": {}
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "backend": {
+            "properties": {
+              "trust_contract": false
+            },
+            "type": "object"
+          },
+          "effective_authority": {
+            "properties": {
+              "assurance": false
+            },
+            "type": "object"
+          }
+        }
+      }
+    }
+  ]
+}

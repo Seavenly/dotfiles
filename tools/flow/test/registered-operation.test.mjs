@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 
 import { observeCardBlock } from "../src/card-block-observation-adapter.mjs";
 import { digest } from "../src/canonical.mjs";
@@ -1720,6 +1722,76 @@ test("watch publishes a sanitized registered-operation execution observation", a
   assert.equal(JSON.stringify(projection).includes("watch-secret"), false);
   assert.equal(JSON.stringify(projection).includes("/private/watch/path"), false);
   await watcher.return();
+});
+
+test("same-boot takeover resumes one unobserved caller-idempotent invocation without spending a retry", async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-operation-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const firstAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+  });
+  let firstIntent;
+  let finishOldInvocation;
+  const firstRuntime = operationRuntime(firstAuthority, {
+    classification: "caller_idempotent",
+    invoke(intent) {
+      firstIntent = intent;
+      return new Promise((resolve) => {
+        finishOldInvocation = () => resolve(operationReceipt(intent, {
+          record: "old",
+        }));
+      });
+    },
+  });
+  const prepared = firstRuntime.prepare(operationProposalWithMaxAttempts({
+    checkpointBound: false,
+  }, 1));
+  const launch = firstRuntime.launch(confirmedLaunchRequest(prepared));
+  firstRuntime.command(firstRuntime.query({ run_id: launch.run_id })
+    .legal_actions.find(({ type }) => type === "operation_execute"));
+  await until(() => firstIntent !== undefined);
+  const pending = firstRuntime.query({ run_id: launch.run_id });
+  assert.equal(pending.effects[0].retry.consumed_attempts, 1);
+  assert.equal(pending.effects[0].last_observation, null);
+  assert.equal(pending.legal_actions.some(({ type }) => type === "recovery"), false);
+  await assert.rejects(firstAuthority.invokeEffect(firstIntent, {
+    operatorRecovery: true,
+    invoke() {
+      assert.fail("the live same-owner invocation must not dispatch again");
+    },
+  }), { code: "effect_dispatch_in_progress" });
+  firstAuthority.close();
+  const recoveredAuthority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-b"),
+  });
+  t.after(() => recoveredAuthority.close());
+  let recoveredIntent;
+  const recoveredRuntime = operationRuntime(recoveredAuthority, {
+    classification: "caller_idempotent",
+    invoke(intent) {
+      recoveredIntent = intent;
+      return operationReceipt(intent, { record: "retained exact outcome" });
+    },
+  });
+  await until(() => recoveredRuntime.query({ run_id: launch.run_id }).phase ===
+    "succeeded");
+  const completed = recoveredRuntime.query({ run_id: launch.run_id });
+  assert.equal(recoveredIntent.effect_id, firstIntent.effect_id);
+  assert.equal(recoveredIntent.attempt_id, firstIntent.attempt_id);
+  assert.equal(recoveredIntent.idempotency_key, firstIntent.idempotency_key);
+  assert.equal(recoveredIntent.authority_epoch, 2);
+  assert.equal(recoveredIntent.authority_boot_id, firstIntent.authority_boot_id);
+  assert.equal(completed.effects[0].retry.max_attempts, 1);
+  assert.equal(completed.effects[0].retry.consumed_attempts, 1);
+  assert.equal(completed.effects[0].retry.remaining_attempts, 0);
+  finishOldInvocation();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(
+    recoveredRuntime.query({ run_id: launch.run_id }).effects[0].receipt,
+    completed.effects[0].receipt,
+  );
 });
 
 test("same-boot replacement retains the execution observation while recovering the exact intent", async (t) => {
@@ -4618,3 +4690,162 @@ function withTimeout(promise, milliseconds) {
     }),
   ]).finally(() => clearTimeout(timeout));
 }
+
+test("same-invocation takeover time remains one cumulative interval across repeated resume fences", () => {
+  const time = (seconds) => executionTimeFacts({
+    wallValueMs: 1_700_000_000_000 + seconds * 1000,
+    bootId: "boot-a",
+  });
+  const effect_id = "effect:resumed-cumulative-time";
+  const events = [
+    { type: "effect_invocation_started", effect_id, time_facts: time(0) },
+    { type: "effect_invocation_resumed", effect_id, time_facts: time(2) },
+    { type: "effect_invocation_resumed", effect_id, time_facts: time(3) },
+    { type: "effect_receipt_recorded", effect_id, time_facts: time(4) },
+  ];
+  const fold = (max_active_seconds) => ({
+    time_facts: time(0),
+    elapsed_seconds: 0,
+    limits: { max_elapsed_seconds: 30 },
+    effect_intents: [{ effect_id, max_active_seconds }],
+    effects: [],
+  });
+  const result = applyExecutionTimeObservation(
+    fold(5), [], { facts: time(10) }, events,
+  );
+  assert.equal(result.executionTime.status, "within");
+  assert.deepEqual(result.executionTime.active_elapsed_seconds, {
+    lower: 4, upper: 4,
+  });
+  const exhausted = applyExecutionTimeObservation(
+    fold(3), [], { facts: time(10) }, events,
+  );
+  assert.equal(exhausted.executionTime.status, "exhausted");
+  assert.deepEqual(exhausted.executionTime.active_elapsed_seconds, {
+    lower: 4, upper: 4,
+  });
+  const malformed = structuredClone(events);
+  delete malformed[1].time_facts;
+  const uncertain = applyExecutionTimeObservation(
+    fold(5), [], { facts: time(10) }, malformed,
+  );
+  assert.equal(uncertain.executionTime.status, "uncertain");
+});
+
+test("current authority replays the actual c34 in-flight fold and resumes only under a newer owner", async (t) => {
+  const fixture = JSON.parse(await readFile(new URL(
+    "../test-support/c34-inflight-operation-store.v1.json", import.meta.url,
+  ), "utf8"));
+  assert.equal(fixture.source_commit, "c34c6e881ce375691d4f3e4ca626c1af9eef81cc");
+  assert.equal(createHash("sha256").update(JSON.stringify(fixture.tables.map(
+    ({ name, rows }) => ({ name, rows }),
+  ))).digest("hex"), fixture.tables_sha256);
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-old-fold-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const database = new DatabaseSync(join(authorityDirectory, "authority.sqlite"));
+  try {
+    for (const table of fixture.tables) database.exec(table.sql);
+    const insertionOrder = [...fixture.tables].sort((a, b) =>
+      Number(b.name === "authority_streams") - Number(a.name === "authority_streams"));
+    for (const table of insertionOrder) {
+      for (const row of table.rows) {
+        const keys = Object.keys(row);
+        const columns = keys.map((key) => `"${key}"`).join(",");
+        const placeholders = keys.map(() => "?").join(",");
+        database.prepare(`INSERT INTO "${table.name}" (${columns}) VALUES (${placeholders})`)
+          .run(...keys.map((key) => row[key]));
+      }
+    }
+  } finally {
+    database.close();
+  }
+  const inspection = createDurableRunAuthority({
+    authorityDirectory, access: "inspect",
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-inspect"),
+  });
+  try {
+    const pending = inspection.query(fixture.run_id);
+    assert.equal(pending.schema, "flow.run-projection/v1", JSON.stringify(pending));
+    assert.equal(pending.effects[0].retry.consumed_attempts, 1);
+    assert.equal(pending.legal_actions.some(({ type }) => type === "recovery"), false);
+  } finally {
+    inspection.close();
+  }
+  const authority = createDurableRunAuthority({
+    authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "process-b"),
+  });
+  t.after(() => authority.close());
+  let adopted;
+  const runtime = operationRuntime(authority, {
+    classification: "caller_idempotent",
+    invoke(intent) { adopted = intent; return operationReceipt(intent); },
+  });
+  await until(() => runtime.query({ run_id: fixture.run_id }).phase === "succeeded");
+  const completed = runtime.query({ run_id: fixture.run_id });
+  assert.equal(completed.effects[0].retry.max_attempts, 1);
+  assert.equal(completed.effects[0].retry.consumed_attempts, 1);
+  assert.equal(adopted.authority_epoch, fixture.intent.authority_epoch + 1);
+  const identity = ({ authority_epoch: _epoch, authority_boot_id: _boot, ...value }) => value;
+  assert.deepEqual(identity(adopted), identity(fixture.intent));
+  const read = new DatabaseSync(join(authorityDirectory, "authority.sqlite"), { readOnly: true });
+  try {
+    const events = read.prepare("SELECT payload_json FROM authority_events WHERE stream_id = ? ORDER BY sequence").all(fixture.run_id).map(row => JSON.parse(row.payload_json));
+    assert.equal(events.filter(event => event.type === "effect_invocation_started").length, 1);
+    assert.equal(events.filter(event => event.type === "effect_invocation_resumed").length, 1);
+  } finally {
+    read.close();
+  }
+});
+
+test("new-owner recovery cannot reopen a cancelled invocation or cross a boot boundary", async (t) => {
+  for (const scenario of ["cancelled", "other-boot"]) {
+    await t.test(scenario, async (t) => {
+      const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-recovery-gate-"));
+      t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+      const firstAuthority = createDurableRunAuthority({
+        authorityDirectory,
+        hostIdentityAdapter: fixedHostIdentity("boot-a", "process-a"),
+      });
+      let intent;
+      let finish;
+      const runtime = operationRuntime(firstAuthority, {
+        classification: "caller_idempotent",
+        invoke(value) {
+          intent = value;
+          return new Promise((resolve) => {
+            finish = () => resolve(operationReceipt(value));
+          });
+        },
+      });
+      const proposal = registeredOperationProposal({ checkpointBound: false });
+      proposal.requested_authority.commands.push("cancel");
+      const prepared = runtime.prepare(proposal);
+      const launch = runtime.launch(confirmedLaunchRequest(prepared));
+      runtime.command(runtime.query({ run_id: launch.run_id }).legal_actions.find(
+        ({ type }) => type === "operation_execute",
+      ));
+      await until(() => intent !== undefined);
+      if (scenario === "cancelled") {
+        assert.equal(runtime.command(runtime.query({ run_id: launch.run_id })
+          .legal_actions.find(({ type }) => type === "cancel")).accepted, true);
+      }
+      firstAuthority.close();
+      finish();
+      await new Promise((resolve) => setImmediate(resolve));
+      const recovered = createDurableRunAuthority({
+        authorityDirectory,
+        hostIdentityAdapter: fixedHostIdentity(
+          scenario === "other-boot" ? "boot-b" : "boot-a", "process-b",
+        ),
+      });
+      t.after(() => recovered.close());
+      const projection = recovered.query(launch.run_id);
+      assert.equal(projection.effects[0].retry.consumed_attempts, 1);
+      assert.equal(projection.legal_actions.some(({ type }) => type === "recovery"), false);
+      assert.equal(projection.phase, scenario === "cancelled" ? "cancelled" : "active");
+      assert.equal(projection.admission,
+        scenario === "cancelled" ? "released" : "suspended_after_reboot");
+    });
+  }
+});

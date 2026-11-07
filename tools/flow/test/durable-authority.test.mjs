@@ -4204,3 +4204,116 @@ function withRebootBoot(observation, bootId) {
       fact.kind === "boot" ? { ...fact, boot_id: bootId } : fact),
   };
 }
+
+
+test("public cancelled workspace settlement retains uncertainty and releases an exact retired clean claim", async (parent) => {
+ for (const scenario of ["missing retirement", "wrong native task", "clean reusable workspace"]) await parent.test(scenario, async (t) => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-cancel-workspace-settlement-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  let gitFacts = durableWorkspaceGitFacts();
+  let authority = createDurableRunAuthority({ authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "settlement-owner"),
+    gitWorkspaceObservationAdapter: { observe: () => ({ schema: "work.git-observation/v1", git: gitFacts }) },
+  });
+  t.after(() => authority.close());
+  let workspace = getWorkspaceAuthority({ runAuthority: authority });
+  assert.equal(workspace.command(durableWorkspaceRegistration()).accepted, true);
+  const registered = workspace.query(durableWorkspaceQuery());
+  const resource = { kind: "workspace", id: registered.subject_id, generation: registered.generation,
+    mutation_epoch: registered.mutation_epoch, fingerprint: digest({ git: registered.git }) };
+  const description = await supportedDescription({ schema: "drovr.delegated-agent-description-request/v1", launch: { harness: "codex", role: "reviewer", model: "gpt-5.6", effort: "high", capability: "read-only" }, caller_metadata: {} }, {});
+  const proposal = delegateCardProposal(description);
+  proposal.requested_authority.commands.push("cancel");
+  proposal.graph.cards[1].resource_claims.push(resource);
+  proposal.explicit_facts.resource_claims.push(resource);
+  proposal.explicit_facts.limits.max_resources += 1;
+  let runtime = createFlowRuntime({ runAuthority: authority, delegatedAgentPort: durableDelegatePort(), delegateOutputValidators: durableDelegateValidators() });
+  const prepared = runtime.prepare(proposal);
+  assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
+  const launch = runtime.launch(confirmedLaunchRequest(prepared));
+  assert.ok(launch.run_id, JSON.stringify(launch));
+  assert.equal(workspace.command({ schema: "work.workspace-claim-command/v1", type: "workspace_claim",
+    command_id: "claim:settlement", contract: "work.workspace/v1", subject_id: registered.subject_id,
+    expected_generation: registered.generation, expected_watermark: registered.watermark,
+    expected_fingerprint: resource.fingerprint, git_observation: registered.git_observation,
+    claim: { claim_id: "claim:settlement", holder: launch.run_id, operations: ["delegate-review"] },
+  }).accepted, true);
+  const query = () => runtime.query({ run_id: launch.run_id });
+  const checkpoint = query().legal_actions.find(action => action.type === "checkpoint_decision");
+  authority.command({ ...checkpoint, decision: "approve" });
+  const delegated = authority.command(query().legal_actions.find(action => action.type === "delegate_execute"));
+  assert.equal(delegated.accepted, true, JSON.stringify(delegated));
+  const [intent] = delegated.effect_intents;
+  let finish;
+  const pending = authority.invokeEffect(intent, { invoke: () => new Promise(resolve => { finish = resolve; }) });
+  while (typeof finish !== "function") await new Promise(resolve => setImmediate(resolve));
+
+  const cancelled = authority.command(query().legal_actions.find(action => action.type === "cancel"));
+   assert.equal(cancelled.accepted, true);
+  assert.equal(workspace.query(durableWorkspaceQuery()).claims.length, 1);
+  assert.equal(query().legal_actions.some(action => action.recovery === "settle_cancelled_workspace"), false);
+  const retirement = { schema: "flow.resource-retirement/v1", resource: { type: "direct_task", id: "task:settlement" },
+    proof: "linux_subreaper_echild", terminal_receipt_digest: digest({ retired: true }), retired: true };
+  if (scenario === "missing retirement") retirement.retired = false;
+  if (scenario === "wrong native task") retirement.resource.id = "task:unrelated";
+  finish({ ...operationReceipt(intent, { schema: "flow.delegate-quarantine/v1", turn_id: "task:settlement", terminal_disposition: retirement }), outcome: "quarantined" });
+  await pending;
+  for (const cancellation of cancelled.effect_intents) await authority.invokeEffect(cancellation, { settleCancelled: true,
+    invoke: () => operationReceipt(cancellation, { schema: "flow.delegate-cancellation-receipt/v1", delegate_effect_id: intent.effect_id, turn_id: "task:settlement", terminal_disposition: retirement }),
+  });
+   const action = query().legal_actions.find(action => action.recovery === "settle_cancelled_workspace");
+  if (scenario !== "clean reusable workspace") {
+    assert.equal(action, undefined);
+    assert.equal(runtime.command({ schema: "flow.command/v1", type: "recovery", recovery: "settle_cancelled_workspace",
+      run_id: launch.run_id, expected_watermark: query().watermark }).code, "cancelled_workspace_retirement_unproven");
+    assert.equal(workspace.query(durableWorkspaceQuery()).claims.length, 1);
+    return;
+  }
+  assert.ok(action, "retired cancelled workspace must expose an explicit public settlement action");
+  gitFacts = { ...gitFacts, clean: false };
+  assert.equal(runtime.command(action).code, "cancelled_workspace_git_changed");
+  assert.equal(workspace.query(durableWorkspaceQuery()).claims.length, 1);
+  gitFacts = { ...durableWorkspaceGitFacts(), commit_sha: "f".repeat(40) };
+  assert.equal(runtime.command(action).code, "cancelled_workspace_git_changed");
+  gitFacts = durableWorkspaceGitFacts();
+  assert.equal(runtime.command({ ...action, expected_workspace_watermark: "sha256:" + "f".repeat(64) }).code, "stale_workspace_observation");
+  authority.close();
+  authority = createDurableRunAuthority({ authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "settlement-restarted"),
+    gitWorkspaceObservationAdapter: { observe: () => ({ schema: "work.git-observation/v1", git: gitFacts }) },
+  });
+  workspace = getWorkspaceAuthority({ runAuthority: authority });
+  runtime = createFlowRuntime({ runAuthority: authority, delegatedAgentPort: durableDelegatePort(), delegateOutputValidators: durableDelegateValidators() });
+  assert.equal(runtime.command(action).code, "stale_authority_watermark");
+  const fresh = query().legal_actions.find(item => item.recovery === "settle_cancelled_workspace");
+  const settled = runtime.command(fresh);
+  assert.equal(settled.accepted, true, JSON.stringify(settled));
+  assert.deepEqual(workspace.query(durableWorkspaceQuery()).claims, []);
+  assert.equal(runtime.command(fresh).replayed, true);
+  assert.equal(query().phase, "cancelled");
+  assert.equal(query().legal_actions.some(item => item.recovery === "settle_cancelled_workspace"), false);
+  authority.close();
+  authority = createDurableRunAuthority({ authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "settlement-reopen"),
+    gitWorkspaceObservationAdapter: durableWorkspaceObservationAdapter(),
+  });
+  workspace = getWorkspaceAuthority({ runAuthority: authority });
+  runtime = createFlowRuntime({ runAuthority: authority, delegatedAgentPort: durableDelegatePort(), delegateOutputValidators: durableDelegateValidators() });
+  assert.equal(runtime.command(fresh).replayed, true);
+  assert.deepEqual(workspace.query(durableWorkspaceQuery()).claims, []);
+  const nextProposal = structuredClone(proposal);
+  nextProposal.explicit_facts.catalog_fingerprint = "sha256:" + "e".repeat(64);
+  const nextPrepared = runtime.prepare(nextProposal);
+  assert.equal(nextPrepared.schema, "flow.prepared-run/v1");
+  const next = runtime.launch(confirmedLaunchRequest(nextPrepared));
+  assert.ok(next.run_id && next.run_id !== launch.run_id);
+  const available = workspace.query(durableWorkspaceQuery());
+  assert.equal(workspace.command({ schema: "work.workspace-claim-command/v1", type: "workspace_claim",
+    command_id: "claim:next", contract: "work.workspace/v1", subject_id: available.subject_id,
+    expected_generation: available.generation, expected_watermark: available.watermark,
+    expected_fingerprint: digest({ git: available.git }), git_observation: available.git_observation,
+    claim: { claim_id: "claim:next", holder: next.run_id, operations: ["delegate-review"] },
+  }).accepted, true);
+  assert.equal(runtime.command(runtime.query({ run_id: next.run_id }).legal_actions.find(item => item.type === "cancel")).accepted, true);
+ });
+});

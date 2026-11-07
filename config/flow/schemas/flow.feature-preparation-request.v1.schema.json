@@ -8,6 +8,15 @@
   "properties": {
     "schema": { "const": "flow.feature-preparation-request/v1" },
     "dark_opt_in": { "$ref": "flow.dark-opt-in.v1.schema.json" },
+    "execution_trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "acknowledgment"],
+      "properties": {
+        "schema": { "const": "flow.supervised-native-cli/v1" },
+        "acknowledgment": { "const": "trust-official-cli-permissions" }
+      }
+    },
     "brief": { "$ref": "#/$defs/brief" },
     "repository": {
       "oneOf": [
@@ -22,7 +31,15 @@
         }
       ]
     },
-    "mode": { "const": "verify" },
+    "mode": { "enum": ["verify", "test"] },
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id"],
+      "properties": {
+        "check_id": { "type": "string", "minLength": 1 }
+      }
+    },
     "routes": { "$ref": "#/$defs/routes" },
     "verification": {
       "type": "object",
@@ -50,6 +67,19 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "mode": { "const": "test" } },
+        "required": ["mode"]
+      },
+      "then": {
+        "required": ["test"],
+        "properties": { "test": true, "verification": false }
+      },
+      "else": { "properties": { "test": false } }
+    }
+  ],
   "$defs": {
     "brief": {
       "type": "object",
@@ -101,6 +131,7 @@
             "read-only",
             "on-approve",
             "workspace-write",
+            "workspace-write-denied",
             "auto",
             "unrestricted"
           ]

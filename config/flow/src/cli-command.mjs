@@ -4,6 +4,10 @@ import { summarizeFlowRuntimeError } from
   "../../../tools/flow/src/flow-runtime-runner.mjs";
 import { closeFlowRuntime } from "./runtime.mjs";
 import { createFlowClient } from "./client.mjs";
+import { execFile } from "node:child_process";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import {
   flowOwnerPaths,
   startFlowOwner,
@@ -12,16 +16,24 @@ import {
 } from "./owner-process.mjs";
 
 const MAX_STATUS_COUNT = 1_000_000;
+const MAX_INPUT_FILE_BYTES = 4 * 1024 * 1024;
 
 const USAGE = `Usage:
   flow start [--json]
   flow status [--json]
   flow stop [--json]
-  flow prepare --input JSON [--json]
-  flow launch --input JSON [--json]
-  flow command --input JSON [--json]
-  flow query --input JSON [--json]
-  flow watch --input JSON [--json]
+  flow pilot setup --execution-trust supervised-native-cli [--mode test|verify] [--parent DIRECTORY]
+  flow pilot accept-prepared PILOT_DIRECTORY PREPARED_JSON_FILE
+  flow pilot review-request PILOT_DIRECTORY PRODUCER_RUN_ID
+  flow local setup --execution-trust supervised-native-cli --repository PATH --brief JSON_FILE --codex-executable PATH [--mode test --check JSON_FILE] [--reconfigure-check yes] [--client-link PATH]
+  flow local accept-prepared CLIENT_DIRECTORY PREPARED_JSON_FILE
+  flow local inspect-prepared PREPARED_JSON_FILE
+  flow local review-request CLIENT_DIRECTORY PRODUCER_RUN_ID
+  flow prepare (--input JSON | --input-file PATH) [--json]
+  flow launch (--input JSON | --input-file PATH) [--json]
+  flow command (--input JSON | --input-file PATH) [--json]
+  flow query (--input JSON | --input-file PATH) [--json]
+  flow watch (--input JSON | --input-file PATH) [--json]
   flow query legacy-inventory --json
   flow query delegated-agent [launch options] --caller-metadata JSON --json
 
@@ -35,6 +47,9 @@ Delegated-agent launch options:
   --model MODEL
   --effort EFFORT
   --capability CAPABILITY
+
+Input files must contain JSON in a regular file of at most 4 MiB.
+Choose exactly one of --input, --request, --input-file, or positional JSON.
 `;
 
 export async function runCli(
@@ -52,6 +67,22 @@ export async function runCli(
     stdout.write(USAGE);
     return 0;
   }
+  if (["pilot", "local"].includes(args[0])) {
+    try {
+      const localSetup = args[0] === "local" && args[1] === "setup";
+      const result = await promisify(execFile)(process.execPath, [
+        fileURLToPath(new URL(localSetup ? "../scripts/prepare-local-feature.mjs" : "../scripts/prepare-feature-pilot.mjs", import.meta.url)),
+        ...args.slice(localSetup ? 2 : 1),
+      ], { env, maxBuffer: 1024 * 1024 });
+      stdout.write(result.stdout);
+      if (result.stderr) stderr.write(result.stderr);
+      return 0;
+    } catch (error) {
+      if (error.stdout) stdout.write(error.stdout);
+      stderr.write(error.stderr || "Flow pilot preparation failed\n");
+      return 1;
+    }
+  }
   const lifecycle = parseLifecycle(args);
   if (lifecycle !== null) {
     return runLifecycle(lifecycle, {
@@ -62,7 +93,17 @@ export async function runCli(
     });
   }
   const queryRequest = parseQuery(args);
-  const operationRequest = parseRuntimeOperation(args);
+  let operationRequest;
+  try {
+    operationRequest = parseRuntimeOperation(args);
+  } catch (error) {
+    if (!(error instanceof InputFileError)) throw error;
+    stderr.write(`${JSON.stringify(createRejection({
+      operation: args[0], code: error.code, reason: error.message,
+      outcome: "unsupported", authorityWatermarkDomain: "host",
+    }))}\n`);
+    return 2;
+  }
   if (!queryRequest && !operationRequest) {
     stderr.write(USAGE);
     return 2;
@@ -361,8 +402,13 @@ function parseRuntimeOperation(args) {
       json = true;
       continue;
     }
-    if (["--input", "--request"].includes(flag)) {
+    if (["--input", "--request", "--input-file"].includes(flag)) {
       if (input !== undefined || index + 1 >= args.length) return null;
+      if (flag === "--input-file") {
+        input = readInputFile(args[++index]);
+        inputFromFlag = true;
+        continue;
+      }
       try {
         input = JSON.parse(args[++index]);
       } catch {
@@ -386,4 +432,37 @@ function parseRuntimeOperation(args) {
   }
   if (input === undefined) return null;
   return { operation: args[0], request: input, json };
+}
+
+class InputFileError extends Error {
+  constructor(code, reason) {
+    super(reason);
+    this.code = code;
+  }
+}
+
+function readInputFile(path) {
+  let descriptor;
+  try {
+    // Nonblocking open prevents a named pipe from hanging argument parsing.
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    const status = fstatSync(descriptor);
+    if (!status.isFile()) throw new InputFileError("input_file_not_regular", "JSON input must be a regular file");
+    if (status.size > MAX_INPUT_FILE_BYTES) throw new InputFileError("input_file_too_large", `JSON input file exceeds ${MAX_INPUT_FILE_BYTES} bytes`);
+    const buffer = Buffer.alloc(MAX_INPUT_FILE_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = readSync(descriptor, buffer, length, buffer.length - length, null);
+      if (count === 0) break;
+      length += count;
+    }
+    if (length > MAX_INPUT_FILE_BYTES) throw new InputFileError("input_file_too_large", `JSON input file exceeds ${MAX_INPUT_FILE_BYTES} bytes`);
+    try { return JSON.parse(buffer.subarray(0, length).toString("utf8")); }
+    catch { throw new InputFileError("input_file_invalid_json", "Input file is not valid JSON"); }
+  } catch (error) {
+    if (error instanceof InputFileError) throw error;
+    throw new InputFileError("input_file_unavailable", "Cannot open or read JSON input file");
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
 }

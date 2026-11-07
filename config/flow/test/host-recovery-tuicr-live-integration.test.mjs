@@ -13,13 +13,19 @@ import {
 import {
   adaptTuicrLiveProbeResult,
 } from "../scripts/run-host-recovery-qualification.mjs";
+import { copyQualifiedRuntimeFixture } from
+  "../test-support/qualified-release-fixture.mjs";
 
 const WORKTREE = resolve(import.meta.dirname, "../../..");
 
-test("issue-46 tuicr runs after a real producer exits and survives owner rebuild", async () => {
+test("issue-46 tuicr runs after a real producer exits and survives owner rebuild", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "flow-tuicr-live-integration-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const worktree = await copyQualifiedRuntimeFixture({
+    sourceRoot: WORKTREE, destination: join(root, "worktree"),
+  });
   const isolation = createQualificationIsolation({
-    worktreeRoot: WORKTREE,
+    worktreeRoot: worktree,
     xdgStateHome: join(root, "state"),
     authorityDirectory: join(root, "authority"),
     socketPath: join(root, "authority", "owner.sock"),

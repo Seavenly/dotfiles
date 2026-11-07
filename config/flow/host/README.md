@@ -85,6 +85,8 @@ flow stop --json
 systemctl --user status flow-owner.service
 ```
 
+The Ubuntu unit stops and restarts only the Flow owner. Active direct task workers remain running under their original exact attempt and workspace bindings, so stopping the owner does not mean the workspace is idle. Before disabling the unit or treating a workspace as available, use the public Flow cancellation and recovery actions and require exact task retirement evidence. A restarted owner may adopt the same proven task or receipt; a lost worker, changed boot or uncertain outcome retains the workspace claim and requires the returned operator action. Manager and host shutdown remain separate qualification scenarios.
+
 To disable the opt-in definition, stop it first, then remove only the exact
 user-owned link:
 

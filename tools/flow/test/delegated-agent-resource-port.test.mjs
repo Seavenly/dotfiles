@@ -1770,6 +1770,7 @@ test("workspace cancellation without an exact turn emits unresolved retirement h
     blocks_sha256: `sha256:${"7".repeat(64)}`,
   };
   const description = {
+    schema: "drovr.delegated-agent-description/v1",
     launch: {
       harness: "codex",
       role: "reviewer",
@@ -1922,10 +1923,16 @@ test("workspace cancellation without an exact turn emits unresolved retirement h
   missingLaunchIntent.idempotency_key =
     "delegate:workspace-cancel-missing-launch";
   delete missingLaunchIntent.delegate_input.description;
-  await assertNoInvalidProjection(
+  const retirementCallsBeforeMissingLaunch = resourceRetireCalls;
+  dispatchDelegateEffect(
     missingLaunchIntent,
-    "missing launch facts must not emit a null resource key",
+    { async discover() { assert.fail("missing launch facts must block before discovery"); } },
+    new Map(),
+    runAuthority,
+    { resourcePort },
   );
+  await assert.rejects(settled, { code: "execution_backend_mismatch" });
+  assert.equal(resourceRetireCalls, retirementCallsBeforeMissingLaunch);
 
   const missingWorkspaceIntent = structuredClone(intent);
   missingWorkspaceIntent.effect_id =

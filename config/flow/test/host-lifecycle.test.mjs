@@ -26,6 +26,7 @@ test("host lifecycle sources are explicit opt-in and supervise one owner", async
   assert.match(macos, /\.config\/flow\/host\/flow-owner/u);
   assert.match(ubuntu, /ExecStart=%h\/\.config\/flow\/host\/flow-owner/u);
   assert.match(ubuntu, /Restart=on-failure/u);
+  assert.match(ubuntu, /^KillMode=process$/mu);
   assert.match(docs, /flow start --json/u);
   assert.match(docs, /systemctl --user enable --now/u);
   assert.match(docs, /launchctl bootstrap/u);

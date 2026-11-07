@@ -20,7 +20,7 @@ test("legacy baseline audit resolves exact frozen trees from the recorded commit
 
   assert.equal(audit.schema, "flow.legacy-baseline-audit/v1");
   assert.equal(audit.status, "passed");
-  assert.equal(audit.source_commit, "e55efcccf595c25bc0f7c5c4669467be906e9894");
+  assert.equal(audit.source_commit, "cffa34f5b8c92e2c2fc398c14c2eb841ac0a82a8");
   assert.deepEqual(
     audit.baselines.map(({ implementation, status }) => ({ implementation, status })),
     [
