@@ -251,7 +251,7 @@
       "binding": "flow.evidence-safety-binding/v1",
       "catalog_view": "flow.evidence-safety-catalog/v1",
       "policy_id": "flow.evidence-safety-policy/v1",
-      "catalog_id": "flow.contract-catalog/v1@38",
+      "catalog_id": "flow.contract-catalog/v1@39",
       "allowed_uses": [
         "delegate_transfer",
         "artifact_acceptance",

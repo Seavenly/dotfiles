@@ -121,8 +121,20 @@ private evidence files live under its authority's `project-checks-v2` directory.
 Do not edit those records or use a second authority to evade a claim.
 
 Cancellation does not undo writer changes or release claims merely because a
-checker retired. Changed candidates, uncertain external effects and unsupported
-cleanup remain held with their existing legal recovery actions. The existing
-clean-baseline settlement action retains its own proof requirements. Mac native
-execution and strict native qualification remain unsupported/not-run; this
-registered command contract grants neither remote mutation nor default cutover.
+checker retired. A cancelled check may leave a clean, committed candidate and
+its original workspace claim quarantined. If the refreshed public run offers
+`recovery: settle_cancelled_capture`, inspect its exact accepted Git identity and
+receipt digests. Accepting that action keeps the captured commit, releases the
+claim and records the accepted Git state for the next feature in the same
+authority. It never rolls back the writer or marks the cancelled run successful.
+See the [public settlement procedure](operator-guide.md#settle-a-cancelled-workspace)
+for the exact file-based command.
+
+This action requires the bound successful direct commit and capture, a complete
+retired project-check result, every native task positively retired, the sole
+original claim and a fresh clean Git observation equal to the retained capture.
+Dirty or drifted Git, missing proof and unknown or unresolved external operations
+remain held. The existing clean-baseline settlement action retains its own proof
+requirements. Mac native execution and strict native qualification remain
+unsupported/not-run; this contract grants neither remote mutation nor default
+cutover.
