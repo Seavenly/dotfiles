@@ -19,6 +19,9 @@ const MAX_STATUS_COUNT = 1_000_000;
 const MAX_INPUT_FILE_BYTES = 4 * 1024 * 1024;
 
 const USAGE = `Usage:
+  flow run [--request FILE] [--json]
+  flow run [same selection] --confirm sha256:DIGEST [--json]
+  flow run --attach RUN_ID [--json]
   flow init [--summary TEXT --acceptance TEXT ...] [--json]
   flow init [same selections] --confirm sha256:DIGEST [--json]
   flow start [--json]
@@ -75,6 +78,10 @@ export async function runCli(
     const { runProjectInit } = await import("./project-init.mjs");
     return runProjectInit(args.slice(1), { env, stdin, stdout, stderr });
   }
+  if (args[0] === "run") {
+    const { runProject } = await import("./project-run.mjs");
+    return runProject(args.slice(1), { env, stdin, stdout, stderr });
+  }
   if (["pilot", "local"].includes(args[0])) {
     try {
       const localSetup = args[0] === "local" && args[1] === "setup";
@@ -123,11 +130,10 @@ export async function runCli(
   let directRuntime = runtime;
   let ownsDirectRuntime = false;
   const ownerPaths = flowOwnerPaths({ env, ...ownerOptions });
-  const namedQuery = operation === "query" &&
-    request?.schema === "flow.query/v1";
-  const namedQueryOwner = namedQuery &&
+  const inspectionQuery = operation === "query";
+  const namedQueryOwner = inspectionQuery &&
     await ownerIsAvailable(ownerPaths);
-  if (directRuntime === undefined && namedQuery && !namedQueryOwner) {
+  if (directRuntime === undefined && inspectionQuery && !namedQueryOwner) {
     // Inspection remains useful before the owner is started.  The fallback is
     // explicitly read-only and cannot acquire the durable mutation lock.
     try {
