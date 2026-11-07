@@ -36,10 +36,10 @@ export function findInstalledExecutable(name, { env = process.env, selected } = 
 }
 
 /** Read ELF declarations with a trusted parser; never invoke the selected binary. */
-export function installedExecutableMounts(executables, directories = []) {
+export function installedExecutableMounts(executables, directories = [], inputPolicy = {}) {
   const mounts = new Map();
   const add = (source, target = source) => {
-    source = canonical(source); assertProjectReadPath(source);
+    source = canonical(source); assertProjectReadPath(source, inputPolicy);
     const previous = mounts.get(target);
     if (previous && previous.source !== source) fail(`Conflicting installed input at ${target}`);
     mounts.set(target, { source, target });
@@ -81,7 +81,7 @@ export function projectSignals(repository) {
   return { files, kinds };
 }
 
-export function projectCheckPreset({ repository, kind, criteria, options = {}, env = process.env }) {
+export function projectCheckPreset({ repository, kind, criteria, options = {}, env = process.env, authorityDirectory = env.FLOW_AUTHORITY_DIRECTORY }) {
   if (process.platform !== "linux") fail("Guided project checks currently require the Linux backend; Mac native execution remains unsupported");
   const { files, kinds } = projectSignals(repository);
   if (!kind) {
@@ -92,6 +92,7 @@ export function projectCheckPreset({ repository, kind, criteria, options = {}, e
   if (options.testDirectory !== undefined && options.testDirectory !== "." && !projectPath(options.testDirectory)) fail("--test-directory must be a contained project-relative directory");
   for (const path of options.pins ?? []) if (!files.includes(path) || !projectPath(path)) fail(`Select a committed contained test/config file for --pin: ${path}`);
   let executable, argv, versionArgv, version, pinned, mounts, environment;
+  const runtimeMounts = (executables, directories) => installedExecutableMounts(executables, directories, { authorityDirectory, home: env.HOME });
   const notes = ["GREEN-only command completion; no intended RED or test-count guarantee", "Read-only committed candidate; private bounded scratch; no network or installs"];
   if (kind === "npm") {
     if (options.toolExecutable && canonical(options.toolExecutable) !== canonical(process.execPath)) fail("The npm preset uses init's exact Node 22 executable; select another runtime through manual registration");
@@ -110,7 +111,7 @@ export function projectCheckPreset({ repository, kind, criteria, options = {}, e
     const namedFiles = files.filter(file => !pinned.includes(file) && pkg.scripts.test.split(/[\s"';&|]+/u).some(token => token.replace(/^\.\//u, "") === file));
     if (namedFiles.some(file => !explicitPins.includes(file))) fail(`The npm script names nonstandard test input(s): ${namedFiles.join(", ")}. Select those existing tests explicitly with repeatable --pin FILE; product files must remain editable.`);
     if (!pinned.some(file => !["package.json", "package-lock.json", "npm-shrinkwrap.json"].includes(file)) && !explicitPins.length) fail("No conventional committed npm test files found. Select existing acceptance tests with repeatable --pin FILE; init never invents tests.");
-    mounts = installedExecutableMounts([executable, "/bin/sh"], ["bin", "lib", "node_modules", "package.json"].map(path => join(npm, path)));
+    mounts = runtimeMounts([executable, "/bin/sh"], ["bin", "lib", "node_modules", "package.json"].map(path => join(npm, path)));
     if (Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies }).length) {
       const dependencies = join(repository, "node_modules");
       if (!existsSync(dependencies) || !files.some(path => ["package-lock.json", "npm-shrinkwrap.json"].includes(path))) fail("npm dependencies require an existing node_modules tree and committed npm lockfile. Install separately, then retry; init never installs.");
@@ -137,7 +138,7 @@ export function projectCheckPreset({ repository, kind, criteria, options = {}, e
     const pytest = signals.some(file => /pytest/u.test(projectGit(repository, ["show", `HEAD:${file}`]))) || tests.some(file => /^\s*(?:import pytest|from pytest\b)/mu.test(projectGit(repository, ["show", `HEAD:${file}`])));
     const runner = options.pythonRunner ?? (pytest ? "pytest" : "unittest");
     if (!["pytest", "unittest"].includes(runner)) fail("Select --python-runner unittest or pytest");
-    mounts = installedExecutableMounts([executable], [stdlib]);
+    mounts = runtimeMounts([executable], [stdlib]);
     if (runner === "pytest") {
       const venv = requested && existsSync(join(dirname(dirname(requested)), "pyvenv.cfg")) ? dirname(dirname(requested)) : null;
       const site = venv ? join(venv, "lib", `python${majorMinor}`, "site-packages") : join(stdlib, "site-packages");
@@ -176,11 +177,11 @@ export function projectCheckPreset({ repository, kind, criteria, options = {}, e
     argv = ["test", "./..."]; versionArgv = ["version"];
     pinned = files.filter(file => ["go.mod", "go.sum", "vendor/modules.txt"].includes(file) || file.endsWith("_test.go"));
     if (/^\s*require\b/mu.test(projectGit(repository, ["show", "HEAD:go.mod"])) && !files.includes("vendor/modules.txt")) fail("Go dependencies require an existing committed vendor tree for this offline preset. Vendor separately or use manual registration; init never downloads modules.");
-    mounts = installedExecutableMounts([executable], ["pkg", "src", "lib"].map(path => join(prefix, path)));
+    mounts = runtimeMounts([executable], ["pkg", "src", "lib"].map(path => join(prefix, path)));
     environment = { PATH: "/usr/bin:/bin", GOROOT: prefix, GOTOOLCHAIN: "local", GOPROXY: "off", GOSUMDB: "off", CGO_ENABLED: "0" };
     notes.push("Go uses only its local toolchain, committed/vendor inputs and private caches; cgo and module downloads are disabled");
   }
-  if (options.extraExecutables?.length) mounts.push(...installedExecutableMounts(options.extraExecutables));
+  if (options.extraExecutables?.length) mounts.push(...runtimeMounts(options.extraExecutables));
   const byTarget = new Map();
   for (const mount of mounts) {
     const previous = byTarget.get(mount.target);

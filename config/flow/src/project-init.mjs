@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -17,6 +17,11 @@ const text = path => readFileSync(path, "utf8");
 const hash = path => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
 const save = (path, data) => writeFileSync(path, JSON.stringify(data, null, 2) + "\n", { flag: "wx", mode: 0o600 });
 const valueFlags = new Set(["--repository", "--kind", "--summary", "--acceptance", "--id", "--brief", "--codex-executable", "--tool-executable", "--test-directory", "--test-pattern", "--python-runner", "--read-executable", "--pin", "--timeout-seconds", "--client-link", "--upgrade-runtime", "--reconfigure-check", "--confirm"]);
+function canonicalDestination(path) {
+  const remaining = [];
+  while (!existsSync(path)) { remaining.unshift(path.split("/").at(-1)); path = dirname(path); }
+  return join(realpathSync(path), ...remaining);
+}
 
 export const INIT_USAGE = `Usage:
   flow-supervised init
@@ -89,16 +94,20 @@ export function createProjectInitPlan(options, { env = process.env, cwd = proces
       !Array.isArray(brief.acceptance) || !brief.acceptance.length || new Set(brief.acceptance).size !== brief.acceptance.length ||
       [brief.id, brief.summary, ...brief.acceptance].some(value => typeof value !== "string" || !value.trim() || value.length > 8192)) fail("Provide a valid brief with unique non-empty acceptance criteria");
   const codex = findInstalledExecutable("codex", { env, selected: options["--codex-executable"] });
-  const preset = projectCheckPreset({ repository, kind: options["--kind"], criteria: brief.acceptance, env, options: {
-    toolExecutable: options["--tool-executable"], pythonRunner: options["--python-runner"], testDirectory: options["--test-directory"], testPattern: options["--test-pattern"],
-    pins: options.pins, extraExecutables: options.extraExecutables, timeoutMs: options.timeoutMs,
-  } });
-  const registration = createProjectCheckRegistration({ repository, recipe: preset.recipe });
   const gitIdentity = resolveProductionGitIdentity(repository, env);
   const stateHome = env.FLOW_LOCAL_CLIENT_STATE_HOME ?? env.XDG_STATE_HOME ?? join(env.HOME ?? homedir(), ".local/state");
   if (!isAbsolute(stateHome)) fail("Choose an absolute machine-local state directory");
-  if (stateHome === repository || stateHome.startsWith(repository + "/")) fail("Choose a machine-local state directory outside the project");
+  const actualStateHome = canonicalDestination(stateHome);
+  if (actualStateHome === repository || actualStateHome.startsWith(repository + "/")) fail("Choose a machine-local state directory outside the project");
   const profile = join(stateHome, "flow-local", digest(repository).slice(7, 31));
+  const authorityDirectory = canonicalDestination(join(profile, "authority"));
+  const configurationParent = canonicalDestination(join(stateHome, "flow-init"));
+  if (configurationParent === repository || configurationParent.startsWith(repository + "/")) fail("Choose a private configuration directory outside the project");
+  const preset = projectCheckPreset({ repository, kind: options["--kind"], criteria: brief.acceptance, env, authorityDirectory, options: {
+    toolExecutable: options["--tool-executable"], pythonRunner: options["--python-runner"], testDirectory: options["--test-directory"], testPattern: options["--test-pattern"],
+    pins: options.pins, extraExecutables: options.extraExecutables, timeoutMs: options.timeoutMs,
+  } });
+  const registration = createProjectCheckRegistration({ repository, recipe: preset.recipe, authorityDirectory });
   let clientDirectory = join(profile, "clients", registration.registration_digest.slice(7));
   if (existsSync(join(profile, "profile.json"))) {
     const original = JSON.parse(text(join(profile, "profile.json")));
@@ -106,6 +115,8 @@ export function createProjectInitPlan(options, { env = process.env, cwd = proces
   }
   const clientLink = options["--client-link"] && resolve(cwd, options["--client-link"]);
   if (clientLink) {
+    const destination = join(canonicalDestination(dirname(clientLink)), basename(clientLink));
+    if (destination === repository || destination.startsWith(repository + "/")) fail("Choose a --client-link outside the project so preparation keeps a clean workspace");
     let existing;
     try { existing = lstatSync(clientLink); } catch (error) { if (error.code !== "ENOENT") throw error; }
     if (existing && (!existing.isSymbolicLink() || realpathSync(clientLink) !== join(clientDirectory, "flow"))) fail("Client link already exists and will not be replaced. Choose a new --client-link.");
@@ -113,8 +124,9 @@ export function createProjectInitPlan(options, { env = process.env, cwd = proces
   return { schema: "flow.project-init-selection/v1", repository, git_head: projectGit(repository, ["rev-parse", "HEAD"]).trim(),
     kind: preset.kind, brief, runtime_root: runtimeRoot, node: realpathSync(process.execPath), git_identity: gitIdentity,
     codex_executable: { path: codex, sha256: hash(codex) }, recipe: preset.recipe, project_check: registration.config,
-    registration_digest: registration.registration_digest, scope: registration.scope,
-    setup: { authority_directory: join(profile, "authority"), state_home: stateHome, client_link: clientLink ?? null,
+    registration_digest: registration.registration_digest, binding_fingerprint: registration.binding_fingerprint, scope: registration.scope,
+    setup: { authority_directory: join(profile, "authority"), canonical_authority_directory: authorityDirectory,
+      state_home: stateHome, canonical_state_home: actualStateHome, configuration_parent: configurationParent, client_link: clientLink ?? null,
       upgrade_runtime: options["--upgrade-runtime"] ?? null, reconfigure_check: options["--reconfigure-check"] ?? null },
     execution_trust: "supervised-native-cli", trust_disclosure: "Official CLI requested permissions and ambient startup are operator-supervised, not independently enforced. This confirmation authorizes setup, not launch.",
     notes: [...preset.notes, "Changing acceptance changes the check identity: existing profiles may require --reconfigure-check yes and a stopped, settled owner", "Runtime selection changes require explicit --upgrade-runtime yes and the existing stopped, settled procedure"],
@@ -123,21 +135,23 @@ export function createProjectInitPlan(options, { env = process.env, cwd = proces
 
 export function renderProjectInitPlan(plan) {
   const check = plan.project_check;
+  const display = value => String(value).replace(/[\u0000-\u001f\u007f-\u009f]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
   return ["Flow project setup - preview", `Project: ${plan.repository}`, `Feature: ${plan.brief.summary}`,
     ...plan.brief.acceptance.map(value => `  Acceptance: ${value}`), `Preset: ${plan.kind} (GREEN-only verify)`,
     `Official CLI: ${plan.codex_executable.path} (${plan.codex_executable.sha256})`,
     `Command: ${JSON.stringify([check.executable.path, ...check.argv])}`, `Version probe: ${JSON.stringify(check.version_argv)} -> ${check.version}`,
     `Timeout: ${check.limits.timeout_ms / 1000}s + bounded 5s version probe; output: ${check.limits.max_output_bytes} bytes`,
-    "Read-only inputs:", ...check.read_mounts.map(input => `  ${input.source} -> ${input.target}\n    ${input.sha256}`),
+    "Read-only inputs:", ...check.read_mounts.flatMap(input => [`  ${input.source} -> ${input.target}`, `    ${input.sha256}`]),
     "Pinned existing tests/configuration:", ...check.pinned_files.map(file => `  ${file.path} (${file.sha256})`),
-    `Environment: ${JSON.stringify(check.environment)}`, `Authority: ${plan.setup.authority_directory}`, `Trust: ${plan.trust_disclosure}`,
-    ...plan.notes.map(note => `Note: ${note}`), "No project tests, owner or model work have run. Nothing has been created.", ""].join("\n");
+    `Environment: ${JSON.stringify(check.environment)}`, `Private configuration parent: ${plan.setup.configuration_parent}`,
+    `Client link: ${plan.setup.client_link ?? "none (use the returned immutable client path)"}`, `Authority: ${plan.setup.authority_directory}`, `Trust: ${plan.trust_disclosure}`,
+    ...plan.notes.map(note => `Note: ${note}`), "No project tests, owner or model work have run. Nothing has been created.", ""].map(display).join("\n");
 }
 
 async function applyPlan(plan, options, env, cwd) {
   const current = createProjectInitPlan(options, { env, cwd });
   if (digest(current) !== digest(plan)) fail("Project or selected inputs changed after preview. Review a fresh init plan.");
-  const parent = join(plan.setup.state_home, "flow-init");
+  const parent = plan.setup.configuration_parent;
   if (parent === plan.repository || parent.startsWith(plan.repository + "/")) fail("Choose a machine-local state directory outside the project");
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const directory = mkdtempSync(join(parent, "setup-"));
