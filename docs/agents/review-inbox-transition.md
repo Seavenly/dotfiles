@@ -43,7 +43,7 @@ git status --short -- tools/review-inbox bin/review-inbox
 
 Use the branch or commits carrying this handoff and the implementation; do
 not assume that pulling an older default branch is sufficient. The inbox
-rollout is published on `feature/review-inbox-tui`. Fetch that branch and
+rollout is published on `feature/flow-runtime`. Fetch that branch and
 inspect the target checkout before attempting the work-host transition.
 If transferring later changes as a patch, remember that a plain `git diff`
 omits untracked files and is not a complete delivery artifact by itself.
