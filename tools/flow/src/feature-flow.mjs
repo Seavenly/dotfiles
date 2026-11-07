@@ -150,7 +150,7 @@ function compileFeatureSelection(
     mutation_epoch: selection.workspace.mutation_epoch,
     fingerprint: selection.workspace.fingerprint,
   };
-  const cards = projectCheckedCards(featureCards(selection, workspaceClaim, { independentCritique }), selection);
+  const cards = projectCheckedCards(featureCards(selection, workspaceClaim, { independentCritique }), selection, workspaceClaim);
   const resultBindings = featureResultBindings(cards);
   validateFeatureResultBindings(cards, resultBindings);
   const repairs = validateFeatureRepairCards(
@@ -223,11 +223,11 @@ function featureCards(selection, workspaceClaim, options = {}) {
 
 // The command result is a separate authority-owned producer, after the exact
 // capture and before critique/verification. Legacy graphs remain byte-identical.
-function projectCheckedCards(cards, selection) {
+function projectCheckedCards(cards, selection, workspaceClaim) {
   if (selection.project_check === undefined) return cards;
   const capture = cards.find(card => card.id === "feature-capture");
   const check = {
-    ...capture, id: "feature-project-check", dependencies: [capture.id],
+    ...capture, id: "feature-project-check", dependencies: [capture.id], resource_claims: [workspaceClaim],
     executor: { ...capture.executor, contract: PROJECT_CHECK_CONTRACT, effect_classification: "reconcilable" }, recovery: "reconcilable",
     inputs: { brief: selection.brief, workspace: selection.workspace, phase: "project_check",
       project_check: selection.project_check, operation_evidence_card_ids: [capture.id],
