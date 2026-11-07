@@ -38,6 +38,8 @@ test("public host and reboot admission schemas compile in strict mode", async ()
     "flow.dark-opt-in.v1.schema.json",
     "flow.feature-candidate-archive.v1.schema.json",
     "flow.feature-criterion-evidence.v1.schema.json",
+    "flow.direct-feature-apply-output.v2.schema.json",
+    "flow.direct-feature-critique-output.v2.schema.json",
     "flow.feature-critique-output.v1.schema.json",
     "flow.authority-critique-input-binding.v1.schema.json",
     "flow.required-authority.v1.schema.json",

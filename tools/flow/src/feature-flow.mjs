@@ -38,12 +38,14 @@ import {
   AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
   FEATURE_CRITIQUE_OUTPUT_SCHEMA,
   FEATURE_CRITIQUE_PROMPT,
+  FEATURE_FILE_OBSERVATION_CONTRACT,
 } from "./feature-critique-contract.mjs";
 
 export {
   AUTHORITY_CRITIQUE_INPUT_BINDING_SCHEMA,
   FEATURE_CRITIQUE_OUTPUT_SCHEMA,
   FEATURE_CRITIQUE_PROMPT,
+  FEATURE_FILE_OBSERVATION_CONTRACT,
 };
 
 // These contracts are intentionally registered operation contracts.  The
@@ -331,6 +333,7 @@ function featureDelegateTaskInputs(inputs) {
     schema: "flow.delegate-task-inputs/v1",
     flow: "feature/v1",
     phase: inputs.phase,
+    file_observation_contract: FEATURE_FILE_OBSERVATION_CONTRACT,
     mode: inputs.mode,
     brief: inputs.brief,
     ...(inputs.slice === undefined ? {} : { slice: inputs.slice }),

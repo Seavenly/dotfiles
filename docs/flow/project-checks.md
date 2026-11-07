@@ -12,7 +12,10 @@ critique, verification and seal. The registered command must exit zero and its
 exact captured candidate must remain unchanged. Writer and critic criterion
 observations may use `git_file_sha256` with a repository-relative file and
 `expected: "sha256:<64 lowercase hex>"` for its raw bytes. Flow independently
-recomputes that digest from the exact captured Git blob. This avoids transmitting
+recomputes that digest from the exact captured Git blob. Newly compiled tasks
+bind `flow.git-file-observation/v2` and its versioned direct-output schema;
+historical tasks without that marker retain their exact v1 schemas and reservation
+identities. This avoids transmitting
 full ordinary source text as evidence; the unchanged evidence scanner still
 rejects ambient host paths and credentials in observations. Legacy
 `git_file_equals` remains available for safe short text. A file digest proves

@@ -44,10 +44,10 @@ for (const role of ["lens", "critic"]) {
   });
 }
 
-test("feature output contracts bind the additive file-digest variant and preserve equals", () => {
+test("legacy feature output contracts retain their exact identities", () => {
   for (const [phase, expected] of [
-    ["apply", "sha256:5319da9e5f846e2ec961576de400a1d976fb202c8d1b2d8f8958df4c1a064e15"],
-    ["critique", "sha256:5470ae27fa32f7126d301d4a2ae3e445d8d142b645cc76a3c7d54a9b7ce2384f"],
+    ["apply", "sha256:e9b42b99a8e49a301add20082ce30b4897293ff78e790078cc7574d2429ec230"],
+    ["critique", "sha256:4e0340109962db1fbd115b95dcec8fe5133b6d95b261434529c72d0ca16c6d0a"],
   ]) {
     const contract = directOutputContract({ delegate_input: { task_inputs: { phase } }, delegate_output_schemas: ["flow.delegate-evidence/v1"] });
     assert.equal(contract.contract_digest, expected);
@@ -188,7 +188,7 @@ test("selected lens specialization changes the immutable output identity", () =>
 
 
 test("direct feature schemas accept both closed file observations and reject malformed digests", () => {
-  const contract = directOutputContract({ delegate_input: { task_inputs: { phase: "apply" } }, delegate_output_schemas: ["flow.delegate-evidence/v1"] });
+  const contract = directOutputContract({ delegate_input: { task_inputs: { phase: "apply", file_observation_contract: "flow.git-file-observation/v2" } }, delegate_output_schemas: ["flow.delegate-evidence/v1"] });
   const validate = new Ajv({ strict: false }).compile(contract.schema);
   const output = entry => ({ schema: "flow.delegate-evidence/v1", observation: "Inspected the candidate", feature_evidence: { schema: "flow.feature-criterion-evidence/v1", criteria: [entry] } });
   const entry = { criterion: "The feature is present", kind: "git_file_sha256", target: "src/feature.sh", expected: "sha256:" + "a".repeat(64) };
@@ -197,4 +197,14 @@ test("direct feature schemas accept both closed file observations and reject mal
   assert.equal(validate(output({ ...entry, expected: "a".repeat(64) })), false);
   assert.equal(validate(output({ ...entry, expected: "sha256:" + "A".repeat(64) })), false);
   assert.equal(validate(output({ ...entry, sha256: entry.expected })), false);
+});
+
+
+test("new observation contracts are selected only by the immutable task marker", () => {
+ for (const [phase, expected] of [["apply", "sha256:5319da9e5f846e2ec961576de400a1d976fb202c8d1b2d8f8958df4c1a064e15"], ["critique", "sha256:5470ae27fa32f7126d301d4a2ae3e445d8d142b645cc76a3c7d54a9b7ce2384f"]]) {
+  const intent = { delegate_input: { task_inputs: { phase, file_observation_contract: "flow.git-file-observation/v2" } }, delegate_output_schemas: ["flow.delegate-evidence/v1"] };
+  assert.equal(directOutputContract(intent).contract_digest, expected);
+  intent.delegate_input.task_inputs.file_observation_contract = "flow.git-file-observation/v3";
+  assert.throws(() => directOutputContract(intent), { code: "unsupported_direct_output_contract" });
+ }
 });

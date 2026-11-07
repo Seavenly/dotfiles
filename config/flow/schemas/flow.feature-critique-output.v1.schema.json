@@ -57,9 +57,8 @@
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["expected", "kind", "target"],
-                "allOf": [{"if": {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "git_file_sha256"}}}, "then": {"type": "object", "properties": {"expected": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}}}}],
                 "properties": {
-                  "kind": { "enum": ["git_file_equals", "git_file_sha256"] },
+                  "kind": { "const": "git_file_equals" },
                   "target": {
                     "type": "string",
                     "minLength": 1,

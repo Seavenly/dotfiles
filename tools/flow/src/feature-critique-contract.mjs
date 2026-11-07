@@ -3,6 +3,8 @@
  * Keep this module dependency-free so the feature compiler, lifecycle kernel,
  * and production validator cannot drift by importing one another.
  */
+export const FEATURE_FILE_OBSERVATION_CONTRACT = "flow.git-file-observation/v2";
+
 export const FEATURE_CRITIQUE_OUTPUT_SCHEMA =
   "flow.feature-critique-output/v1";
 

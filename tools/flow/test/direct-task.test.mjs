@@ -8,6 +8,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { createDirectDelegatedAgentPort } from "../src/direct-delegated-agent-port.mjs";
 import { fixtureCodexAdapter } from "../test-support/direct-task-fixture.mjs";
 import { digest } from "../src/canonical.mjs";
+import { directOutputContract } from "../src/direct-output-contract.mjs";
 import { digestDelegateInputBytes } from "../src/delegate-input-envelope.mjs";
 
 const linuxTaskMechanism = { skip: process.platform !== "linux" &&
@@ -532,4 +533,39 @@ test("terminal output durability precedes receipt publication and sync faults re
       assert.equal(await readFile(join(fixture.scratch, "launches"), "utf8"), "once\n");
     });
   }
+});
+
+
+test("legacy feature reservations adopt their exact old schema after digest contracts are introduced", linuxTaskMechanism, async t => {
+  const fixture = await directTaskFixture(t, "wait");
+  const executable = fixture.options.executables.codex;
+  const result = { schema: "flow.delegate-evidence/v1", observation: "Inspected retained text", feature_evidence: { schema: "flow.feature-criterion-evidence/v1", criteria: [{ criterion: "The feature is present", kind: "git_file_equals", target: "feature.txt", expected: "after" }] } };
+  const source = await readFile(executable, "utf8");
+  await writeFile(executable, source.replace("{'schema':'fixture.result/v1','answer':42}", JSON.stringify(result)));
+  const described = await fixture.port.describe({ schema: "flow.delegated-agent-description-request/v1", launch: { harness: "codex", model: "fixture-model", effort: "high", capability: "read-only" }, caller_metadata: {} });
+  const intent = { delegate_input: { task_inputs: { phase: "apply" } }, delegate_output_schemas: ["flow.delegate-evidence/v1"] };
+  const legacy = directOutputContract(intent);
+  assert.equal(legacy.contract_digest, "sha256:e9b42b99a8e49a301add20082ce30b4897293ff78e790078cc7574d2429ec230");
+  const request = { ...fixture.request, description: described.description, task_binding: { ...fixture.request.task_binding, output_contract: legacy } };
+  const started = await fixture.port.dispatch(request);
+  assert.equal(started.status, "still_running", JSON.stringify(started));
+  const readyDeadline = Date.now() + 5000;
+  while (!filesystem.existsSync(join(fixture.scratch, "provider-pid")) && Date.now() < readyDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(filesystem.existsSync(join(fixture.scratch, "provider-pid")), true, "the legacy provider is active before adoption");
+  try {
+    const recovered = fixture.freshPort();
+    const replay = { ...request, task_binding: { ...request.task_binding, output_contract: directOutputContract(intent) } };
+    const adopted = await recovered.dispatch(replay);
+    assert.equal(adopted.task.id, started.task.id);
+    assert.equal(adopted.task.descriptor_digest, started.task.descriptor_digest);
+    const current = directOutputContract({ ...intent, delegate_input: { task_inputs: { phase: "apply", file_observation_contract: "flow.git-file-observation/v2" } } });
+    assert.notEqual(current.contract_digest, legacy.contract_digest);
+    assert.equal((await recovered.dispatch({ ...request, task_binding: { ...request.task_binding, output_contract: current } })).reason.code, "caller_key_conflict");
+    await fixture.release();
+    const terminal = await recovered.wait({ turn_id: started.task.id, timeout_ms: 5000 });
+    assert.equal(terminal.status, "completed", JSON.stringify(terminal));
+    assert.equal(terminal.task.receipt.tree_retired, true);
+    assert.equal(terminal.task.descriptor.output_contract.contract_digest, legacy.contract_digest);
+    assert.equal(await readFile(join(fixture.scratch, "launches"), "utf8"), "once\n");
+  } finally { await fixture.release(); await fixture.port.wait({ turn_id: started.task.id, timeout_ms: 5000 }); }
 });
