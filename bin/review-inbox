@@ -1,30 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Multiplexer-neutral review inbox that surfaces, in one fzf list:
-#   - local agent reviews from the `tuicr-reviews` registry  (kind: agent -> tuicr)
-#   - coworker PRs from a cron feed, in an `── external ──` section (-> browser):
-#       kind=reply   a coworker commented on YOUR PR (shown first)
-#       kind=review  a coworker's PR needs YOUR review
-# Local (agent) reviews are listed first, then the external section.
-#
-# Coworker PRs come from a JSONL sidecar the PR-notifier cron writes, one PR per
-# line. Recognised fields:
-#   {"repo","number","title","url",
-#    "kind":"review"|"reply",                  # default "review"
-#    "state":"approved"|"changes_requested"|"commented"}   # optional, for reply
-# Override the path with COWORKER_PRS_FILE (default
-# ~/.local/state/dotfiles/coworker-review-prs.jsonl). Missing file -> local only.
-#
-# Status column glyphs (colored via ANSI, rendered with fzf --ansi): ● an open
-# tuicr window (agent, cyan); ✓ approved (agent review, or a PR of yours, green);
-# ✗ changes requested (red); • comments only (yellow).
-# In the picker: Enter opens the item; ctrl-a toggles approval on a local review
-# (no-op elsewhere).
-#
-# Runs inside a tmux or Herdr popup. `--lines` prints composed rows (fzf's
-# reload after a toggle); `--approve <type> <wt> <base> <branch>` toggles a
-# local review's approval (used by the ctrl-a bind).
+# Personal attention hub. Normal invocation runs the Go TUI; subcommands expose
+# the same data and personal organization state as JSON. The legacy helper
+# flags remain available for existing review integrations.
 
 backend="auto"
 case "${1:-}" in
@@ -68,8 +47,12 @@ clip() {
   if command -v pbcopy >/dev/null 2>&1; then pbcopy
   elif command -v wl-copy >/dev/null 2>&1; then wl-copy
   elif command -v xclip >/dev/null 2>&1; then xclip -selection clipboard
-  elif [[ "$backend" == "tmux" ]]; then tmux load-buffer - 2>/dev/null || cat >/dev/null
-  else cat >/dev/null; fi
+  elif [[ "$backend" == "tmux" ]] && command -v tmux >/dev/null 2>&1; then tmux load-buffer -
+  else
+    cat >/dev/null
+    echo "review-inbox: no clipboard available (install pbcopy, wl-copy, or xclip, or use a running tmux session)" >&2
+    return 1
+  fi
 }
 
 # The fzf header line, rebuilt on demand so a transient message (arm/copy) can be
@@ -108,18 +91,23 @@ open_review_rows() {
 
 open_local_review() {
   local worktree="$1" revset="$2" label="$3"
-  local existing created pane_id workspace_id panes tuicr_command
+  local existing created pane_id workspace_id panes tuicr_command shell_command
 
   if [[ "$backend" == "tmux" ]]; then
     existing="$(tmux list-windows -F '#{window_index}'$'\t''#{@tuicr_wt}'$'\t''#{@tuicr_rev}' \
-      | awk -F'\t' -v w="$worktree" -v r="$revset" '$2 == w && $3 == r { print $1; exit }')"
+      | awk -F'\t' -v w="$worktree" -v r="$revset" '$2 == w && $3 == r { print $1; exit }')" || {
+      echo "review-inbox: opening local reviews requires a running tmux session (or --backend herdr)" >&2
+      return 1
+    }
     if [[ -n "$existing" ]]; then
       tmux select-window -t ":$existing"
       return
     fi
 
+    printf -v tuicr_command 'exec tuicr -r %q' "$revset"
+    printf -v shell_command 'zsh -i -c %q' "$tuicr_command"
     existing="$(tmux new-window -P -F '#{window_index}' -c "$worktree" -n "tuicr:$label" \
-      "zsh -i -c 'tuicr -r \"${revset}\"'")"
+      "$shell_command")"
     tmux set-option -w -t ":$existing" @tuicr_wt "$worktree"
     tmux set-option -w -t ":$existing" @tuicr_rev "$revset"
     return
@@ -175,6 +163,29 @@ open_local_review() {
   printf -v tuicr_command 'exec tuicr -r %q' "$revset"
   herdr pane run "$pane_id" "$tuicr_command" >/dev/null
 }
+
+# These helpers are called with structured arguments by the Go action adapter.
+if [[ "${1:-}" == "--open-local" ]]; then
+  [[ $# == 5 ]] || { echo "review-inbox: --open-local requires worktree, base, head, and label" >&2; exit 2; }
+  [[ -d "$2" ]] || { printf 'review-inbox: worktree is missing: %s\n' "$2" >&2; exit 1; }
+  open_local_review "$2" "$3...$4" "$5"
+  exit 0
+fi
+if [[ "${1:-}" == "--open-url" ]]; then
+  [[ $# == 2 && ( "$2" == http://* || "$2" == https://* ) ]] || { echo "review-inbox: --open-url requires an HTTP(S) URL" >&2; exit 2; }
+  if command -v xdg-open >/dev/null 2>&1 && [[ "$(uname -s)" != Darwin ]]; then
+    exec xdg-open "$2"
+  fi
+  exec open "$2"
+fi
+if [[ "${1:-}" == "--copy-token" ]]; then
+  [[ $# == 2 ]] || { echo "review-inbox: --copy-token requires a token" >&2; exit 2; }
+  if ! printf '%s' "$2" | clip; then
+    echo "review-inbox: could not copy the token; check the clipboard service or tmux session" >&2
+    exit 1
+  fi
+  exit 0
+fi
 
 if [[ "${1:-}" == "--approve" ]]; then
   shift
@@ -313,56 +324,47 @@ build_lines() {
 
 if [[ "${1:-}" == "--lines" ]]; then build_lines; exit 0; fi
 
-lines="$(build_lines)"
-if [[ -z "$lines" ]]; then
-  echo "Review inbox is empty (no local reviews, and no coworker PR feed)." >&2
-  sleep 2; exit 0
+# Resolve the repository through the public symlink in ~/.local/bin.
+script="${BASH_SOURCE[0]}"
+while [[ -L "$script" ]]; do
+  script_dir="$(cd -P "$(dirname "$script")" && pwd)"
+  script="$(readlink "$script")"
+  [[ "$script" == /* ]] || script="$script_dir/$script"
+done
+script_dir="$(cd -P "$(dirname "$script")" && pwd)"
+root="$(cd "$script_dir/.." && pwd)"
+module="$root/tools/review-inbox"
+repo_key="$(printf '%s' "$root" | cksum | awk '{print $1}')"
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/review-inbox/$repo_key"
+binary="$cache_dir/review-inbox"
+fingerprint_file="$cache_dir/source.cksum"
+# Include names and bytes so removed files and checkouts with older mtimes
+# invalidate the executable just as edits and added files do.
+source_fingerprint="$(
+  for input in "$module"/*.go "$module/go.mod" "$module/go.sum"; do
+    [[ -f "$input" ]] || continue
+    printf '%s\n' "${input##*/}"
+    cksum "$input"
+  done | cksum | awk '{print $1 ":" $2}'
+)"
+cached_fingerprint="$(cat "$fingerprint_file" 2>/dev/null || true)"
+if [[ ! -x "$binary" || "$source_fingerprint" != "$cached_fingerprint" ]]; then
+  command -v go >/dev/null 2>&1 || {
+    echo "review-inbox: Go is required to build the application; run dotfiles install" >&2
+    exit 1
+  }
+  mkdir -p "$cache_dir"
+  build_output="$(mktemp "$cache_dir/.build.XXXXXX")"
+  trap 'rm -f "$build_output"' EXIT
+  (cd "$module" && go build -o "$build_output" .)
+  chmod +x "$build_output"
+  mv -f "$build_output" "$binary"
+  printf '%s\n' "$source_fingerprint" > "$fingerprint_file"
+  trap - EXIT
 fi
-
-# Legend glyphs are colored to match the row glyphs (see the awk `col`); the
-# header is rendered with --ansi so the SGR codes take effect.
-hdr="$(build_header)"
-
-# Clear any stale two-press-delete arm so a leftover arm from a previous popup
-# can't turn a single ctrl-x into an immediate delete.
-rm -f "$armfile"
-
-# Count the composed rows for the list label. Approving toggles a glyph but does
-# not add/remove rows, so a label computed once stays correct across reloads.
-counts="$(printf '%s\n' "$lines" | awk -F'\t' '$2=="local"{l++} $2=="pr"{p++} END{printf "%d %d", l+0, p+0}')"
-list_label=" review inbox · ${counts% *} local · ${counts#* } external "
-
-selection="$(
-  printf '%s\n' "$lines" | fzf \
-    --ansi --reverse --highlight-line --info=inline-right --no-preview \
-    --delimiter=$'\t' --with-nth=1 --nth=1 \
-    --border=none \
-    --list-border=rounded --list-label="$list_label" --list-label-pos=3 \
-    --header-border=rounded \
-    --color='list-border:242,header-border:242,list-label:bold' \
-    --prompt='› ' --header="$hdr" \
-    --bind "ctrl-a:execute-silent($self_with_backend --approve {2} {3} {8} {9} {7})+reload($self_with_backend --lines)" \
-    --bind "ctrl-y:transform($self_with_backend --copy {6})" \
-    --bind "ctrl-x:transform($self_with_backend --maybe-delete {2} {3} {8} {9} {7} {10})"
-)" || exit 0
-[[ -z "$selection" ]] && exit 0
-
-action="$(printf '%s' "$selection" | cut -f2)"
-case "$action" in
-  sep) exit 0 ;;
-  pr)
-    url="$(printf '%s' "$selection" | cut -f3)"
-    [[ -n "$url" ]] && { open "$url" 2>/dev/null || xdg-open "$url" 2>/dev/null || true; }
-    ;;
-  local)
-    worktree="$(printf '%s' "$selection" | cut -f3)"
-    base="$(printf '%s' "$selection" | cut -f4)"
-    branch="$(printf '%s' "$selection" | cut -f5)"
-    branch_name="$(printf '%s' "$selection" | cut -f9)"
-    if [[ -z "$worktree" || ! -d "$worktree" ]]; then
-      echo "review-inbox: worktree is missing: $worktree" >&2; sleep 2; exit 0
-    fi
-    revset="${base}...${branch}"
-    open_local_review "$worktree" "$revset" "${branch_name:-$branch}"
-    ;;
-esac
+[[ "${1:-}" != "--build" ]] || exit 0
+# A new UI session must not inherit an armed legacy projection deletion.
+[[ $# != 0 ]] || rm -f "$armfile"
+export REVIEW_INBOX_LAUNCHER="$script_dir/review-inbox"
+export REVIEW_INBOX_BACKEND="$backend"
+exec "$binary" "$@"

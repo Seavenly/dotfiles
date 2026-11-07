@@ -718,6 +718,20 @@ _Avoid_: Registry entry, tuicr session
 A rebuildable, derived view of a review manifest for discovery and display.
 _Avoid_: Review state, approval record
 
+**Attention hub**:
+The host-local `review-inbox` TUI and JSON CLI combining source-owned local
+reviews and pull requests with externally published briefs. It owns personal
+read/unread and dismissed state, but not source collection, review lifecycle,
+approval, or integration authority. Its Attention, Reviews, and Briefs views
+are distinct from the ReviewAuthority-owned review inbox projection.
+_Avoid_: Review authority, scheduler, source of review approval
+
+**Inbox layout**:
+A named presentation of the attention hub's shared items and actions. Navigator,
+Ledger, Dispatch, Stream, and Overview share one read/dismiss state, while the
+host remembers the operator's preferred layout.
+_Avoid_: Source, review state, independent inbox
+
 **Review inbox**:
 The disposable `flow.review-inbox-projection/v1` view of candidate and review
 subjects derived from ReviewAuthority's exact watermark. Its

@@ -82,6 +82,22 @@ check(len(raised) == 1 and raised[0]["title"].startswith("\U0001f7e2 Your PR (up
 check(raised[0]["url"] == "https://github.com/example-org/app/pull/2", "banner click opens the PR")
 print("ok - reply state changes are announced with their state")
 
+queues["review"][0].labels = ["risk:low", "agent:reviewed", "risk:low"]
+raised = run()
+check(len(raised) == 1 and "Labels: agent:reviewed, risk:low" in raised[0]["message"],
+      "a classification change raises one banner with its labels")
+lines = [json.loads(line) for line in Path(os.environ["COWORKER_PRS_FILE"]).read_text().splitlines()]
+check(lines[0]["labels"] == ["agent:reviewed", "risk:low"], "feed publishes normalized labels")
+queues["review"][0].labels = [" agent:reviewed ", "risk:low"]
+check(run() == [], "label order and duplicate changes do not raise banners")
+queues["review"][0].labels = []
+check(len(run()) == 1, "removing classifications is a meaningful update")
+queues["reply"][0].labels = ["needs-author"]
+check(len(run()) == 1, "reply PR classifications also raise updates")
+lines = [json.loads(line) for line in Path(os.environ["COWORKER_PRS_FILE"]).read_text().splitlines()]
+check(lines[-1]["labels"] == ["needs-author"], "reply PR feed preserves labels")
+print("ok - labels reach the feed and classification changes are announced once")
+
 good_feed = Path(os.environ["COWORKER_PRS_FILE"]).read_text()
 queues["error"] = RuntimeError("GitHub API error 403")
 check([b["title"] for b in run()] == ["⚠️ Review feed error"], "first failure raises one banner")
@@ -97,10 +113,27 @@ legacy = {"version": 2, "seeded": True, "failing": False, "prs": {
     "example-org/app#5": {"fp": "adf1e7fa7981c098"},
 }}
 (tmp / "state" / "state.json").write_text(json.dumps(legacy))
-queues["review"] = [pr(4, head_sha="abc", reason="direct review request")]
-queues["reply"] = [pr(5, reply_state="commented", unaddressed=2)]
+queues["review"] = [pr(4, head_sha="abc", reason="direct review request", labels=["risk:low"])]
+queues["reply"] = [pr(5, reply_state="commented", unaddressed=2, labels=["needs-author"])]
 check(run() == [], "fingerprints carried over from the Hermes notifier do not re-alert")
 print("ok - state from the previous notifier is compatible")
+
+
+class LabelGitHub:
+    def rest(self, path, params=None):
+        if path == "/search/issues":
+            return {"items": [{"repository_url": "https://api.github.com/repos/example-org/app",
+                               "number": 17, "title": "Classified PR", "labels": [
+                                   {"name": "risk:low"}, {"name": "agent:reviewed"}]}]}
+        check(path == "/repos/example-org/app/pulls/17", "detail uses the existing PR endpoint")
+        return {"head": {"sha": "head"}, "labels": [{"name": "risk:high"}, {"name": "risk:high"}]}
+
+
+classified = feed.search_prs(LabelGitHub(), "is:pr")[0]
+check(classified.labels == ["agent:reviewed", "risk:low"], "search labels are captured")
+feed.load_detail(LabelGitHub(), classified)
+check(classified.labels == ["risk:high"], "fresh PR detail labels replace the search snapshot")
+print("ok - GitHub label objects are captured without additional requests")
 
 check(feed.first_meaningful_line("<!-- template -->\n## Summary\n- [ ] tested\n**Adds** the `feed`.") == "Adds the feed.",
       "description skips template boilerplate")

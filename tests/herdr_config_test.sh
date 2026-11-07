@@ -30,3 +30,9 @@ assert_contains "$(cat "$root/config/herdr/config.toml")" 'key = "prefix+ctrl+d"
 assert_contains "$(cat "$root/config/herdr/config.toml")" \
   'command = "project-switcher --backend herdr --project \"$(dotfiles-root)\""'
 echo "ok - Herdr opens the dotfiles project with prefix Ctrl-D"
+
+assert_contains "$(cat "$root/config/herdr/config.toml")" \
+  $'command = "review-inbox --backend herdr"\nwidth = "95%"\nheight = "90%"'
+assert_contains "$(cat "$root/config/tmux/tmux.conf")" \
+  'display-popup -d "#{pane_current_path}" -E -w 95% -h 90% "review-inbox --backend tmux"'
+echo "ok - review hub popups preserve space for narrow terminal navigation"

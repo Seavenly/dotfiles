@@ -36,7 +36,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -139,10 +139,21 @@ class PR:
     # coworker interactions are newer than your last activity.
     reply_state: str = ""
     unaddressed: int = 0
+    labels: list[str] = field(default_factory=list)
 
     @property
     def key(self) -> str:
         return f"{self.owner}/{self.repo}#{self.number}"
+
+
+def label_names(values: list[Any] | None) -> list[str]:
+    """Canonical names from GitHub label objects or producer-supplied strings."""
+    names = set()
+    for value in values or []:
+        name = value.get("name") if isinstance(value, dict) else value
+        if isinstance(name, str) and name.strip():
+            names.add(name.strip())
+    return sorted(names)
 
 
 def search_prs(gh: GitHub, query: str, limit: int = MAX_ITEMS) -> list[PR]:
@@ -165,6 +176,7 @@ def search_prs(gh: GitHub, query: str, limit: int = MAX_ITEMS) -> list[PR]:
                 url=item.get("html_url", ""),
                 updated_at=item.get("updated_at", ""),
                 node_id=item.get("node_id"),
+                labels=label_names(item.get("labels")),
             ))
         if len(batch) < per_page:
             break
@@ -177,6 +189,8 @@ def load_detail(gh: GitHub, pr: PR) -> dict[str, Any]:
     pr.node_id = pr.node_id or detail.get("node_id")
     pr.head_sha = (detail.get("head") or {}).get("sha")
     pr.description = first_meaningful_line(detail.get("body"))
+    if "labels" in detail:
+        pr.labels = label_names(detail["labels"])
     return detail
 
 
@@ -397,7 +411,8 @@ def current_entries(review: list[PR], reply: list[PR]) -> dict[str, dict]:
 
     Review PRs change on a new head commit, a new request reason, or new
     activity since your review. Reply PRs change on a state flip or a change in
-    the count of unanswered coworker interactions.
+    the count of unanswered coworker interactions. Labels are recorded alongside
+    the legacy fingerprint so an upgrade can establish their baseline quietly.
     """
     entries: dict[str, dict] = {}
     for pr in review:
@@ -405,12 +420,14 @@ def current_entries(review: list[PR], reply: list[PR]) -> dict[str, dict]:
         entries[pr.key] = {
             "fp": _digest(basis), "kind": "review", "url": pr.url, "title": pr.title,
             "reason": pr.reason, "description": pr.description,
+            "labels": label_names(pr.labels),
         }
     for pr in reply:
         entries[pr.key] = {
             "fp": _digest(f"{pr.reply_state}|{pr.unaddressed}|0"), "kind": "reply",
             "state": pr.reply_state, "url": pr.url, "title": pr.title,
             "description": pr.description,
+            "labels": label_names(pr.labels),
         }
     return entries
 
@@ -428,6 +445,8 @@ def banner_for(key: str, info: dict, is_new: bool) -> dict:
         noun = "Your PR" if is_new else "Your PR (update)"
         title = f"{icon} {noun} — {verb}: {key}"
         body = [f"state: {state}", info.get("description") or ""]
+    if info.get("labels"):
+        body.append("Labels: " + ", ".join(info["labels"]))
     return {
         "title": title,
         "subtitle": (info.get("title") or "")[:120],
@@ -449,7 +468,8 @@ def reconcile(prev: dict, entries: dict[str, dict], now: str) -> tuple[dict, lis
         prev_prs = prev.get("prs", {})
         for key, info in entries.items():
             old = prev_prs.get(key)
-            if old is None or old.get("fp") != info["fp"]:
+            labels_changed = old is not None and "labels" in old and label_names(old["labels"]) != info["labels"]
+            if old is None or old.get("fp") != info["fp"] or labels_changed:
                 banners.append(banner_for(key, info, is_new=old is None))
     state = {"version": STATE_VERSION, "seeded": True, "failing": False, "updated_at": now, "prs": entries}
     return state, banners
@@ -495,11 +515,17 @@ def save_state(state: dict) -> None:
 
 def feed_lines(review: list[PR], reply: list[PR]) -> str:
     """The ``review-inbox`` contract: one JSON object per open PR."""
-    lines = [json.dumps({"repo": f"{pr.owner}/{pr.repo}", "number": pr.number, "title": pr.title,
-                         "url": pr.url, "kind": "review"}) for pr in review]
-    lines += [json.dumps({"repo": f"{pr.owner}/{pr.repo}", "number": pr.number, "title": pr.title,
-                          "url": pr.url, "kind": "reply", "state": pr.reply_state or "commented"})
-              for pr in reply]
+    lines = []
+    for kind, prs in (("review", review), ("reply", reply)):
+        for pr in prs:
+            item = {"repo": f"{pr.owner}/{pr.repo}", "number": pr.number,
+                    "title": pr.title, "url": pr.url, "kind": kind}
+            if kind == "reply":
+                item["state"] = pr.reply_state or "commented"
+            labels = label_names(pr.labels)
+            if labels:
+                item["labels"] = labels
+            lines.append(json.dumps(item))
     return "".join(line + "\n" for line in lines)
 
 
@@ -513,6 +539,8 @@ def queue_text(review: list[PR], reply: list[PR], now: datetime) -> str:
         lines += [f"Awaiting your review - {len(review)} PR(s)", ""]
         for i, pr in enumerate(review, 1):
             lines.append(f"{i}. {pr.key}: {pr.title}")
+            if labels := label_names(pr.labels):
+                lines.append("   Labels: " + ", ".join(labels))
             if pr.description:
                 lines.append(f"   {pr.description}")
             lines += [f"   Reason: {pr.reason}", f"   Updated: {pr.updated_at}", f"   {pr.url}", ""]
@@ -520,6 +548,8 @@ def queue_text(review: list[PR], reply: list[PR], now: datetime) -> str:
         lines += [f"Your PRs with coworker interaction - {len(reply)} PR(s)", ""]
         for i, pr in enumerate(reply, 1):
             lines.append(f"{i}. {pr.key}: {pr.title}  [{pr.reply_state}]")
+            if labels := label_names(pr.labels):
+                lines.append("   Labels: " + ", ".join(labels))
             if pr.description:
                 lines.append(f"   {pr.description}")
             lines += [f"   Updated: {pr.updated_at}", f"   {pr.url}", ""]

@@ -12,6 +12,7 @@ install_step="$(awk '
 assert_contains "$install_step" 'ripgrep'
 assert_contains "$install_step" 'fzf'
 assert_contains "$install_step" 'node'
+assert_contains "$install_step" 'go'
 linux_packages_step="$(awk '
   /name: Install Linux shell dependencies/ { capture = 1; next }
   capture && /run:/ { print; exit }

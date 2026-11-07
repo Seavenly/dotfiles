@@ -28,7 +28,9 @@ printf '%s\n' \
   'printf "%s\\n" "$*" >> "$TMUX_TEST_LOG"' \
   'case "$1" in' \
   '  list-windows) ;;' \
-  '  new-window) printf "3\\n" ;;' \
+  '  new-window)' \
+  '    [[ -z "${TMUX_COMMAND_FILE:-}" ]] || printf "%s" "${!#}" > "$TMUX_COMMAND_FILE"' \
+  '    printf "3\\n" ;;' \
   'esac' \
   > "$fake_bin/tmux"
 # shellcheck disable=SC2016
@@ -53,6 +55,7 @@ printf '%s\n' \
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'cat > "$CLIPBOARD_FILE"' \
+  '[[ "${CLIPBOARD_FAIL:-0}" != 1 ]]' \
   > "$fake_bin/pbcopy"
 # shellcheck disable=SC2016
 printf '%s\n' \
@@ -146,12 +149,34 @@ echo "ok - review inbox distinguishes lifecycle and run identity"
 : > "$tmux_log"
 PATH="$fake_bin:$PATH" TMUX_TEST_LOG="$tmux_log" REVIEW_WORKTREE="$repo" \
   BASE_SHA="$(git -C "$repo" rev-parse main)" HEAD_SHA="$(git -C "$repo" rev-parse feature)" \
-  "$root/bin/tmux-review-inbox"
-assert_contains "$(cat "$tmux_log")" \
-  "tuicr -r \"$(git -C "$repo" rev-parse main)...$(git -C "$repo" rev-parse feature)\""
+  "$root/bin/tmux-review-inbox" --open-local "$repo" \
+    "$(git -C "$repo" rev-parse main)" "$(git -C "$repo" rev-parse feature)" feature
 assert_contains "$(cat "$tmux_log")" \
   "set-option -w -t :3 @tuicr_rev $(git -C "$repo" rev-parse main)...$(git -C "$repo" rev-parse feature)"
 echo "ok - manifest-backed reviews open their immutable SHA range"
+
+# Run the command produced for tmux through a shell to verify that revisions
+# remain literal arguments even when they contain shell metacharacters.
+cat > "$fake_bin/zsh" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-}" != -i ]] || shift
+exec bash "$@"
+EOF
+cat > "$fake_bin/tuicr" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$TUICR_ARGUMENTS_FILE"
+EOF
+chmod +x "$fake_bin/zsh" "$fake_bin/tuicr"
+unsafe_base="main;\$(touch '$tmp/injected')"
+command_file="$tmp/tuicr-command"
+arguments_file="$tmp/tuicr-arguments"
+PATH="$fake_bin:$PATH" TMUX_TEST_LOG="$tmux_log" TMUX_COMMAND_FILE="$command_file" \
+  "$root/bin/review-inbox" --backend tmux --open-local "$repo" "$unsafe_base" feature 'review label'
+PATH="$fake_bin:$PATH" TUICR_ARGUMENTS_FILE="$arguments_file" \
+  bash -c "$(cat "$command_file")"
+assert_contains "$(cat "$arguments_file")" "$unsafe_base...feature"
+[[ ! -e "$tmp/injected" ]]
+echo "ok - review launch preserves shell metacharacters as literal revision arguments"
 
 base_sha="$(git -C "$repo" rev-parse main)"
 head_sha="$(git -C "$repo" rev-parse feature)"
@@ -161,7 +186,7 @@ herdr_argv_log="$tmp/herdr-argv.log"
 PATH="$fake_bin:$PATH" HERDR_TEST_LOG="$herdr_log" HERDR_ARGV_LOG="$herdr_argv_log" \
   HERDR_ACTIVE_WORKSPACE_ID=workspace-current REVIEW_WORKTREE="$repo" \
   BASE_SHA="$base_sha" HEAD_SHA="$head_sha" \
-  "$root/bin/review-inbox" --backend herdr
+  "$root/bin/review-inbox" --backend herdr --open-local "$repo" "$base_sha" "$head_sha" feature
 assert_contains "$(cat "$herdr_log")" \
   "tab create --workspace workspace-current --cwd $repo --label tuicr:feature --focus"
 assert_contains "$(cat "$herdr_log")" \
@@ -177,7 +202,7 @@ PATH="$fake_bin:$PATH" HERDR_TEST_LOG="$herdr_log" \
   HERDR_ACTIVE_WORKSPACE_ID=workspace-current REVIEW_WORKTREE="$repo" \
   BASE_SHA="$base_sha" HEAD_SHA="$head_sha" \
   HERDR_PANES_JSON="{\"result\":{\"panes\":[{\"tab_id\":\"tab-existing\",\"tokens\":{\"review_worktree\":\"$repo\",\"review_revset\":\"$base_sha...$head_sha\"}}]}}" \
-  "$root/bin/review-inbox" --backend herdr
+  "$root/bin/review-inbox" --backend herdr --open-local "$repo" "$base_sha" "$head_sha" feature
 assert_contains "$(cat "$herdr_log")" 'tab focus tab-existing'
 assert_not_contains "$(cat "$herdr_log")" 'tab create'
 echo "ok - review inbox focuses an existing Herdr review tab"
@@ -188,6 +213,14 @@ copy_result="$(PATH="$fake_bin:$PATH" CLIPBOARD_FILE="$clipboard" \
 assert_contains "$(cat "$clipboard")" 'run-one'
 assert_contains "$copy_result" 'copied: run-one'
 echo "ok - review inbox copy preserves the pulled token interaction"
+
+if PATH="$fake_bin:$PATH" CLIPBOARD_FILE="$clipboard" CLIPBOARD_FAIL=1 \
+  "$root/bin/review-inbox" --copy-token run-one 2>"$tmp/copy-error"; then
+  echo "review inbox unexpectedly reported clipboard success" >&2
+  exit 1
+fi
+assert_contains "$(cat "$tmp/copy-error")" 'could not copy the token'
+echo "ok - review inbox reports clipboard failures"
 
 review_log="$tmp/reviews.log"
 : > "$review_log"
