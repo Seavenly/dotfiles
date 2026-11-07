@@ -19,6 +19,8 @@ const MAX_STATUS_COUNT = 1_000_000;
 const MAX_INPUT_FILE_BYTES = 4 * 1024 * 1024;
 
 const USAGE = `Usage:
+  flow init [--summary TEXT --acceptance TEXT ...] [--json]
+  flow init [same selections] --confirm sha256:DIGEST [--json]
   flow start [--json]
   flow status [--json]
   flow stop [--json]
@@ -62,11 +64,16 @@ export async function runCli(
     ownerOptions = {},
     stderr = process.stderr,
     stdout = process.stdout,
+    stdin = process.stdin,
   } = {},
 ) {
   if (args.length === 0 || ["--help", "-h"].includes(args[0])) {
     stdout.write(USAGE);
     return 0;
+  }
+  if (args[0] === "init") {
+    const { runProjectInit } = await import("./project-init.mjs");
+    return runProjectInit(args.slice(1), { env, stdin, stdout, stderr });
   }
   if (["pilot", "local"].includes(args[0])) {
     try {
