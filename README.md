@@ -26,6 +26,7 @@ architectures before changing the machine.
 ## What this repository provides
 
 - A shared Zsh, tmux, Git, Neovim, Atuin, Lazygit, and mise configuration.
+- A keyboard and mouse attention hub for agent reviews, team PRs, and Markdown briefs.
 - Locked command-line tools and language runtimes installed through mise.
 - A minimal fzf project selector backed by Sesh for reliable tmux session
   creation and switching.
@@ -180,6 +181,7 @@ directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
 | `internal/` | Private commands, bootstrap lifecycle, migrations, and shared shell policy |
 | `tests/` | Behavioral tests exercised through module interfaces |
 | `tools/recorder/` | Optional recorder application and Python environment |
+| `tools/review-inbox/` | Bubble Tea attention hub and JSON CLI for reviews and externally published briefs |
 | `tools/review-feed/` | Optional GitHub PR feed for `review-inbox`, scheduled by launchd |
 | `tools/drovr/` | Harness-neutral delegated agent runtime over Herdr |
 | `tools/flow/` | Public flow transition interfaces and the dark replacement runtime |
@@ -339,6 +341,26 @@ The recorder's uv environment lives at
 BlackHole audio routing, the pyannote model license, and Hugging Face
 authentication require manual setup. See
 [`tools/recorder/README.md`](tools/recorder/README.md) for the complete process.
+
+## Personal attention hub
+
+Run `review-inbox` to browse local reviews, team PRs, and Markdown briefs in a
+mouse-enabled TUI. Navigator is the default layout, with Attention, Reviews,
+and Briefs views, search, previews, and local read/dismiss controls. Press `L`
+to choose among five layouts; the app remembers that choice on each host.
+Use `review-inbox --layout dispatch` to choose a layout for one launch.
+Narrow terminals use a
+separate detail screen suitable for phone-sized sessions. The same content and
+personal state are available through JSON CLI commands for agents.
+
+Collection stays external: the hub reads existing review sources and accepts
+published content through `review-inbox publish`. Go is already managed;
+the launcher builds and caches the application automatically. See
+[`tools/review-inbox/README.md`](tools/review-inbox/README.md) for publishing,
+interaction, and host-local configuration.
+
+For an agent-led transition on an existing work host, use the
+[fzf-to-TUI handoff](docs/agents/review-inbox-transition.md).
 
 ## Optional review feed
 

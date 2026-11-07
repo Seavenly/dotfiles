@@ -102,6 +102,8 @@ run "locked tools" env MISE_TRUSTED_CONFIG_PATHS="$root" mise install -n --locke
 run "Lua" bash -c 'find "$1/config/nvim" -name "*.lua" -print0 | xargs -0 luac -p' _ "$root"
 run "Python" env PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/dotfiles-pycache" python3 -m py_compile "$root/tools/recorder/clean.py" "$root/tools/recorder/record.py" "$root/tools/recorder/transcribe.py" "$root/tools/review-feed/review_feed.py"
 run "recorder lock" env UV_CACHE_DIR="${TMPDIR:-/tmp}/dotfiles-uv-cache" uv lock --project "$root/tools/recorder" --check
+# shellcheck disable=SC2016
+run "Review hub" bash -c 'cd "$1/tools/review-inbox" && go test ./... && go vet ./...' _ "$root"
 run "Drovr" npm --prefix "$root/tools/drovr" test
 run "Flow" npm --prefix "$root/config/flow" test
 run "Flow transition" npm --prefix "$root/tools/flow" test
