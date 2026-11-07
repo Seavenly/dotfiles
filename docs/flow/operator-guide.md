@@ -208,15 +208,15 @@ candidate, run result, or operator-supplied identity.
 | Implementation | `flow-runtime/v1` |
 | Historical release source commit (`transition-ledger.v1.json`) | `cffa34f5b8c92e2c2fc398c14c2eb841ac0a82a8` |
 | Qualification base commit | `a4a9a88a330be2b668339cf1a9b1b7c1b992564e` |
-| Governed release candidate tree (`release-content.v1.json`) | `462439197910a814585e1bdbced9275e63846a8b` |
-| Governed release content | `sha256:483aad18ec2343b8bd685c2762191ce684f2a658811626a65ff85132a91f6869` |
-| Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@38`, `sha256:216b225460960fa6cfbe766dcbb152ceecb645fdd66443da4f7a942e3cbef048` |
+| Governed release candidate tree (`release-content.v1.json`) | `f615844bf9e6a537a418b41d9a795805e158ea51` |
+| Governed release content | `sha256:0182725344ebc67d35060f9b1cfb2ab940a4de4aa9eec5df9d39c3e5faeac0bb` |
+| Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@39`, `sha256:5c05fdf2a259d2fc0752af0d012dd31b16af9e488d9abdc9488514f4038c40ac` |
 | Capability manifest | `config/flow/release-manifest.v1.json`, `sha256:8b0b4bc7287f887d869cafef5cb61e41d385ceea733a1a41e585cff5471546d9` |
 | Launch policy | `flow.launch-policy/v1`, `config/flow/launch-policy.v1.json`, `sha256:9718f8719e206895d6b760c247dc01c1ec9b34830413c9bc0acf04be2a438c8c` |
-| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:6c8e6f4957fa9f8784e9378e194b6e6aac4a72265e894ba10af7a428606a8b50` |
+| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:f828a73c82515eb07e1f449b7946f97d6bc63fe42a8bfb8c3ee133865ef8caee` |
 | Deterministic qualification evidence | Current ledger: `not_run`, no bound path or digest. Historical `config/flow/evidence/release-qualification.v1.json`, `sha256:99a55c5b01bca1f5199dcef233f76e1114da9e3a67993ae2eaf805312d3398d6` |
-| Production-route evidence | `not_run`, `config/flow/evidence/production-route-conformance.v1.json`, `sha256:50670ebea3d2d3bf71690a8dfcc4845e29038831e8fc246c58d47a810756ea26` |
-| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:722dd5d00eed18b897df39d42e3d78ef3f147fa21dbfdfbdaea3ce863dc9ee43` |
+| Production-route evidence | `not_run`, `config/flow/evidence/production-route-conformance.v1.json`, `sha256:b3a544beb7790e0ead57be3b439ba65b10270e36aa1414e16345478d3a20f3e4` |
+| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:956d7e5d968d099b157c5fa48b990a8f7c8410e27e6cf462402148cc42339d10` |
 
 Historical deterministic qualification evidence is bound to its recorded
 release and is not bound to the current ticket candidate. The current ledger
@@ -305,9 +305,9 @@ for that separately qualified, disposable pilot.
 | Test release binding | Value |
 | --- | --- |
 | Test pilot manifest | `config/flow/releases/1.1-dark-test/release-manifest.v1.json`, `flow-release-1.1-dark-test/v1`, `sha256:a6c659694e10344f416a805ba7acc87517d7bd2cd1f3188639d208d82e9a088b` |
-| Test pilot catalog | `flow.contract-catalog/v1@38`, `sha256:216b225460960fa6cfbe766dcbb152ceecb645fdd66443da4f7a942e3cbef048` |
+| Test pilot catalog | `flow.contract-catalog/v1@39`, `sha256:5c05fdf2a259d2fc0752af0d012dd31b16af9e488d9abdc9488514f4038c40ac` |
 | Test pilot qualification base | `c34c6e881ce375691d4f3e4ca626c1af9eef81cc` |
-| Test pilot content | `462439197910a814585e1bdbced9275e63846a8b`, `sha256:911ddf9832a8704324d60c42f01d5865403689e02f378136000a1843d0cb108c`, `sha256:dc434dfe2b4f283cf7d2c3336e3c987d9776b9e96c285270a82212d8177b82d3` |
+| Test pilot content | `f615844bf9e6a537a418b41d9a795805e158ea51`, `sha256:9fbf40f8d25f376adefd1c95a61e3b071b4bf61114cdad4d63b34fcee2378fe9`, `sha256:2c5dc2b2a09fea2f9997188d19c1798d0ecc20faeba02aea04e3116c040f901f` |
 | Test pilot source qualification | Final qualification `not_run`; deterministic prerequisites `not_run`, production prerequisites `not_run`; historical host aggregate is not consumed as new native qualification |
 | Historical fixture bootstrap | Generator input: retained pre-D deterministic fixture `sha256:3e001e0924fa8b3466c02488029bcbaabf74a48140966e372ac986a82c23e050`. Current prerequisite TAP: `config/flow/releases/1.1-dark-test/evidence/receipts/public-production-feature-test.tap`, `sha256:c3cd531c73d4f788e4007fe19e4b9f5add5db2e165fd9364d8beb33483a223be`; neither grants native qualification |
 
