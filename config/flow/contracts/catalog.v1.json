@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 38,
+  "catalog_version": 39,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -129,6 +129,19 @@
         "identity": "exact_check_and_runtime_fingerprint_before_claims",
         "generic_test_inputs": "rejected_before_effects",
         "native_qualification": "separate_required"
+      },
+      "project_check": {
+        "registration": "flow.production-project-check/v2",
+        "selection": "check_id_only",
+        "mode": "verify",
+        "operation": "flow.operation/project-check/v2",
+        "receipt": "work.project-check-receipt/v2",
+        "meaning": "GREEN-only_command_exit_zero_test_count_unknown",
+        "candidate": "exact_captured_committed_tree",
+        "network": "disabled",
+        "writes": "bounded_private_tmpfs_only",
+        "recovery": "existing_reservation_only",
+        "native_qualification": "not_claimed"
       }
     },
     "rejection_contract": {
@@ -1288,7 +1301,12 @@
     "flow.execution-watermark/v1",
     "flow.operation/feature-direct-commit/v1",
     "flow.git-candidate-commit-receipt/v1",
-    "flow.execution-failure-classification/v1"
+    "flow.execution-failure-classification/v1",
+    "flow.production-project-check/v2",
+    "flow.project-check-binding/v2",
+    "flow.operation/project-check/v2",
+    "flow.validator/project-check-receipt/v2",
+    "work.project-check-receipt/v2"
   ],
   "run_plan": {
     "contract": "flow.run-plan/v1",

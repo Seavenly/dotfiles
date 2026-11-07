@@ -147,7 +147,7 @@ export function createFlowRuntime({
         })
       : runAuthority;
     authorityLeaseAcquired = ownsAuthority;
-    if (localClientCheck !== undefined) assertCompatibleLocalCheck(authority, localClientCheck);
+    if (localClientCheck !== undefined) assertCompatibleLocalCheck(authority, { ...localClientCheck, authorityDirectory: resolvedAuthorityDirectory });
     // Core runtime construction performs synchronous same-boot recovery. Bind
     // production registrations before that sweep so provider-backed recovery
     // can use the exact durable authority rather than being dropped as an

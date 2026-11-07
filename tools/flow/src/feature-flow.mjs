@@ -1,3 +1,4 @@
+import { PROJECT_CHECK_CONTRACT, PROJECT_CHECK_VALIDATOR, validProjectCheckBinding } from "./project-check.mjs";
 import { isDirectDescription, directDescriptionIssue } from "./execution-contract.mjs";
 export const FEATURE_DIRECT_COMMIT_CONTRACT = "flow.operation/feature-direct-commit/v1";
 import { digest, freezeCanonical } from "./canonical.mjs";
@@ -74,6 +75,7 @@ const FEATURE_REPAIR_KINDS = new Set(Object.keys(FEATURE_REPAIR_CONTRACTS));
 const FEATURE_NEGATIVE_OUTCOME =
   "no review, integration, push, pull request, cleanup, or tracker completion";
 const FEATURE_OUTPUT_SCHEMAS = Object.freeze({
+  project_check_receipt: "work.project-check-receipt/v2",
   setup_receipt: "work.feature-setup-receipt/v1",
   test_failure_receipt: "work.feature-test-receipt/v1",
   workspace_mutation_observation: "flow.delegate-evidence/v1",
@@ -148,7 +150,7 @@ function compileFeatureSelection(
     mutation_epoch: selection.workspace.mutation_epoch,
     fingerprint: selection.workspace.fingerprint,
   };
-  const cards = featureCards(selection, workspaceClaim, { independentCritique });
+  const cards = projectCheckedCards(featureCards(selection, workspaceClaim, { independentCritique }), selection);
   const resultBindings = featureResultBindings(cards);
   validateFeatureResultBindings(cards, resultBindings);
   const repairs = validateFeatureRepairCards(
@@ -204,6 +206,7 @@ function featureOperationContracts(selection) {
   const contracts = [...(isDirectDescription(selection.delegation.apply.description) ? [FEATURE_DIRECT_COMMIT_CONTRACT] : []), FEATURE_OPERATION_CONTRACTS.capture,
     FEATURE_OPERATION_CONTRACTS.verify,
     FEATURE_OPERATION_CONTRACTS.seal];
+  if (selection.project_check !== undefined) contracts.push(PROJECT_CHECK_CONTRACT);
   if (selection.setup !== null) contracts.unshift(FEATURE_OPERATION_CONTRACTS.setup);
   if (selection.slices.some(({ mode }) => mode === "test")) {
     contracts.unshift(FEATURE_OPERATION_CONTRACTS.test);
@@ -216,6 +219,28 @@ function featureCards(selection, workspaceClaim, options = {}) {
     return serializedFeatureCards(selection, workspaceClaim, options);
   }
   return legacyFeatureCards(selection, workspaceClaim, options);
+}
+
+// The command result is a separate authority-owned producer, after the exact
+// capture and before critique/verification. Legacy graphs remain byte-identical.
+function projectCheckedCards(cards, selection) {
+  if (selection.project_check === undefined) return cards;
+  const capture = cards.find(card => card.id === "feature-capture");
+  const check = {
+    ...capture, id: "feature-project-check", dependencies: [capture.id],
+    executor: { ...capture.executor, contract: PROJECT_CHECK_CONTRACT, effect_classification: "reconcilable" }, recovery: "reconcilable",
+    inputs: { brief: selection.brief, workspace: selection.workspace, phase: "project_check",
+      project_check: selection.project_check, operation_evidence_card_ids: [capture.id],
+      provider_receipt_validator: PROJECT_CHECK_VALIDATOR },
+    outputs: ["flow.effect-receipt/v1", "project_check_receipt"],
+  };
+  return cards.flatMap(card => {
+    if (card.id === capture.id) return [card, check];
+    if (!["feature-critique", "feature-verify", "feature-seal"].includes(card.id)) return [card];
+    return [{ ...card, dependencies: [...new Set([...card.dependencies, check.id])],
+      inputs: { ...card.inputs, project_check: selection.project_check,
+        operation_evidence_card_ids: [...new Set([...(card.inputs.operation_evidence_card_ids ?? []), check.id])] } }];
+  });
 }
 
 function featureCardBuilders(selection, workspaceClaim) {
@@ -709,6 +734,10 @@ function validateFeatureInputs(inputs, explicitFacts) {
       "feature/v1 identity-free preparation requires exact starting Git facts",
     );
   }
+  if (inputs.project_check !== undefined && (inputs.mode !== "verify" || inputs.slices !== undefined ||
+      !validProjectCheckBinding(inputs.project_check))) {
+    invalidFeature("invalid_project_check", "registered project checks require one exact GREEN-only verify selection");
+  }
   const slices = validateFeatureSlices(inputs.slices, inputs.mode, inputs.brief);
   const testSelection = slices.some(({ mode }) => mode === "test")
     ? buildFeatureTestSelection(slices)
@@ -793,6 +822,7 @@ function validateFeatureInputs(inputs, explicitFacts) {
   const normalized = {
     brief: inputs.brief,
     mode: inputs.mode,
+    ...(inputs.project_check === undefined ? {} : { project_check: inputs.project_check }),
     slices,
     serialized_slices: inputs.slices !== undefined ||
       inputs.mode !== "verify" || setup !== null,

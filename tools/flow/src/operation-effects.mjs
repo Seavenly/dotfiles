@@ -114,6 +114,8 @@ export function snapshotRegisteredOperations(registrations) {
     if (!registration) return [];
     return [[contract, Object.freeze({
       classification: registration.classification,
+      requestCancellation: typeof registration.requestCancellation === "function"
+        ? registration.requestCancellation.bind(registration) : undefined,
       invoke: typeof registration.invoke === "function"
         ? registration.invoke.bind(registration)
         : registration.invoke,
@@ -924,7 +926,7 @@ function assertEffectReceipt(receipt, intent) {
   // An explicit complete absence closes a failed attempt without pretending
   // the requested effect succeeded. The domain operation owns that proof.
   const knownAbsent = receipt?.outcome === "not_created" &&
-    receipt.provider_receipt?.schema === "flow.provider-observation/v1" &&
+    ["flow.provider-observation/v1", "work.project-check-absence-receipt/v2"].includes(receipt.provider_receipt?.schema) &&
     receipt.provider_receipt.found === false && receipt.provider_receipt.complete === true;
   if (receipt?.schema !== "flow.effect-receipt/v1" ||
       receipt.effect_id !== intent.effect_id ||

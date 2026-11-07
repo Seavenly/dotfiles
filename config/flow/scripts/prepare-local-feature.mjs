@@ -1,3 +1,6 @@
+import { validateProjectCheck, resolveProjectCheck } from "../src/production-project-check.mjs";
+import { projectCheckRunnerIdentity } from "../src/production-project-check-runner.mjs";
+import { PROJECT_CHECK_SCOPE } from "../../../tools/flow/src/project-check.mjs";
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -41,8 +44,8 @@ async function setup(args) {
   }
   const mode = options["--mode"] ?? "verify";
   if (options["--reconfigure-check"] !== undefined && options["--reconfigure-check"] !== "yes") throw new Error("Use --reconfigure-check yes to explicitly select a different check");
-  if (!["test", "verify"].includes(mode) || (mode === "test") !== Boolean(options["--check"])) {
-    throw new Error("Use verify without --check, or test with one explicit trusted --check JSON_FILE");
+  if (!["test", "verify"].includes(mode) || mode === "test" && !options["--check"]) {
+    throw new Error("Use verify with an optional v2 project --check, or test with one explicit v1 trusted --check JSON_FILE");
   }
   const repository = realpathSync(options["--repository"]);
   const git = args => execFileSync("/usr/bin/git", ["-c", "core.fsmonitor=false", "-C", repository, ...args], {
@@ -70,8 +73,12 @@ async function setup(args) {
     if (error.message !== "candidate_commit_author_identity_unproven") throw error;
     throw new Error("Git author and committer identity are required; configure user.name and user.email in the repository or selected Git configuration, then repeat local setup");
   }
-  const check = options["--check"] ? validateProductionFeatureTestCheck(load(options["--check"])) : undefined;
-  if (check) resolveProductionFeatureTestSelection({ checkId: check.check_id, brief, workspace: { path: repository }, featureTestCheck: check });
+  const rawCheck = options["--check"] ? load(options["--check"]) : undefined;
+  const projectCheck = rawCheck?.schema === "flow.production-project-check/v2";
+  const check = rawCheck === undefined ? undefined : projectCheck ? validateProjectCheck(rawCheck) : validateProductionFeatureTestCheck(rawCheck);
+  if (check && projectCheck !== (mode === "verify")) throw new Error("Use v2 GREEN-only project checks with verify; v1 health/expected-RED/GREEN checks require test");
+  if (projectCheck) resolveProjectCheck({ config: check, brief, workspace: { path: repository }, runnerIdentity: projectCheckRunnerIdentity() });
+  else if (check) resolveProductionFeatureTestSelection({ checkId: check.check_id, brief, workspace: { path: repository }, featureTestCheck: check });
   const stateHome = process.env.FLOW_LOCAL_CLIENT_STATE_HOME ?? process.env.XDG_STATE_HOME ?? join(process.env.HOME ?? homedir(), ".local/state");
   const parent = join(stateHome, "flow-local");
   const profileRoot = join(parent, digest(repository).slice(7, 31));
@@ -113,9 +120,9 @@ async function setup(args) {
   }
   const requestDirectory = mkdtempSync(join(directory, "requests/feature-"));
   const request = { schema: "flow.feature-preparation-request/v1", brief, repository, mode,
-    ...(check ? { test: { check_id: check.check_id } } : {}),
+    ...(check ? { [projectCheck ? "check" : "test"]: { check_id: check.check_id } } : {}),
     routes: { apply: { harness: "codex", capability: "workspace-write-denied" }, critique: { harness: "codex", capability: "read-only" } },
-    limits: { max_elapsed_seconds: 600, max_revisions: 0 }, execution_trust: SUPERVISED_NATIVE_ACKNOWLEDGMENT };
+    limits: { max_elapsed_seconds: projectCheck ? Math.max(600, Math.ceil(check.limits.timeout_ms / 1000) + 600) : 600, max_revisions: 0 }, execution_trust: SUPERVISED_NATIVE_ACKNOWLEDGMENT };
   const requestPath = join(requestDirectory, "prepare-request.json");
   const preparedPath = join(requestDirectory, "prepared.json");
   save(requestPath, request);
@@ -127,7 +134,7 @@ async function setup(args) {
     } else symlinkSync(client, link);
   }
   process.stdout.write(`${JSON.stringify({ status: "request_only", directory, client,
-    request: requestPath, mode, commit_identity: gitIdentity, verification_scope: check
+    request: requestPath, mode, commit_identity: gitIdentity, verification_scope: projectCheck ? PROJECT_CHECK_SCOPE : check
       ? "Registered pinned Node health and acceptance checks, including expected RED then GREEN; arbitrary project suites are not registered"
       : verifyScope, owner_started: false, provider_execution: "not_run", profile_reused: reused,
     next_commands: [

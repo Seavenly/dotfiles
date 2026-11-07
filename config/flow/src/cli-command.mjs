@@ -25,7 +25,8 @@ const USAGE = `Usage:
   flow pilot setup --execution-trust supervised-native-cli [--mode test|verify] [--parent DIRECTORY]
   flow pilot accept-prepared PILOT_DIRECTORY PREPARED_JSON_FILE
   flow pilot review-request PILOT_DIRECTORY PRODUCER_RUN_ID
-  flow local setup --execution-trust supervised-native-cli --repository PATH --brief JSON_FILE --codex-executable PATH [--mode test --check JSON_FILE] [--reconfigure-check yes] [--client-link PATH]
+  flow local register-check --repository PATH --recipe JSON_FILE --output NEW_JSON_FILE
+  flow local setup --execution-trust supervised-native-cli --repository PATH --brief JSON_FILE --codex-executable PATH [--mode verify|test --check JSON_FILE] [--reconfigure-check yes] [--client-link PATH]
   flow local accept-prepared CLIENT_DIRECTORY PREPARED_JSON_FILE
   flow local inspect-prepared PREPARED_JSON_FILE
   flow local review-request CLIENT_DIRECTORY PRODUCER_RUN_ID
@@ -70,9 +71,11 @@ export async function runCli(
   if (["pilot", "local"].includes(args[0])) {
     try {
       const localSetup = args[0] === "local" && args[1] === "setup";
+      const registration = args[0] === "local" && args[1] === "register-check";
+      const script = registration ? "../scripts/register-project-check.mjs" : localSetup ? "../scripts/prepare-local-feature.mjs" : "../scripts/prepare-feature-pilot.mjs";
       const result = await promisify(execFile)(process.execPath, [
-        fileURLToPath(new URL(localSetup ? "../scripts/prepare-local-feature.mjs" : "../scripts/prepare-feature-pilot.mjs", import.meta.url)),
-        ...args.slice(localSetup ? 2 : 1),
+        fileURLToPath(new URL(script, import.meta.url)),
+        ...args.slice(localSetup || registration ? 2 : 1),
       ], { env, maxBuffer: 1024 * 1024 });
       stdout.write(result.stdout);
       if (result.stderr) stderr.write(result.stderr);

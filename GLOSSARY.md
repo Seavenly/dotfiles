@@ -80,6 +80,12 @@ health and expected RED before its writer, then the same acceptance check GREEN
 before seal. Changed check bindings refuse launch before workspace claims.
 _Avoid_: Caller command, claimed health, generic test registry
 
+**Registered project check**:
+An operator-selected project command whose exact execution inputs and result
+are bound to one captured candidate. A passing result records successful command
+completion, separately from intended-failure evidence and independent critique.
+_Avoid_: Generic RED, proof of every acceptance criterion
+
 **Transition ledger**:
 The durable release/environment record that binds prerequisites, contracts,
 manifest and content digests, qualification evidence, legacy inventory, and

@@ -1,3 +1,5 @@
+import { resolveProjectCheck } from "./production-project-check.mjs";
+import { projectCheckRunnerIdentity } from "./production-project-check-runner.mjs";
 import { digest } from "../../../tools/flow/src/canonical.mjs";
 import { createDurableRunAuthority } from "../../../tools/flow/src/run-authority.mjs";
 import { getWorkspaceAuthority } from "../../../tools/flow/src/work-authority.mjs";
@@ -32,7 +34,7 @@ export function assertLocalCheckChangeQuiescent({ authorityDirectory, repository
 }
 
 /** Runs under the existing authority lease, before recovery can dispatch work. */
-export function assertCompatibleLocalCheck(authority, { repository, featureTestCheck }) {
+export function assertCompatibleLocalCheck(authority, { repository, featureTestCheck, authorityDirectory }) {
   let expected;
   for (const run of retainedRuns(authority)) {
     if (terminal(run) && settled(run)) continue;
@@ -40,7 +42,8 @@ export function assertCompatibleLocalCheck(authority, { repository, featureTestC
     if (fingerprints.length === 0) continue;
     if (expected === undefined) {
       if (!featureTestCheck) throw new Error("Retained checked work requires its original local client");
-      expected = resolveProductionFeatureTestSelection({ checkId: featureTestCheck.check_id,
+      expected = featureTestCheck.schema === "flow.production-project-check/v2" ? resolveProjectCheck({ config: featureTestCheck,
+        brief: { acceptance: featureTestCheck.criteria }, workspace: { path: repository }, runnerIdentity: projectCheckRunnerIdentity(), authorityDirectory }).fingerprint : resolveProductionFeatureTestSelection({ checkId: featureTestCheck.check_id,
         brief: { acceptance: featureTestCheck.criteria }, workspace: { path: repository }, featureTestCheck }).checkBinding.fingerprint;
     }
     if (fingerprints.some(value => value !== expected)) throw new Error("Retained checked work requires its original local client");
@@ -49,5 +52,5 @@ export function assertCompatibleLocalCheck(authority, { repository, featureTestC
 
 function collectFingerprints(value) {
   if (!value || typeof value !== "object") return [];
-  return Object.entries(value).flatMap(([key, entry]) => key === "environment_fingerprint" ? [entry] : collectFingerprints(entry));
+  return Object.entries(value).flatMap(([key, entry]) => key === "environment_fingerprint" ? [entry] : key === "project_check" && entry?.schema === "flow.project-check-binding/v2" ? [entry.fingerprint] : collectFingerprints(entry));
 }

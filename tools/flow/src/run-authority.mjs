@@ -1,3 +1,4 @@
+import { isProjectCheckAbsenceReceipt } from "./project-check.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import {
@@ -775,10 +776,11 @@ export function createDurableRunAuthority({
               if (stream?.lastBootId === bootId &&
                   stream.fold.legal_actions.some((action) =>
                     action.type === "recovery" &&
-                    ["delegate", "delegate_cancellation"].includes(
+                    (["delegate", "delegate_cancellation"].includes(
                       stream.fold.effects.find(({ effect_id: effectId }) =>
                         effectId === action.effect_id)?.effect_kind,
-                    ))) {
+                    ) || stream.fold.effects.find(({ effect_id: effectId }) =>
+                      effectId === action.effect_id)?.operation_contract === "flow.operation/project-check/v2"))) {
                 sameBootRecoveryRunIds.add(runId);
               }
             }
@@ -5652,6 +5654,7 @@ function sanitizeEffectObservation(observation, intent) {
 function sanitizeEffectReceipt(receipt, intent) {
   const sanitized = sanitizeEffectReceiptEnvelope(receipt, intent);
   const invocationOutcomeAllowed = sanitized?.outcome === "succeeded" ||
+    isProjectCheckAbsenceReceipt(sanitized, intent) ||
     sanitized?.outcome === "quarantined" && intent.effect_kind === "delegate";
   if (sanitized === null || !invocationOutcomeAllowed) {
     throw invalidEffectReceiptError();

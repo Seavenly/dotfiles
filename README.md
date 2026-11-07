@@ -427,8 +427,11 @@ Use the CLI from this source version; the reviewed `flow-supervised` launcher
 pins that source and Node executable while the existing `flow` stays unchanged.
 
 The default `verify` mode checks committed Git content observations and an
-independent model critique. It does not execute project test suites or establish
-runtime behavior. `--mode test --check JSON_FILE` selects the existing registered
+independent model critique. Without a registered check it does not execute
+project test suites or establish runtime behavior. An explicit v2 `--mode verify
+--check JSON_FILE` adds a [registered project command](docs/flow/project-checks.md)
+for installed npm, Python or Go suites, with bounded execution and GREEN-only
+evidence on the captured candidate. `--mode test --check JSON_FILE` selects the existing registered
 contract for one pinned Node health check and one acceptance check with a known
 expected failure followed by success. These limits appear in the prepared
 confirmation and retained run status. Selecting a supervised local request is

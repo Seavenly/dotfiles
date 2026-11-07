@@ -40,6 +40,12 @@
         "check_id": { "type": "string", "minLength": 1 }
       }
     },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id"],
+      "properties": { "check_id": { "type": "string", "minLength": 1 } }
+    },
     "routes": { "$ref": "#/$defs/routes" },
     "verification": {
       "type": "object",
@@ -75,7 +81,7 @@
       },
       "then": {
         "required": ["test"],
-        "properties": { "test": true, "verification": false }
+        "properties": { "test": true, "verification": false, "check": false }
       },
       "else": { "properties": { "test": false } }
     }

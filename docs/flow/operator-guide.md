@@ -13,6 +13,10 @@ For work on the personal and work MacBooks, start with the
 [Mac verification handoff](mac-verification-handoff.md). Its ownership diagnostic
 is unadmitted; Mac native execution remains unsupported.
 
+For installed npm, Python or Go suites, see [registered project checks](project-checks.md).
+The additive v2 check runs in `verify` mode and reports GREEN-only command
+evidence; the v1 test-first contract and plain content-only `verify` remain distinct.
+
 ## Supervised local repositories
 
 The explicit supervised contract also accepts an existing clean repository.
@@ -77,7 +81,7 @@ setup requires this explicit stopped/settled procedure. A client starting later
 also checks retained active work under the authority lease before recovery:
 checked work can resume only with its original exact check fingerprint.
 
-Default `verify` means **Git-backed content observations plus independent model
+Without an explicit v2 project check, default `verify` means **Git-backed content observations plus independent model
 critique; project checks NOT_RUN; runtime behavior not established**. The
 registered operation checks exact committed `git_file_equals` observations for
 every criterion and a changed clean workspace. It does not prove that broad

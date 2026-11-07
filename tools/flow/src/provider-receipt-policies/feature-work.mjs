@@ -1,6 +1,12 @@
 /** Versioned receipt policy owned by feature and Work-domain modules. */
 
 export const FEATURE_WORK_RECEIPT_SCHEMA_FIELDS = new Map([
+  ["work.project-check-absence-receipt/v2", new Set(["schema", "found", "complete", "record"])],
+  ["work.project-check-receipt/v2", new Set([
+    "schema", "run_id", "effect_id", "attempt_id", "idempotency_key", "check_fingerprint", "scope", "candidate",
+    "reservation_digest", "worker_identity_digest", "capture_receipt_digest", "outcome", "exit_code", "version", "test_count", "stdout_sha256", "stderr_sha256",
+    "terminal_digest", "retired", "proof", "self_digest",
+  ])],
   ["flow.feature-test-receipt/v1", new Set([
     "attempt_id",
     "card_id",

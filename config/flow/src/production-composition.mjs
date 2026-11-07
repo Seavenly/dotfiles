@@ -1,3 +1,6 @@
+import { PROJECT_CHECK_CONTRACT, PROJECT_CHECK_VALIDATOR } from "../../../tools/flow/src/project-check.mjs";
+import { resolveProjectCheck } from "./production-project-check.mjs";
+import { projectCheckRunnerIdentity } from "./production-project-check-runner.mjs";
 import { isDirectDescription, directDescriptionIssue } from "../../../tools/flow/src/execution-contract.mjs";
 import { supervisedTrustPosture } from "./supervised-native-trust.mjs";
 import { FEATURE_DIRECT_COMMIT_CONTRACT } from "../../../tools/flow/src/feature-flow.mjs";
@@ -177,7 +180,7 @@ export function createProductionComposition({
   });
   const definitions = mergeRegistrations({
     defaults: {
-      "feature/v1": supervisedTrustPosture(createFeatureDefinition({ independentCritique: true }), executionTrust, { gitIdentity }),
+      "feature/v1": supervisedTrustPosture(createFeatureDefinition({ independentCritique: true }), executionTrust, { gitIdentity, projectCheck: featureTestCheck?.schema === "flow.production-project-check/v2" }),
       "review/v1": supervisedTrustPosture(createReviewDefinition(), executionTrust),
     },
     overrides: predefinedDefinitions,
@@ -218,9 +221,10 @@ export function createProductionComposition({
           FEATURE_OPERATION_CONTRACTS.seal,
         ]);
         const featureOperations = new Set(
-          [...Object.values(FEATURE_OPERATION_CONTRACTS), FEATURE_DIRECT_COMMIT_CONTRACT],
+          [...Object.values(FEATURE_OPERATION_CONTRACTS), FEATURE_DIRECT_COMMIT_CONTRACT, PROJECT_CHECK_CONTRACT],
         );
         const selectionInputs = publicFeatureSelectionInputs(request);
+        if (selectionInputs?.project_check !== undefined || request?.check !== undefined) required.add(PROJECT_CHECK_CONTRACT);
         if (route.mode === "test") {
           required.add(FEATURE_OPERATION_CONTRACTS.test);
           required.add(FEATURE_DIRECT_COMMIT_CONTRACT);
@@ -334,6 +338,7 @@ export function createProductionComposition({
         workspaceRepositories,
         runAuthority: boundAuthority,
         featureTestCheck,
+        authorityDirectory,
       });
       const compiled = await compileSelection(prepared.selection);
       if (compiled?.schema === "flow.prepared-run/v1" &&
@@ -365,6 +370,13 @@ export function createProductionComposition({
       if (prepared?.definition?.id === "feature/v1" && gitIdentity !== undefined &&
           digest(prepared.trust_posture?.git_identity ?? null) !== digest(gitIdentity)) {
         throw new ProductionPreparationError("feature_git_identity_drift", "The prepared author and committer must match the selected local client identity");
+      }
+      if (prepared?.definition?.id === "feature/v1" && inputs?.project_check !== undefined) {
+        const repository = resolveProductionWorkspace(inputs.workspace?.subject_id);
+        if (!repository || digest(resolveProjectCheck({ config: featureTestCheck, brief: inputs.brief,
+          workspace: repository, runnerIdentity: projectCheckRunnerIdentity(), authorityDirectory })) !== digest(inputs.project_check)) {
+          throw new ProductionPreparationError("project_check_input_drift", "the exact registered project command changed after preparation");
+        }
       }
       if (prepared?.definition?.id === "feature/v1" && inputs?.mode === "test") {
         const repository = resolveProductionWorkspace(inputs.workspace?.subject_id);
@@ -1836,6 +1848,7 @@ async function buildPreparationSelection({
   workspaceRepositories,
   runAuthority = null,
   featureTestCheck,
+  authorityDirectory,
 }) {
   if (!isFeaturePreparationRequest(request)) {
     throw new ProductionPreparationError(
@@ -1934,6 +1947,14 @@ async function buildPreparationSelection({
   });
 
   const mode = request.mode;
+  if (featureTestCheck?.schema === "flow.production-project-check/v2" && request.check === undefined) {
+    throw new ProductionPreparationError("project_check_selection_required", "this client requires its explicitly selected registered project check");
+  }
+  const projectCheck = request.check === undefined ? undefined : resolveProjectCheck({ config: featureTestCheck,
+    brief, workspace: { path: repositoryPath }, runnerIdentity: projectCheckRunnerIdentity(), authorityDirectory });
+  if (projectCheck !== undefined && (mode !== "verify" || request.check.check_id !== projectCheck.registration.check_id)) {
+    throw new ProductionPreparationError("project_check_selection_invalid", "select a registered GREEN-only project check in verify mode");
+  }
   const testSelection = mode === "test"
     ? productionFeatureTestSelection({
         checkId: request.test.check_id,
@@ -1999,9 +2020,10 @@ async function buildPreparationSelection({
     { card_id: "feature-apply", route: apply.route },
     { card_id: "feature-critique", route: critique.route },
   ];
-  const operationContracts = [...Object.values(FEATURE_OPERATION_CONTRACTS), FEATURE_DIRECT_COMMIT_CONTRACT];
+  const operationContracts = [...Object.values(FEATURE_OPERATION_CONTRACTS), FEATURE_DIRECT_COMMIT_CONTRACT, ...(projectCheck === undefined ? [] : [PROJECT_CHECK_CONTRACT])];
   const validatorContracts = [
     "flow.validator/operation-receipt/v1",
+    ...(projectCheck === undefined ? [] : [PROJECT_CHECK_VALIDATOR]),
     FEATURE_DELEGATE_OUTPUT_VALIDATOR,
     FEATURE_CAPTURE_RECEIPT_VALIDATOR,
     FEATURE_TEST_RECEIPT_VALIDATOR,
@@ -2025,6 +2047,9 @@ async function buildPreparationSelection({
     ...(mode === "test" ? { max_cards: 9 } : {}),
     ...request.limits,
   });
+  if (projectCheck !== undefined && limits.max_elapsed_seconds < Math.ceil(projectCheck.registration.limits.timeout_ms / 1000) + 5) {
+    throw new ProductionPreparationError("project_check_limit_mismatch", "the confirmed run must include the project command timeout and bounded version probe");
+  }
   const explicitFacts = freezeCanonical({
     catalog_fingerprint: digest({
       definitions: ["feature/v1", "review/v1"],
@@ -2054,6 +2079,7 @@ async function buildPreparationSelection({
         mode,
         workspace,
         ...(verification === null ? {} : { verification }),
+        ...(projectCheck === undefined ? {} : { project_check: projectCheck }),
         ...(testSelection === null ? {} : { slices: [testSelection.slice] }),
         delegation,
       },
@@ -2171,6 +2197,7 @@ function featureOperationRegistrations(productionOperations) {
     },
   });
   return {
+    [PROJECT_CHECK_CONTRACT]: productionOperations[PROJECT_CHECK_CONTRACT],
     [FEATURE_OPERATION_CONTRACTS.setup]: unavailable(),
     [FEATURE_OPERATION_CONTRACTS.test]: productionOperations[
       FEATURE_OPERATION_CONTRACTS.test
@@ -2481,6 +2508,7 @@ function isFeaturePreparationRequest(request) {
     "routes",
     "verification",
     "test",
+    "check",
     "limits",
   ], ["schema", "brief", "repository", "mode", "routes"])) {
     return false;
@@ -2491,10 +2519,11 @@ function isFeaturePreparationRequest(request) {
     ["verify", "test"].includes(request.mode) &&
     validPreparationRoutes(request.routes) &&
     (request.mode === "test"
-      ? !Object.hasOwn(request, "verification") &&
+      ? !Object.hasOwn(request, "check") && !Object.hasOwn(request, "verification") &&
         exactObject(request.test, ["check_id"], ["check_id"]) &&
         nonEmptyString(request.test.check_id)
       : !Object.hasOwn(request, "test") &&
+        (request.check === undefined || exactObject(request.check, ["check_id"], ["check_id"]) && nonEmptyString(request.check.check_id)) &&
         (request.verification === undefined ||
           validPreparationVerification(request.verification))) &&
     (request.limits === undefined || validPreparationLimitsShape(request.limits));

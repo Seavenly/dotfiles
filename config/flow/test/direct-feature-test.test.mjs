@@ -1,3 +1,4 @@
+import { projectProfile } from "../test-support/project-check.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -352,7 +353,7 @@ export function createFlowRuntime(options = {}) {
 `;
 }
 
-async function createFixture(t, scenario, { recipe = "valid" } = {}) {
+async function createFixture(t, scenario, { recipe = "valid", project = false, checkDelay = 0 } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "flow-public-feature-test-"));
   let ownerCleanup = async () => {};
   let succeeded = false;
@@ -386,7 +387,7 @@ async function createFixture(t, scenario, { recipe = "valid" } = {}) {
   const healthBytes = scenario === "check-restart"
     ? 'import test from "node:test";\nimport assert from "node:assert/strict";\ntest("positive health probe", async () => { await new Promise(resolve => setTimeout(resolve, 2000)); assert.equal(2 + 2, 4); });\n'
     : 'import test from "node:test";\nimport assert from "node:assert/strict";\ntest("positive health probe", () => assert.equal(2 + 2, 4));\n';
-  const acceptanceBytes = 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { readFileSync } from "node:fs";\ntest("selected feature behavior", () => assert.equal(readFileSync("feature.txt", "utf8"), "after\\n"));\n';
+  const acceptanceBytes = (checkDelay ? `import {setTimeout as delay} from "node:timers/promises"; process.stdout.write("FLOW_PROJECT_COMMAND_READY\\n"); await delay(${checkDelay});\n` : '') + 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { readFileSync } from "node:fs";\ntest("selected feature behavior", () => assert.equal(readFileSync("feature.txt", "utf8"), "after\\n"));\n';
   await writeFile(join(repository, "feature.txt"), "before\n");
   await writeFile(join(repository, "health.test.mjs"), healthBytes);
   await writeFile(join(repository, "acceptance.test.mjs"), acceptanceBytes);
@@ -395,7 +396,7 @@ async function createFixture(t, scenario, { recipe = "valid" } = {}) {
   const initial = git(["rev-parse", "HEAD"]);
   const node = await realpath(process.execPath);
   const runtimeModule = join(scratch, "trusted-feature-test-owner.mjs");
-  const featureTestCheck = {
+  let featureTestCheck = {
     schema: "flow.production-feature-test-check/v1", check_id: checkId,
     executable: { path: node, version: process.version, sha256: checkDigest(await readFile(node)) },
     health: { path: "health.test.mjs", sha256: checkDigest(healthBytes), case_name: "positive health probe" },
@@ -404,7 +405,10 @@ async function createFixture(t, scenario, { recipe = "valid" } = {}) {
     criteria: [criterion], expected_failure: { code: "ERR_ASSERTION", operator: "strictEqual", expected: "after\n", actual: "before\n" },
     environment: { PATH: "/usr/bin:/bin" }, limits: { timeout_ms: 5000, max_output_bytes: 64 * 1024 },
   };
-  if (recipe === "valid") {
+  if (project) {
+    featureTestCheck = { ...projectProfile({ root: repository, argv: ["--test", "acceptance.test.mjs"], files: ["acceptance.test.mjs"] }), check_id: checkId, criteria: [criterion] };
+    await writeFile(runtimeModule, trustedFactorySource(featureTestCheck), { flag: "wx", mode: 0o600 });
+  } else if (recipe === "valid") {
     // Execute the documented zero-provider preparation, then exercise its
     // generated embedded recipe through the actual detached public owner.
     const guide = await readFile(join(sourceRepository, "docs/flow/operator-guide.md"), "utf8");
@@ -426,13 +430,15 @@ async function createFixture(t, scenario, { recipe = "valid" } = {}) {
   await rename(runtimeModule, documentedFactory);
   const documentedBytes = await readFile(documentedFactory);
   const fixtureOptionsModule = pathToFileURL(fileURLToPath(new URL("../test-support/direct-feature-test-runtime.mjs", import.meta.url))).href;
-  await writeFile(runtimeModule, `import { readFileSync } from "node:fs";
+  await writeFile(runtimeModule, `import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fixtureExecutionOptions } from ${JSON.stringify(fixtureOptionsModule)};
 const original = ${JSON.stringify(documentedFactory)};
 if (createHash("sha256").update(readFileSync(original)).digest("hex") !== ${JSON.stringify(sha256(documentedBytes))}) throw new Error("fixture_factory_drift");
 const { createFlowRuntime: documented } = await import(${JSON.stringify(pathToFileURL(documentedFactory).href)});
-export function createFlowRuntime(options = {}) { return documented(fixtureExecutionOptions(options)); }
+export function createFlowRuntime(options = {}) { return documented({ ...fixtureExecutionOptions(options),
+  ${scenario === "project-cancel-crash" ? `authorityOptions: { ...options.authorityOptions, afterCancellationCommit() { writeFileSync(${JSON.stringify(join(scratch, "cancel-committed"))}, "committed\\n"); process.exit(71); } },` : ""}
+}); }
 `, { flag: "wx", mode: 0o600 });
   const factoryBytes = await readFile(runtimeModule, "utf8");
   const invocationPath = join(scratch, "invocations");
@@ -458,7 +464,7 @@ export function createFlowRuntime(options = {}) { return documented(fixtureExecu
     }
     await retain(`${scenario}-retirement`, { retirements });
   };
-  const request = { schema: "flow.feature-preparation-request/v1", dark_opt_in: { schema: "flow.dark-opt-in/v1", release_id: fixtureRelease, purpose: "sacrificial_qualification" }, brief: { schema: "flow.feature-brief/v1", id: `brief:test-${scenario}`, summary: "Change feature.txt to after", acceptance: [criterion] }, repository, mode: "test", test: { check_id: checkId }, routes: { apply: { harness: "codex", model: "fixture-model", effort: "high", capability: "workspace-write-denied" }, critique: { harness: "codex", model: "fixture-model", effort: "high", capability: "read-only" } } };
+  const request = { schema: "flow.feature-preparation-request/v1", dark_opt_in: { schema: "flow.dark-opt-in/v1", release_id: fixtureRelease, purpose: "sacrificial_qualification" }, brief: { schema: "flow.feature-brief/v1", id: `brief:test-${scenario}`, summary: "Change feature.txt to after", acceptance: [criterion] }, repository, mode: project ? "verify" : "test", ...(project ? { check: { check_id: checkId } } : { test: { check_id: checkId } }), routes: { apply: { harness: "codex", model: "fixture-model", effort: "high", capability: "workspace-write-denied" }, critique: { harness: "codex", model: "fixture-model", effort: "high", capability: "read-only" } } };
   return { scratch, repository, git, initial, ownerEnv, configDirectory, runtimeModule, factoryBytes, featureTestCheck, request, acceptanceBytes, healthBytes, completed: () => { succeeded = true; }, invocations: () => readFile(invocationPath, "utf8").catch(error => { if (error.code === "ENOENT") return ""; throw error; }), start: async () => { const owner = await startFlowOwner({ env: ownerEnv }); assert.equal(owner.state, "running", JSON.stringify(owner)); owners.push(owner); return owner; }, stop };
 }
 
@@ -563,4 +569,91 @@ function inspectEffectEvents(authorityDirectory, runId) {
   const database = new DatabaseSync(join(authorityDirectory, "authority.sqlite"), { readOnly: true });
   try { return database.prepare("SELECT payload_json FROM authority_events WHERE stream_id = ? ORDER BY sequence").all(runId).map(row => JSON.parse(row.payload_json)); }
   finally { database.close(); }
+}
+
+for (const scenario of ["success", "restart", "cancel", "cancel-crash"]) {
+  test(`public project check GREEN-only ${scenario} retains exact candidate and one owned checker`, linuxCheckMechanism, async t => {
+    const f = await createFixture(t, `project-${scenario}`, { project: true, checkDelay: scenario.startsWith("cancel") ? 20000 : scenario === "restart" ? 1500 : 0 });
+    let owner = await f.start();
+    const client = () => publicClient(owner.socket_path);
+    const prepared = await client().prepare(f.request);
+    assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
+    assert.equal(prepared.selection.inputs.project_check.registration.argv[0], "--test");
+    assert.equal(prepared.graph.cards.some(card => card.executor.contract === "flow.operation/feature-test/v1"), false);
+    const check = prepared.graph.cards.find(card => card.id === "feature-project-check");
+    assert.deepEqual(check.dependencies, ["feature-capture"]);
+    assert.equal(check.executor.effect_classification, "reconcilable");
+    assert.equal(await f.invocations(), "", "prepare does not run the project suite or delegates");
+    if (scenario === "success") {
+      const path = join(f.repository, "acceptance.test.mjs"), original = await readFile(path);
+      await writeFile(path, Buffer.concat([original, Buffer.from("\n// drift\n")]));
+      const rejected = await client().launch(confirmation(prepared, f.request.dark_opt_in));
+      assert.equal(rejected.code, "project_check_input_drift", JSON.stringify(rejected));
+      assert.equal(await f.invocations(), "");
+      await writeFile(path, original);
+    }
+    await writeFile(join(f.scratch, "release-writer"), "release\n");
+    const launched = await client().launch(confirmation(prepared, f.request.dark_opt_in));
+    assert.equal(launched.created, true, JSON.stringify(launched));
+    const base = join(f.ownerEnv.FLOW_AUTHORITY_DIRECTORY, "project-checks-v2");
+    let checkRoot, reservation;
+    await waitFor(async () => {
+      const dirs = await readdir(base).catch(() => []);
+      if (dirs.length !== 1) return false;
+      checkRoot = join(base, dirs[0]);
+      reservation = await readFile(join(checkRoot, "reservation.json")).catch(() => null);
+      return reservation && await readFile(join(checkRoot, "worker.json")).catch(() => null);
+    });
+    if (scenario !== "success") {
+      await waitFor(async () => (await readFile(join(checkRoot, "command.live.stdout"), "utf8").catch(() => "")).includes("FLOW_PROJECT_COMMAND_READY"));
+    }
+    if (scenario === "restart") {
+      assert.equal((await f.stop(owner)).state, "stopped");
+      owner = await f.start();
+    }
+    if (scenario.startsWith("cancel")) {
+      const active = await client().query({ run_id: launched.run_id });
+      const action = active.legal_actions.find(action => action.type === "cancel");
+      assert.ok(action, JSON.stringify(active));
+      if (scenario === "cancel-crash") {
+        await assert.rejects(client().command(action));
+        assert.equal(await readFile(join(f.scratch, "cancel-committed"), "utf8"), "committed\n");
+        assert.equal((await f.stop(owner)).state, "stopped");
+        owner = await f.start();
+      } else assert.equal((await client().command(action)).accepted, true);
+      await waitFor(async () => {
+        const run = await client().query({ run_id: launched.run_id });
+        return run.effects.find(effect => effect.operation_contract === "flow.operation/project-check/v2")?.receipt;
+      });
+      const run = await client().query({ run_id: launched.run_id });
+      assert.equal(run.phase, "cancelled");
+      const result = run.effects.find(effect => effect.operation_contract === "flow.operation/project-check/v2").receipt;
+      assert.equal(result.outcome, "not_created");
+      assert.equal(result.provider_receipt.record.outcome, "cancelled");
+      assert.equal(result.provider_receipt.record.retired, true);
+      assert.equal(run.review_candidate_reference ?? null, null);
+      assert.equal(await f.invocations(), "apply\n");
+    } else {
+      const run = await terminal(client(), launched.run_id, `project-${scenario}`);
+      assert.equal(run.phase, "succeeded", JSON.stringify(run));
+      const result = run.effects.find(effect => effect.operation_contract === "flow.operation/project-check/v2").receipt.provider_receipt;
+      assert.equal(result.outcome, "passed");
+      assert.equal(result.exit_code, 0);
+      assert.equal(result.test_count, "unknown");
+      assert.equal(result.retired, true);
+      assert.equal(result.candidate.commit_sha, f.git(["rev-parse", "HEAD"]));
+      assert.equal(await f.invocations(), "apply\ncritique\n");
+      const candidate = await client().query({ contract: "work.review/v1", subject_id: run.review_candidate_reference.candidate_id });
+      assert.equal(candidate.status, "sealed");
+    }
+    assert.equal(await readFile(join(checkRoot, "reservation.json"), "utf8"), reservation.toString());
+    assert.equal((await readdir(base)).length, 1);
+    assert.equal((await f.stop(owner)).state, "stopped");
+    owner = await f.start();
+    const reopened = await client().query({ run_id: launched.run_id });
+    assert.equal(reopened.phase, scenario.startsWith("cancel") ? "cancelled" : "succeeded");
+    assert.equal((await readdir(base)).length, 1);
+    assert.equal((await f.stop(owner)).state, "stopped");
+    f.completed();
+  });
 }

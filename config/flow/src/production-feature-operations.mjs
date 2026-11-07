@@ -1,3 +1,5 @@
+import { createProjectCheckOperation } from "./production-project-check-operation.mjs";
+import { PROJECT_CHECK_CONTRACT } from "../../../tools/flow/src/project-check.mjs";
 import { createProductionDirectCommitOperation } from "./production-direct-commit.mjs";
 export { resolveProductionFeatureTestSelection } from "./production-feature-test-check.mjs";
 import {
@@ -128,6 +130,7 @@ export function createProductionFeatureOperations({
 
   const checkRunner = createProductionFeatureCheckRunner({ authorityDirectory, featureTestCheck });
   const operations = {
+    [PROJECT_CHECK_CONTRACT]: createProjectCheckOperation({ resolveWorkspace, gitWorkspaceObservationAdapter, authorityDirectory, featureTestCheck, authority: () => authorityRef.value }),
     [FEATURE_DIRECT_COMMIT_CONTRACT]: createProductionDirectCommitOperation({ resolveWorkspace, authorityDirectory, authority: () => authorityRef.value, gitIdentity, env }),
     [FEATURE_OPERATION_CONTRACTS.setup]: unavailableOperation(
       FEATURE_OPERATION_CONTRACTS.setup,
@@ -782,6 +785,14 @@ function createVerificationOperation({
           "feature verification requires exact independent criterion evidence",
         );
       }
+      let projectEvidence = null;
+      if (operationInput.project_check !== undefined) {
+        const results = operationInput.authority_materialized_result_bindings?.filter(binding => binding.output_contract === "project_check_receipt") ?? [];
+        if (results.length !== 1 || results[0].content?.outcome !== "passed" ||
+            results[0].content.check_fingerprint !== operationInput.project_check.fingerprint ||
+            digest(results[0].content.candidate) !== digest(git)) throw featureTestError("project_check_evidence_missing");
+        projectEvidence = results[0].content;
+      }
       let checkEvidence = null;
       let redEvidence = [];
       let redBindings = [];
@@ -830,6 +841,7 @@ function createVerificationOperation({
               commit_sha: git.commit_sha,
               tree_sha: git.tree_sha,
             },
+            ...(projectEvidence === null ? {} : { project_check: projectEvidence.self_digest }),
             ...(checkEvidence === null ? {} : { check: checkEvidence.evidence_digest,
               red: redEvidence.map(({ evidence_digest }) => evidence_digest) }),
           }),
@@ -904,6 +916,14 @@ function createSealOperation({ resolveWorkspace, gitRetentionAdapter }) {
     async invoke(intent) {
       const operationInput = intent.operation_input;
       const candidateView = operationInput.authority_materialized_candidate;
+      if (operationInput.project_check !== undefined) {
+        const checks = operationInput.authority_materialized_result_bindings?.filter(binding => binding.output_contract === "project_check_receipt") ?? [];
+        if (checks.length !== 1 || checks[0].content?.outcome !== "passed" ||
+            checks[0].content.check_fingerprint !== operationInput.project_check.fingerprint ||
+            digest(checks[0].content.candidate) !== digest(candidateView?.workspace?.git ?? candidateView?.git)) {
+          throw featureTestError("project_check_seal_evidence_missing");
+        }
+      }
       const materialized = operationInput.authority_materialized_evidence;
       const critiqueEvidence = materialized?.accepted_delegates?.find(({ card_id }) =>
         card_id === operationInput.authority_materialized_critique_binding?.card_id);

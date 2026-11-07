@@ -156,7 +156,8 @@ function inspectPrepared(path) {
   process.stdout.write(`${JSON.stringify({ status: "inspection_only", prepared_file: realpathSync(path),
     bundle_digest: prepared.bundle_digest, confirmation_digest: prepared.confirmation_digest,
     definition: prepared.definition.id, mode: prepared.selection.inputs.mode ?? "local_review",
-    brief: prepared.selection.inputs.brief ?? null, trust_posture: prepared.trust_posture,
+    brief: prepared.selection.inputs.brief ?? null,
+    project_check: prepared.selection.inputs.project_check ?? null, trust_posture: prepared.trust_posture,
     requested_authority: prepared.requested_authority, limits: prepared.explicit_facts.limits,
     routes: prepared.graph.cards.filter(card => card.executor.kind === "delegate")
       .map(card => ({ card_id: card.id, launch: card.inputs.description?.launch,

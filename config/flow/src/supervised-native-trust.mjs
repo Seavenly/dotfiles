@@ -1,3 +1,4 @@
+import { PROJECT_CHECK_SCOPE } from "../../../tools/flow/src/project-check.mjs";
 import {
   SUPERVISED_NATIVE_CONTRACT,
   SUPERVISED_NATIVE_TRUST as SUPERVISED_NATIVE_POSTURE,
@@ -17,7 +18,7 @@ export function executionTrustFromEnvironment(env) {
   return trust;
 }
 
-export function supervisedTrustPosture(definition, executionTrust, { gitIdentity } = {}) {
+export function supervisedTrustPosture(definition, executionTrust, { gitIdentity, projectCheck = false } = {}) {
   if (executionTrust !== SUPERVISED_NATIVE_POSTURE) return definition;
   return {
     ...definition,
@@ -33,7 +34,7 @@ export function supervisedTrustPosture(definition, executionTrust, { gitIdentity
         ...(gitIdentity === undefined ? {} : { git_identity: gitIdentity }),
         verification_scope: {
           schema: "flow.supervised-verification-scope/v1",
-          verify: "Git-backed content observations plus independent model critique; project checks NOT_RUN; runtime behavior not established",
+          verify: projectCheck ? PROJECT_CHECK_SCOPE : "Git-backed content observations plus independent model critique; project checks NOT_RUN; runtime behavior not established",
           test: "Registered pinned Node health and acceptance checks with expected RED then GREEN; arbitrary project suites are not registered",
         },
       } : {}),

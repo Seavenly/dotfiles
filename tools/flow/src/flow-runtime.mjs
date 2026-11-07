@@ -499,6 +499,14 @@ export function createFlowRuntime({
         }
       }
       if (receipt?.accepted === true && authorityCommand?.type === "cancel") {
+        for (const effect of before?.effects ?? []) {
+          const registration = registeredOperation(operationRegistry, effect.operation_contract);
+          if (typeof registration?.requestCancellation === "function" &&
+              effect.invocation_started !== false && !effect.receipt) {
+            try { registration.requestCancellation({ run_id: before.run_id, effect_id: effect.effect_id }); }
+            catch { /* The accepted cancellation remains authoritative; missing worker proof retains uncertainty. */ }
+          }
+        }
         for (const subrun of before?.subruns ?? []) {
           const intent = before.effects?.find(({ card_id: cardId }) =>
             cardId === subrun.card_id);

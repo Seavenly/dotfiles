@@ -20,6 +20,11 @@ const REQUIRED_FEATURE_CONTRACT = "flow.drovr-required-features/v1";
 const REQUIRED_FEATURE_CONTRACT_FILENAME = "drovr-required-features.v1.json";
 
 const FEATURE_CONTRACTS = Object.freeze([
+  "flow.production-project-check/v2",
+  "flow.project-check-binding/v2",
+  "flow.operation/project-check/v2",
+  "flow.validator/project-check-receipt/v2",
+  "work.project-check-receipt/v2",
   "flow.feature-brief/v1",
   "flow.feature-verification-request/v1",
   "flow.feature-safe-baseline/v1",
@@ -153,6 +158,19 @@ const PUBLIC_FEATURE_PREPARATION = {
     generic_test_inputs: "rejected_before_effects",
     native_qualification: "separate_required",
   },
+  project_check: {
+  "registration": "flow.production-project-check/v2",
+  "selection": "check_id_only",
+  "mode": "verify",
+  "operation": "flow.operation/project-check/v2",
+  "receipt": "work.project-check-receipt/v2",
+  "meaning": "GREEN-only_command_exit_zero_test_count_unknown",
+  "candidate": "exact_captured_committed_tree",
+  "network": "disabled",
+  "writes": "bounded_private_tmpfs_only",
+  "recovery": "existing_reservation_only",
+  "native_qualification": "not_claimed"
+}
 };
 const PUBLIC_HOST_CONTRACTS = Object.freeze([
   PUBLIC_HOST_TRANSPORT.request,
