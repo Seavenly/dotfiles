@@ -1284,3 +1284,14 @@ test("receipt tampering, replay mismatch, and cancellation or late contexts fail
   assert.equal(conflictingSubject.accepted, false);
   assert.equal(conflictingSubject.rejection.code, "invalid_binding_context");
 });
+
+
+test("file digest evidence never exempts ambient observations or credentials from scanning", () => {
+  const safe = { schema: "flow.delegate-evidence/v1", observation: "The exact captured file was inspected",
+    feature_evidence: { schema: "flow.feature-criterion-evidence/v1", criteria: [{ criterion: "The feature is present", kind: "git_file_sha256", target: "src/feature.sh", expected: "sha256:" + "a".repeat(64) }] } };
+  assert.equal(validateDelegateEvidenceSafety(safe).accepted, true);
+  assert.equal(validateDelegateEvidenceSafety({ ...safe, observation: "Ran /usr/bin/python3" }).rejection.code, "ambient_filesystem_path");
+  assert.equal(validateDelegateEvidenceSafety({ ...safe, observation: "token=" + fixtureGithubToken() }).rejection.code, "credential_material");
+  const ambient = structuredClone(safe); ambient.feature_evidence.criteria[0].target = "/home/operator/source.sh";
+  assert.equal(validateDelegateEvidenceSafety(ambient).rejection.code, "ambient_filesystem_path");
+});

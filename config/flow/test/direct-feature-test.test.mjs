@@ -443,7 +443,7 @@ export function createFlowRuntime(options = {}) { return documented({ ...fixture
   const factoryBytes = await readFile(runtimeModule, "utf8");
   const invocationPath = join(scratch, "invocations");
   const executable = join(scratch, "codex-fixture");
-  await writeFile(executable, delegateFixture({ invocationPath, releasePath: join(scratch, "release-writer") }));
+  await writeFile(executable, delegateFixture({ invocationPath, releasePath: join(scratch, "release-writer"), digestEvidence: scenario === "project-source-digest" }));
   await chmod(executable, 0o700);
   const configDirectory = join(scratch, "config");
   await cp(sourceConfig, configDirectory, { recursive: true, filter: path => !path.split("/").includes("node_modules") });
@@ -495,7 +495,11 @@ async function copiedTestRelease(directory) {
   await write("evidence/release-qualification.v1.json", qualification);
 }
 
-function delegateFixture({ invocationPath, releasePath }) {
+const ordinarySourceBytes = '#!/bin/sh\nprintf "%s" "$root/internal/shell/paths.sh" >/dev/null\n';
+function delegateFixture({ invocationPath, releasePath, digestEvidence = false }) {
+  const evidence = digestEvidence
+    ? { kind: "git_file_sha256", target: "source.sh", expected: checkDigest(ordinarySourceBytes) }
+    : { kind: "git_file_equals", target: "feature.txt", expected: "after\n" };
   return `#!/usr/bin/env node
 import {readFileSync,writeFileSync,appendFileSync,existsSync} from "node:fs";
 import {createHash} from "node:crypto";
@@ -504,9 +508,9 @@ const task=JSON.parse(readFileSync(0,"utf8")).task_inputs;
 appendFileSync(${JSON.stringify(invocationPath)},task.phase+"\\n");
 const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==="object"?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 const digest=v=>"sha256:"+createHash("sha256").update(JSON.stringify(canonical(v))).digest("hex");
-const evidence={kind:"git_file_equals",target:"feature.txt",expected:"after\\n"};
+const evidence=${JSON.stringify(evidence)};
 const output={schema:"flow.delegate-evidence/v1",observation:"actual owned fixture file observation"};
-if(task.phase==="apply") {while(!existsSync(${JSON.stringify(releasePath)}))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);writeFileSync("feature.txt","after\\n");if(task.brief.summary==="Add the second feature while preserving the first")writeFileSync("second-feature.txt","second\\n");output.feature_evidence={schema:"flow.feature-criterion-evidence/v1",criteria:task.brief.acceptance.map(criterion=>({criterion,...evidence}))};}
+if(task.phase==="apply") {while(!existsSync(${JSON.stringify(releasePath)}))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);writeFileSync("feature.txt","after\\n");if(${digestEvidence})writeFileSync("source.sh",${JSON.stringify(ordinarySourceBytes)});if(task.brief.summary==="Add the second feature while preserving the first")writeFileSync("second-feature.txt","second\\n");output.feature_evidence={schema:"flow.feature-criterion-evidence/v1",criteria:task.brief.acceptance.map(criterion=>({criterion,...evidence}))};}
 else {if(readFileSync("feature.txt","utf8")!=="after\\n")process.exit(17);output.feature_critique={schema:"flow.feature-critique-output/v1",candidate_digest:task.candidate_digest,predecessor_evidence_digest:task.predecessor_evidence_digest,task_inputs_digest:digest(task),criteria:task.brief.acceptance.map(criterion=>({criterion,evidence,evidence_digest:digest({criterion,evidence,verdict:"passed"}),verdict:"passed"})),findings:[]};}
 const text=JSON.stringify(output);writeFileSync(process.argv[process.argv.indexOf("--output-last-message")+1],text);
 for(const event of [{type:"thread.started",thread_id:"thread-"+task.phase},{type:"turn.started"},{type:"item.completed",item:{id:"final",type:"agent_message",text}},{type:"turn.completed",usage:{}}])console.log(JSON.stringify(event));
@@ -574,7 +578,7 @@ function inspectEffectEvents(authorityDirectory, runId) {
   finally { database.close(); }
 }
 
-for (const scenario of ["success", "restart", "cancel", "cancel-crash", "cancel-settle"]) {
+for (const scenario of ["success", "source-digest", "restart", "cancel", "cancel-crash", "cancel-settle"]) {
   test(`public project check GREEN-only ${scenario} retains exact candidate and one owned checker`, linuxCheckMechanism, async t => {
     const f = await createFixture(t, `project-${scenario}`, { project: true, checkDelay: scenario.startsWith("cancel") ? 20000 : scenario === "restart" ? 1500 : 0 });
     let owner = await f.start();
@@ -607,7 +611,7 @@ for (const scenario of ["success", "restart", "cancel", "cancel-crash", "cancel-
       reservation = await readFile(join(checkRoot, "reservation.json")).catch(() => null);
       return reservation && await readFile(join(checkRoot, "worker.json")).catch(() => null);
     });
-    if (scenario !== "success") {
+    if (!["success", "source-digest"].includes(scenario)) {
       await waitFor(async () => (await readFile(join(checkRoot, "command.live.stdout"), "utf8").catch(() => "")).includes("FLOW_PROJECT_COMMAND_READY"));
     }
     if (scenario === "restart") {
@@ -695,6 +699,7 @@ for (const scenario of ["success", "restart", "cancel", "cancel-crash", "cancel-
       assert.equal(await f.invocations(), "apply\ncritique\n");
       const candidate = await client().query({ contract: "work.review/v1", subject_id: run.review_candidate_reference.candidate_id });
       assert.equal(candidate.status, "sealed");
+      if (scenario === "source-digest") assert.equal(await readFile(join(f.repository, "source.sh"), "utf8"), ordinarySourceBytes);
     }
     assert.equal(await readFile(join(checkRoot, "reservation.json"), "utf8"), reservation.toString());
     assert.equal((await readdir(base)).length, scenario === "cancel-settle" ? 2 : 1);

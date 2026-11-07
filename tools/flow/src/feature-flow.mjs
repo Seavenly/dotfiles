@@ -106,7 +106,11 @@ const FEATURE_APPLY_OUTPUTS = Object.freeze([
 const FEATURE_APPLY_PROMPT =
   "apply the accepted brief in the exact fenced workspace; return " +
   "feature_criterion_evidence/v1 with one Git-backed observation for every " +
-  "acceptance criterion. The workspace-write-denied capability permits " +
+  "acceptance criterion. Prefer {criterion, kind: git_file_sha256, target, expected} " +
+  "with a contained repository-relative target and expected equal to sha256:<64 lowercase hex> " +
+  "of the raw post-edit file bytes. Do not copy source text or absolute host/tool paths " +
+  "into observation prose. Legacy git_file_equals remains supported for safe short text. " +
+  "The workspace-write-denied capability permits " +
   "editing files in the exact bound workspace; denied refers to approval " +
   "requests and escalation, not repository file edits. When a registered " +
   "test check is selected, preserve its pinned health/acceptance checks and " +

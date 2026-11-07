@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import {
   chmod,
@@ -38,7 +39,7 @@ import { deriveDelegatedAgentResourceKey } from
 import { createProductionComposition } from "../src/production-composition.mjs";
 import { createProductionBackupRestoreAdapter } from
   "../src/production-backup-restore.mjs";
-import { validateFeatureCritiqueOutput } from
+import { validateFeatureCritiqueOutput, validateFeatureCriterionEvidence } from
   "../src/production-feature-operations.mjs";
 import { bindQualifiedReleaseFixture } from
   "../test-support/qualified-release-fixture.mjs";
@@ -2295,8 +2296,10 @@ function productionDelegatedAgentPort({
   waitForApply = null,
   includeCriterionEvidence = true,
   criterionExpected = "after\n",
+  criterionKind = "git_file_equals",
   includeCritiqueEvidence = true,
   critiqueExpected = criterionExpected,
+  critiqueKind = criterionKind,
   critiqueFindings = [],
 }) {
   return {
@@ -2420,7 +2423,7 @@ function productionDelegatedAgentPort({
           schema: "flow.feature-criterion-evidence/v1",
           criteria: criteria.map((criterion) => ({
           criterion,
-          kind: "git_file_equals",
+          kind: criterionKind,
           target: "feature.txt",
           expected: typeof criterionExpected === "function"
             ? criterionExpected(criterion)
@@ -2443,7 +2446,7 @@ function productionDelegatedAgentPort({
           task_inputs_digest: digest(taskInputs),
           criteria: criteria.map((criterion) => {
             const evidence = {
-              kind: "git_file_equals",
+              kind: critiqueKind,
               target: "feature.txt",
               expected: typeof critiqueExpected === "function"
                 ? critiqueExpected(criterion)
@@ -2625,3 +2628,39 @@ if (process.argv[2] === "--version") { console.log("codex-cli 0.160.0"); process
   assert.match(launchRejection.reason, /codex_native_policy_unproven/);
   await assert.rejects(stat(join(authorityDirectory, "direct-tasks")), { code: "ENOENT" });
 });
+
+
+test("file SHA criterion is closed and uses canonical raw-byte digests", () => {
+  const criterion = "the changed behavior is observable";
+  const valid = { criterion, kind: "git_file_sha256", target: "feature.txt", expected: "sha256:" + "a".repeat(64) };
+  const check = entry => validateFeatureCriterionEvidence({ schema: "flow.feature-criterion-evidence/v1", criteria: [entry] }, [criterion]);
+  assert.ok(check(valid));
+  for (const expected of ["a".repeat(64), "sha256:" + "A".repeat(64), "sha256:" + "a".repeat(63), "sha256:" + "a".repeat(64) + "\n"]) assert.equal(check({ ...valid, expected }), null);
+  assert.equal(check({ ...valid, target: "../feature.txt" }), null);
+  assert.equal(check({ ...valid, extra: true }), null);
+  assert.ok(check({ ...valid, kind: "git_file_equals", expected: "legacy bytes\n" }));
+});
+
+for (const mismatch of [false, true]) {
+ test(`production capture verifies raw file SHA evidence ${mismatch ? "rejecting a wrong digest" : "through independent critique and seal"}`, async t => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-captured-sha-")), repository = join(scratch, "repository");
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  await initializeRepository(repository);
+  const bytes = Buffer.concat([Buffer.from('#!/bin/sh\r\nprintf "%s" "$root/internal/shell/paths.sh" >/dev/null\r\n'), Buffer.from([255, 128])]);
+  const rawDigest = "sha256:" + createHash("sha256").update(bytes).digest("hex");
+  assert.notEqual(rawDigest, "sha256:" + createHash("sha256").update(bytes.toString("utf8")).digest("hex"));
+  const runtime = await createFlowRuntime({ env: { HOME: scratch, XDG_STATE_HOME: join(scratch, "state") }, qualifiedReleaseRepository: repository,
+    delegatedAgentPort: productionDelegatedAgentPort({ repository, turns: new Map(), criterionKind: "git_file_sha256",
+      criterionExpected: mismatch ? "sha256:" + "f".repeat(64) : rawDigest, onApply: () => initializeCandidate(repository, bytes) }) });
+  t.after(() => closeFlowRuntime(runtime));
+  const prepared = await runtime.prepare(preparationRequest(repository, "brief:source-sha"));
+  const launch = runtime.launch(confirmedPredefinedLaunchRequest(prepared));
+  assert.equal(launch.schema, "flow.launch-receipt/v1", JSON.stringify(launch));
+  await until(() => { const run = runtime.query({ run_id: launch.run_id }); return mismatch
+    ? run.effects.some(e => e.last_observation?.provider_observation?.diagnostic?.code === "operation_failure") : run.phase === "succeeded"; });
+  const run = runtime.query({ run_id: launch.run_id });
+  assert.equal(run.phase === "succeeded", !mismatch, JSON.stringify(run));
+  if (mismatch) assert.equal(run.handoffs.length, 0);
+  else assert.equal(run.effects.find(e => e.operation_contract === "flow.operation/feature-verify/v1").receipt.provider_receipt.acceptance_criteria[0].verdict, "passed");
+ });
+}

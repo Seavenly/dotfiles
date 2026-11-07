@@ -63,8 +63,9 @@ adapter or synthetic pass mechanism.
 
 `src/evidence-safety.mjs` is a pure, non-authoritative validator for canonical
 evidence crossing a Flow boundary. Its exact policy identity is
-`flow.evidence-safety-policy/v1`, and catalog v38 binds it to
-`flow.contract-catalog/v1@38`. The request shape is
+`flow.evidence-safety-policy/v1`, and catalog v39 binds it to
+`flow.contract-catalog/v1@39`. Retained catalog-38 receipts remain readable under
+the unchanged policy; new requests require catalog 39. The request shape is
 `flow.evidence-safety-request/v1` with exactly `schema`, `policy_id`,
 `catalog_id`, `classification`, `allowed_use`, `input_digest`, and `input`.
 `input_digest` is the SHA-256 digest of the canonical JSON input bytes; key

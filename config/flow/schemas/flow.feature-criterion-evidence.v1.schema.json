@@ -14,10 +14,11 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["criterion", "expected", "kind", "target"],
+        "allOf": [{"if": {"type": "object", "required": ["kind"], "properties": {"kind": {"const": "git_file_sha256"}}}, "then": {"type": "object", "properties": {"expected": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}}}}],
         "properties": {
           "criterion": { "type": "string", "minLength": 1 },
           "expected": { "type": "string", "maxLength": 1048576 },
-          "kind": { "const": "git_file_equals" },
+          "kind": { "enum": ["git_file_equals", "git_file_sha256"] },
           "target": {
             "type": "string",
             "minLength": 1,

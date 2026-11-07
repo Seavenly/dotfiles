@@ -1129,10 +1129,12 @@ export function validateFeatureCriterionEvidence(evidence, expectedCriteria) {
         Object.keys(entry).sort().join(",") !==
           "criterion,expected,kind,target" ||
         entry.criterion !== expectedCriteria[index] ||
-        entry.kind !== "git_file_equals" ||
+        !["git_file_equals", "git_file_sha256"].includes(entry.kind) ||
         !safeRepositoryRelativePath(entry.target) ||
         typeof entry.expected !== "string" ||
-        Buffer.byteLength(entry.expected, "utf8") > 1_048_576) {
+        (entry.kind === "git_file_sha256"
+          ? !/^sha256:[a-f0-9]{64}$/u.test(entry.expected)
+          : Buffer.byteLength(entry.expected, "utf8") > 1_048_576)) {
       return null;
     }
     return entry;
@@ -1337,7 +1339,10 @@ function assertCriterionEvidenceMatchesGit(workspace, git, evidence) {
       { cause: error },
     );
   }
-  if (!actual.equals(Buffer.from(evidence.expected, "utf8"))) {
+  const matches = evidence.kind === "git_file_sha256"
+    ? `sha256:${createHash("sha256").update(actual).digest("hex")}` === evidence.expected
+    : actual.equals(Buffer.from(evidence.expected, "utf8"));
+  if (!matches) {
     throw featureOperationError(
       "feature_verification_criterion_evidence_mismatch",
       `feature criterion evidence does not match Git: ${evidence.criterion}`,

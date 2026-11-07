@@ -9,7 +9,15 @@ A failed ordinary command is never treated as intended RED.
 
 A v2 check runs after Flow captures the committed candidate, before independent
 critique, verification and seal. The registered command must exit zero and its
-exact captured candidate must remain unchanged. This proves command completion,
+exact captured candidate must remain unchanged. Writer and critic criterion
+observations may use `git_file_sha256` with a repository-relative file and
+`expected: "sha256:<64 lowercase hex>"` for its raw bytes. Flow independently
+recomputes that digest from the exact captured Git blob. This avoids transmitting
+full ordinary source text as evidence; the unchanged evidence scanner still
+rejects ambient host paths and credentials in observations. Legacy
+`git_file_equals` remains available for safe short text. A file digest proves
+content identity, while the registered suite supplies command execution evidence.
+This proves command completion,
 not a test count or every behavioral acceptance criterion. Counts and skipped
 cases remain whatever the captured stdout/stderr actually report. Nonzero exit,
 environment failure, timeout, output exhaustion and cancellation are distinct
