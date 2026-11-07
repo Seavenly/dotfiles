@@ -32,10 +32,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "bfa23f062b5f23eb152bd0c71a6be53236e5b89d",
+    "candidate_tree_sha": "0dfcaf9b4fff3371fffef565bcc50104e1d8f6f6",
     "qualification_base_commit": "c34c6e881ce375691d4f3e4ca626c1af9eef81cc"
   },
-  "content_digest": "sha256:464e24857b5c721973b6f9c11ffbcdfe9065de941ab2625b6274135ff6702f0b",
+  "content_digest": "sha256:905f5d6f581afdebf46c16fec6be152ce3a430e9249c683517567f4bf4ea11f4",
   "files": [
     {
       "path": "GLOSSARY.md",
@@ -1458,6 +1458,36 @@
       "mode": "100644",
       "git_blob_sha": "14a15777cc9459c4e3e78a087a1727a52e47289e",
       "sha256": "a31340f40c0f79ee3716d5486dab000f0cdf74c26b462f7cdf89b75e115810ea"
+    },
+    {
+      "path": "tools/flow/diagnostics/macos/launchd-ownership-canary/README.md",
+      "mode": "100644",
+      "git_blob_sha": "d351c2282d2765128d417a88ce3909e6f977ccfb",
+      "sha256": "672c20785f3a62fd4bbaffb1a7f9d1f3460fb7a744c065a97df1f3f14f5897fd"
+    },
+    {
+      "path": "tools/flow/diagnostics/macos/launchd-ownership-canary/helper.c",
+      "mode": "100644",
+      "git_blob_sha": "f24c771543dc428be08a5b8e0dffa9ef1ad670ae",
+      "sha256": "86cbfe2cc03fe10c6da6662ded0573dfc11189151a27839d9ec849a5edb2955c"
+    },
+    {
+      "path": "tools/flow/diagnostics/macos/launchd-ownership-canary/probe.py",
+      "mode": "100644",
+      "git_blob_sha": "4c2015ea291d3f4df84e11aa221f075760de08e3",
+      "sha256": "965ee71be980d23e716fe2c63d19709b8472e938d1e910bfab40795e459090fe"
+    },
+    {
+      "path": "tools/flow/diagnostics/macos/launchd-ownership-canary/run.sh",
+      "mode": "100644",
+      "git_blob_sha": "1ce4132aa7f03399cfcdade444989dcc993aff9b",
+      "sha256": "11590b402dc5d91a8bdd88199e24bbb83497ed1c06cfe3b67ba9a6f62af57b3a"
+    },
+    {
+      "path": "tools/flow/diagnostics/macos/launchd-ownership-canary/test.py",
+      "mode": "100644",
+      "git_blob_sha": "f1023428aa08414364e55277b78f0fbc398d5f3d",
+      "sha256": "604a8fb4abc7f6edaaab94e8c9e8ee4f94b5a68ef92a9cddec4ece67542c2bb0"
     },
     {
       "path": "tools/flow/diagnostics/macos/package.py",
