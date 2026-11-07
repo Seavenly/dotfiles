@@ -67,6 +67,14 @@ test("selection binds state aliases and refuses project-local output/link locati
   const second = createProjectInitPlan(f.options([]), { env });
   assert.notEqual(digest(first), digest(second));
   assert.equal(first.setup.canonical_state_home, f.state);
+  const links = join(f.root, "links"); symlinkSync(f.state, links);
+  const firstLink = createProjectInitPlan(f.options(["--client-link", join(links, "flow-project")]), { env: f.env });
+  unlinkSync(links); symlinkSync(other, links);
+  const secondLink = createProjectInitPlan(f.options(["--client-link", join(links, "flow-project")]), { env: f.env });
+  assert.notEqual(digest(firstLink), digest(secondLink));
+  assert.equal(firstLink.setup.canonical_client_link, join(f.state, "flow-project"));
+  assert.equal(secondLink.setup.canonical_client_link, join(other, "flow-project"));
+  assert.match(renderProjectInitPlan(secondLink), /Resolved client link destination:/u);
   assert.throws(() => createProjectInitPlan(f.options(["--client-link", join(f.repository, "flow-project")]), { env: f.env }), /outside the project/u);
   unlinkSync(alias); symlinkSync(f.repository, alias);
   assert.throws(() => createProjectInitPlan(f.options([]), { env }), /outside the project/u);
@@ -125,4 +133,44 @@ test("missing Git identity is actionable and creates no configuration", linux, t
   assert.throws(() => createProjectInitPlan(f.options([]), { env: { ...f.env, HOME: home, XDG_CONFIG_HOME: join(home, "config") } }), /Configure user.name and user.email separately/u);
   assert.equal(existsSync(join(f.state, "flow-init")), false);
   assert.equal(existsSync(join(f.state, "flow-local")), false);
+});
+
+test("public confirmation refuses changed committed inputs before creating setup", linux, t => {
+  const f = fixture(t), cli = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
+  const args = [cli, "init", "--repository", f.repository, "--summary", "A feature", "--acceptance", "Suite passes", "--codex-executable", f.executable, "--json"];
+  const run = extra => spawnSync(process.execPath, [...args, ...extra], { env: f.env, encoding: "utf8", timeout: 30000 });
+  const preview = run([]); assert.equal(preview.status, 0, preview.stdout + preview.stderr);
+  const selected = JSON.parse(preview.stdout);
+  writeFileSync(join(f.repository, "math.test.mjs"), "import 'node:test'; // selected inputs changed\n");
+  f.git(["add", "."]); f.git(["commit", "--quiet", "-m", "Changed acceptance input"]);
+  const apply = run(["--confirm", selected.confirmation_digest]);
+  assert.equal(apply.status, 1, apply.stdout + apply.stderr);
+  assert.match(apply.stderr, /Confirmation digest does not match/u);
+  assert.equal(existsSync(join(f.state, "flow-init")), false);
+  assert.equal(existsSync(join(f.state, "flow-local")), false);
+});
+
+test("public init forwards explicit check changes while preserving the same authority and old client", linux, t => {
+  const f = fixture(t), cli = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
+  writeFileSync(f.executable, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex-cli 0.166.0"; exit 0; fi\nexit 99\n', { mode: 0o700 });
+  const invoke = (criterion, extra = []) => {
+    const args = [cli, "init", "--repository", f.repository, "--summary", "A feature", "--acceptance", criterion, "--codex-executable", f.executable, "--json", ...extra];
+    const preview = spawnSync(process.execPath, args, { env: f.env, encoding: "utf8", timeout: 30000 });
+    assert.equal(preview.status, 0, preview.stdout + preview.stderr);
+    const plan = JSON.parse(preview.stdout);
+    return { plan, result: spawnSync(process.execPath, [...args, "--confirm", plan.confirmation_digest], { env: f.env, encoding: "utf8", timeout: 30000 }) };
+  };
+  const first = invoke("Suite passes"); assert.equal(first.result.status, 0, first.result.stdout + first.result.stderr);
+  const client = JSON.parse(first.result.stdout), profile = join(first.plan.plan.setup.authority_directory, "../profile.json");
+  const retained = [profile, join(client.directory, "pilot.json"), client.client].map(path => ({ path, bytes: readFileSync(path) }));
+  const refused = invoke("Suite passes with a new criterion");
+  assert.equal(refused.result.status, 1); assert.match(refused.result.stderr, /--reconfigure-check yes/u);
+  for (const file of retained) assert.deepEqual(readFileSync(file.path), file.bytes);
+  const changed = invoke("Suite passes with a new criterion", ["--reconfigure-check", "yes"]);
+  assert.equal(changed.result.status, 0, changed.result.stdout + changed.result.stderr);
+  assert.equal(changed.plan.plan.setup.authority_directory, first.plan.plan.setup.authority_directory);
+  assert.notEqual(JSON.parse(changed.result.stdout).directory, client.directory);
+  for (const file of retained) assert.deepEqual(readFileSync(file.path), file.bytes);
+  assert.equal(existsSync(join(first.plan.plan.setup.authority_directory, "authority.sqlite")), false);
+  assert.equal(f.git(["status", "--porcelain"]), "");
 });

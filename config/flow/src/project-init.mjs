@@ -125,8 +125,10 @@ export function createProjectInitPlan(options, { env = process.env, cwd = proces
     if (original.identity.runtime_root !== runtimeRoot) clientDirectory += `.runtime-${digest(runtimeRoot).slice(7)}`;
   }
   const clientLink = options["--client-link"] && resolve(cwd, options["--client-link"]);
+  let canonicalClientLink = null;
   if (clientLink) {
     const destination = join(canonicalDestination(dirname(clientLink)), basename(clientLink));
+    canonicalClientLink = destination;
     if (destination === repository || destination.startsWith(repository + "/")) fail("Choose a --client-link outside the project so preparation keeps a clean workspace");
     let existing;
     try { existing = lstatSync(clientLink); } catch (error) { if (error.code !== "ENOENT") throw error; }
@@ -137,7 +139,8 @@ export function createProjectInitPlan(options, { env = process.env, cwd = proces
     codex_executable: { path: codex, sha256: hash(codex) }, recipe: preset.recipe, project_check: registration.config,
     registration_digest: registration.registration_digest, binding_fingerprint: registration.binding_fingerprint, scope: registration.scope,
     setup: { authority_directory: join(profile, "authority"), canonical_authority_directory: authorityDirectory,
-      state_home: stateHome, canonical_state_home: actualStateHome, configuration_parent: configurationParent, client_link: clientLink ?? null,
+      state_home: stateHome, canonical_state_home: actualStateHome, configuration_parent: configurationParent,
+      client_link: clientLink ?? null, canonical_client_link: canonicalClientLink,
       upgrade_runtime: options["--upgrade-runtime"] ?? null, reconfigure_check: options["--reconfigure-check"] ?? null },
     execution_trust: "supervised-native-cli", trust_disclosure: "Official CLI requested permissions and ambient startup are operator-supervised, not independently enforced. This confirmation authorizes setup, not launch.",
     notes: [...preset.notes, "Changing acceptance changes the check identity: existing profiles may require --reconfigure-check yes and a stopped, settled owner", "Runtime selection changes require explicit --upgrade-runtime yes and the existing stopped, settled procedure"],
@@ -155,7 +158,9 @@ export function renderProjectInitPlan(plan) {
     "Read-only inputs:", ...check.read_mounts.flatMap(input => [`  ${input.source} -> ${input.target}`, `    ${input.sha256}`]),
     "Pinned existing tests/configuration:", ...check.pinned_files.map(file => `  ${file.path} (${file.sha256})`),
     `Environment: ${JSON.stringify(check.environment)}`, `Private configuration parent: ${plan.setup.configuration_parent}`,
-    `Client link: ${plan.setup.client_link ?? "none (use the returned immutable client path)"}`, `Authority: ${plan.setup.authority_directory}`, `Trust: ${plan.trust_disclosure}`,
+    `Client link: ${plan.setup.client_link ?? "none (use the returned immutable client path)"}`,
+    ...(plan.setup.client_link ? [`Resolved client link destination: ${plan.setup.canonical_client_link}`] : []),
+    `Authority: ${plan.setup.authority_directory}`, `Trust: ${plan.trust_disclosure}`,
     ...plan.notes.map(note => `Note: ${note}`), "No project tests, owner or model work have run. Nothing has been created.", ""].map(display).join("\n");
 }
 
