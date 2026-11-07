@@ -299,7 +299,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       claim,
       disposition: phase === "active" ? "held" : "released",
     }));
-  for (const event of run.events.filter(event => event.type === "cancelled_workspace_settled")) {
+  for (const event of run.events.filter(event => ["cancelled_workspace_settled", "cancelled_capture_settled"].includes(event.type))) {
     const item = resourceDispositions.find(item => digest(item.claim) === digest(event.resource_claim));
     if (item) item.disposition = "released";
   }

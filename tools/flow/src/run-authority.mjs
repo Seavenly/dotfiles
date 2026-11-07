@@ -1,4 +1,5 @@
-import { isProjectCheckAbsenceReceipt } from "./project-check.mjs";
+import { isProjectCheckAbsenceReceipt, validateProjectCheckReceipt, PROJECT_CHECK_CONTRACT } from "./project-check.mjs";
+import { validateFeatureCaptureReceipt, FEATURE_CAPTURE_OPERATION_CONTRACT } from "./feature-capture.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import {
@@ -1527,7 +1528,7 @@ export function createDurableRunAuthority({
           );
         }
         const fold = fenceRun(database, stream);
-        if (command?.type === "recovery" && command.recovery === "settle_cancelled_workspace") {
+        if (command?.type === "recovery" && ["settle_cancelled_workspace", "settle_cancelled_capture"].includes(command.recovery)) {
           const result = settleCancelledWorkspace(database, stream, command, {
             fenceRun, gitWorkspaceObservationAdapter, lockDatabase, authorityEpoch, bootId, processIdentity,
           });
@@ -6305,6 +6306,20 @@ function authorityWatermark(events) {
 // cannot select it. Historical cancelled folds remain unchanged until the
 // explicit, atomically recorded settlement below.
 function cancelledWorkspaceSettlement(database, stream, fold) {
+  const state = cancelledWorkspaceClaim(database, fold);
+  if (state.code) return state;
+  const { workspace, resource } = state;
+  for (const effect of fold.effects) {
+    if (effect.invocation_started === false && ["not_created", "abandoned"].includes(effect.status)) continue;
+    if (!effect.receipt || !["succeeded", "late_succeeded", "quarantined", "late_quarantined"].includes(effect.status)) return { code: "cancelled_workspace_unsettled_effects" };
+    if (!["delegate", "delegate_cancellation"].includes(effect.effect_kind)) return { code: "cancelled_workspace_external_operation_requires_resolution" };
+    if (!cancelledDelegateRetired(effect, fold)) return { code: "cancelled_workspace_retirement_unproven" };
+  }
+  if (fold.effects.length === 0) return { code: "cancelled_workspace_retirement_unproven" };
+  return { ...state, action: cancelledSettlementAction(fold, workspace, resource, "settle_cancelled_workspace") };
+}
+
+function cancelledWorkspaceClaim(database, fold) {
   if (fold.phase !== "cancelled") return { code: "run_not_cancelled" };
   const claims = fold.resource_claims.filter(claim => claim.kind === "workspace");
   if (claims.length !== 1 || fold.resource_claims.length !== 1) return { code: "cancelled_workspace_scope_unsupported" };
@@ -6316,37 +6331,85 @@ function cancelledWorkspaceSettlement(database, stream, fold) {
       workspace.mutation_epoch !== resource.mutation_epoch || digest({ git: workspace.git }) !== resource.fingerprint) {
     return { code: "cancelled_workspace_claim_mismatch" };
   }
-  for (const effect of fold.effects) {
-    if (effect.invocation_started === false && ["not_created", "abandoned"].includes(effect.status)) continue;
-    if (!effect.receipt || !["succeeded", "late_succeeded", "quarantined", "late_quarantined"].includes(effect.status)) return { code: "cancelled_workspace_unsettled_effects" };
-    if (!["delegate", "delegate_cancellation"].includes(effect.effect_kind)) return { code: "cancelled_workspace_external_operation_requires_resolution" };
-    const evidence = effect.receipt.provider_receipt;
-    const retirement = evidence?.terminal_disposition;
-    if (retirement?.schema !== "flow.resource-retirement/v1" || retirement.retired !== true ||
-        retirement.proof !== "linux_subreaper_echild" || retirement.resource?.type !== "direct_task" ||
-        typeof evidence.turn_id !== "string" || !evidence.turn_id.startsWith("task:") || evidence.turn_id.length <= 5 ||
-        retirement.resource.id !== evidence.turn_id || !/^sha256:[a-f0-9]{64}$/u.test(retirement.terminal_receipt_digest ?? "")) {
-      return { code: "cancelled_workspace_retirement_unproven" };
-    }
-    if (effect.effect_kind === "delegate_cancellation") {
-      const original = fold.effects.find(candidate => candidate.effect_id === evidence.delegate_effect_id);
-      if (original?.receipt?.provider_receipt?.turn_id !== evidence.turn_id ||
-          digest(original.receipt.provider_receipt.terminal_disposition) !== digest(retirement)) return { code: "cancelled_workspace_retirement_unproven" };
-    }
+  return { workspace, resource, claim: workspace.claims[0] };
+}
+
+function cancelledDelegateRetired(effect, fold) {
+  const evidence = effect.receipt?.provider_receipt;
+  const retirement = evidence?.terminal_disposition;
+  if (retirement?.schema !== "flow.resource-retirement/v1" || retirement.retired !== true ||
+      retirement.proof !== "linux_subreaper_echild" || retirement.resource?.type !== "direct_task" ||
+      typeof evidence.turn_id !== "string" || !evidence.turn_id.startsWith("task:") || evidence.turn_id.length <= 5 ||
+      retirement.resource.id !== evidence.turn_id || !/^sha256:[a-f0-9]{64}$/u.test(retirement.terminal_receipt_digest ?? "")) {
+    return false;
   }
-  if (fold.effects.length === 0) return { code: "cancelled_workspace_retirement_unproven" };
-  return { workspace, resource, claim: workspace.claims[0], action: {
-    schema: "flow.command/v1", type: "recovery", recovery: "settle_cancelled_workspace",
+  if (effect.effect_kind === "delegate_cancellation") {
+    const original = fold.effects.find(candidate => candidate.effect_id === evidence.delegate_effect_id);
+    if (original?.receipt?.provider_receipt?.turn_id !== evidence.turn_id ||
+        digest(original.receipt.provider_receipt.terminal_disposition) !== digest(retirement)) return false;
+  }
+  return true;
+}
+
+function cancelledSettlementAction(fold, workspace, resource, recovery) {
+  return {
+    schema: "flow.command/v1", type: "recovery", recovery,
     run_id: fold.run_id, expected_watermark: fold.watermark,
     workspace_subject_id: resource.id, expected_workspace_watermark: workspace.watermark,
     claim_id: workspace.claims[0].claim_id, expected_generation: resource.generation,
     expected_mutation_epoch: resource.mutation_epoch, expected_fingerprint: resource.fingerprint,
+  };
+}
+
+// Accept only the already captured outcome of this exact finite feature graph.
+// This does not turn arbitrary completed operations into workspace-release proof.
+function cancelledCaptureSettlement(database, stream, fold) {
+  const state = cancelledWorkspaceClaim(database, fold);
+  if (state.code) return state;
+  const commits = [], captures = [], checks = [];
+  for (const effect of fold.effects) {
+    if (effect.invocation_started === false && ["not_created", "abandoned"].includes(effect.status)) continue;
+    if (!effect.receipt) return { code: "cancelled_workspace_unsettled_effects" };
+    if (["delegate", "delegate_cancellation"].includes(effect.effect_kind)) {
+      if (!["succeeded", "late_succeeded", "quarantined", "late_quarantined"].includes(effect.status) || !cancelledDelegateRetired(effect, fold)) return { code: "cancelled_workspace_retirement_unproven" };
+    } else if (effect.operation_contract === "flow.operation/feature-direct-commit/v1" && effect.status === "succeeded") commits.push(effect);
+    else if (effect.operation_contract === FEATURE_CAPTURE_OPERATION_CONTRACT && effect.status === "succeeded") captures.push(effect);
+    else if (effect.operation_contract === PROJECT_CHECK_CONTRACT && ["succeeded", "late_succeeded", "not_created"].includes(effect.status)) checks.push(effect);
+    else return { code: "cancelled_workspace_external_operation_requires_resolution" };
+  }
+  if (commits.length !== 1 || captures.length !== 1 || checks.length !== 1) return { code: "cancelled_capture_evidence_missing" };
+  const [commitEffect] = commits, [captureEffect] = captures, [checkEffect] = checks;
+  const intentFor = effect => fold.effect_intents.find(intent => intent.effect_id === effect.effect_id);
+  const commit = commitEffect.receipt.provider_receipt, capture = captureEffect.receipt.provider_receipt;
+  const captureIntent = intentFor(captureEffect), checkIntent = intentFor(checkEffect);
+  const base = state.workspace;
+  const boundToClaim = workspace => workspace?.subject_id === state.resource.id &&
+    workspace.generation === base.generation && workspace.mutation_epoch === base.mutation_epoch &&
+    workspace.fingerprint === state.resource.fingerprint && digest(workspace.git) === digest(base.git);
+  if (!captureIntent || !checkIntent || !validateFeatureCaptureReceipt(capture, captureIntent) ||
+      !boundToClaim(captureIntent.operation_input?.workspace) || !boundToClaim(checkIntent.operation_input?.workspace) ||
+      capture.workspace.subject_id !== state.resource.id || capture.workspace.generation !== base.generation + 1 ||
+      capture.workspace.mutation_epoch !== base.mutation_epoch + 1 ||
+      commit?.schema !== "flow.git-candidate-commit-receipt/v1" || commit.proof !== "exact_local_ref_cas" ||
+      commit.effect_id !== commitEffect.effect_id || commit.attempt_id !== commitEffect.attempt_id || commit.idempotency_key !== commitEffect.idempotency_key ||
+      !boundToClaim(commit.workspace) ||
+      commit.old_commit_sha !== base.git.commit_sha || commit.commit_sha !== capture.git.commit_sha || commit.tree_sha !== capture.git.tree_sha ||
+      commit.ref !== base.git.ref || commit.ref !== capture.git.ref || !/^sha256:[a-f0-9]{64}$/u.test(commit.record_sha256 ?? "") ||
+      !validateProjectCheckReceipt(checkEffect.receipt.provider_receipt, checkIntent)) return { code: "cancelled_capture_evidence_mismatch" };
+  const check = checkEffect.receipt.provider_receipt.record ?? checkEffect.receipt.provider_receipt;
+  if (check.capture_receipt_digest !== capture.receipt_digest || digest(check.candidate) !== digest(capture.git)) return { code: "cancelled_capture_evidence_mismatch" };
+  const evidence = { capture_receipt_digest: capture.receipt_digest, commit_receipt_digest: digest(commit), project_check_receipt_digest: check.self_digest,
+    effect_receipts_digest: digest(fold.effects.map(effect => ({ effect_id: effect.effect_id, receipt: effect.receipt ?? null }))) };
+  return { ...state, acceptedGit: capture.git, evidence, action: {
+    ...cancelledSettlementAction(fold, base, state.resource, "settle_cancelled_capture"),
+    accepted_git: capture.git, ...evidence,
   } };
 }
 
 function withCancelledWorkspaceSettlement(database, stream, fold) {
   if (fold.phase !== "cancelled" || fold.admission === "suspended_host_reconciliation") return fold;
-  const result = cancelledWorkspaceSettlement(database, stream, fold);
+  const baseline = cancelledWorkspaceSettlement(database, stream, fold);
+  const result = baseline.action ? baseline : cancelledCaptureSettlement(database, stream, fold);
   return result.action ? freezeCanonical({ ...fold, legal_actions: [...fold.legal_actions, result.action] }) : fold;
 }
 
@@ -6355,7 +6418,7 @@ function settleCancelledWorkspace(database, stream, command, context) {
   const reject = code => createRejection({ operation: "command", code, runId: stream.fold.run_id,
     commandType: "recovery", authorityWatermark: fenceRun(database, stream).watermark, authorityWatermarkDomain: "run", legalActions: [] });
   const commandDigest = digest(command);
-  const previous = stream.records.find(({ payload }) => payload.type === "cancelled_workspace_settled" && payload.command_digest === commandDigest);
+  const previous = stream.records.find(({ payload }) => ["cancelled_workspace_settled", "cancelled_capture_settled"].includes(payload.type) && payload.command_digest === commandDigest);
   if (previous) return freezeCanonical({ schema: "flow.command-receipt/v1", command_type: "recovery", run_id: stream.fold.run_id, accepted: true, replayed: true, authority_watermark: fenceRun(database, stream).watermark });
   database.exec("BEGIN IMMEDIATE");
   try {
@@ -6364,7 +6427,8 @@ function settleCancelledWorkspace(database, stream, command, context) {
     stream = readStream(database, command.run_id);
     const fold = fenceRun(database, stream);
     if (command.expected_watermark !== fold.watermark) { database.exec("ROLLBACK"); return reject("stale_authority_watermark"); }
-    const state = cancelledWorkspaceSettlement(database, stream, fold);
+    const captureSettlement = command.recovery === "settle_cancelled_capture";
+    const state = captureSettlement ? cancelledCaptureSettlement(database, stream, fold) : cancelledWorkspaceSettlement(database, stream, fold);
     if (!state.action) { database.exec("ROLLBACK"); return reject(state.code); }
     if (command.expected_workspace_watermark !== state.workspace.watermark) { database.exec("ROLLBACK"); return reject("stale_workspace_observation"); }
     if (digest(command) !== digest(state.action)) { database.exec("ROLLBACK"); return reject("cancelled_workspace_settlement_mismatch"); }
@@ -6372,16 +6436,21 @@ function settleCancelledWorkspace(database, stream, command, context) {
     try { observation = gitWorkspaceObservationAdapter.observe({ repository_id: state.workspace.repository.canonical_id,
       workspace_path: state.workspace.workspace.canonical_path, ref: state.workspace.git.ref }); } catch { observation = null; }
     if (observation?.schema !== "work.git-observation/v1" || observation.git?.clean !== true ||
-        digest(observation.git) !== digest(state.workspace.git)) { database.exec("ROLLBACK"); return reject("cancelled_workspace_git_changed"); }
+        digest(observation.git) !== digest(state.acceptedGit ?? state.workspace.git)) { database.exec("ROLLBACK"); return reject("cancelled_workspace_git_changed"); }
     const fence = { authorityEpoch, bootId, processIdentity };
-    const settlement = { type: "cancelled_workspace_settled", command_digest: commandDigest,
+    const settlement = { type: captureSettlement ? "cancelled_capture_settled" : "cancelled_workspace_settled", command_digest: commandDigest,
       workspace_subject_id: state.resource.id, claim_id: state.claim.claim_id,
-      resource_claim: state.resource, workspace_watermark: state.workspace.watermark, git_observation: observation };
+      resource_claim: state.resource, workspace_watermark: state.workspace.watermark, git_observation: observation,
+      ...(captureSettlement ? { evidence: state.evidence } : {}) };
     appendAuthorityEvents(database, { streamId: workStreamIdentity("work.workspace/v1", state.resource.id).streamId,
       streamKind: "workspace", events: [{ contract: "work.workspace-event/v1", payload: {
         type: "workspace_claim_released", claim_id: state.claim.claim_id, holder: fold.run_id,
-        reason: "cancelled_workspace_settlement", settlement_command_digest: commandDigest,
-      } }], ...fence });
+        reason: captureSettlement ? "cancelled_capture_settlement" : "cancelled_workspace_settlement", settlement_command_digest: commandDigest,
+      } }, ...(captureSettlement ? [{ contract: "work.workspace-event/v1", payload: {
+        type: "workspace_reobserved", generation: state.workspace.generation + 1,
+        mutation_epoch: state.workspace.mutation_epoch + 1, git: observation.git, git_observation: observation,
+        disposition: state.workspace.disposition, settlement_command_digest: commandDigest,
+      } }] : [])], ...fence });
     appendAuthorityEvents(database, { streamId: fold.run_id, streamKind: "run",
       events: [{ contract: "flow.run-event/v1", payload: settlement }], ...fence });
     database.exec("COMMIT");

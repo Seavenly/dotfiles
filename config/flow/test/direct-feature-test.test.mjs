@@ -387,7 +387,7 @@ async function createFixture(t, scenario, { recipe = "valid", project = false, c
   const healthBytes = scenario === "check-restart"
     ? 'import test from "node:test";\nimport assert from "node:assert/strict";\ntest("positive health probe", async () => { await new Promise(resolve => setTimeout(resolve, 2000)); assert.equal(2 + 2, 4); });\n'
     : 'import test from "node:test";\nimport assert from "node:assert/strict";\ntest("positive health probe", () => assert.equal(2 + 2, 4));\n';
-  const acceptanceBytes = (checkDelay ? `import {setTimeout as delay} from "node:timers/promises"; process.stdout.write("FLOW_PROJECT_COMMAND_READY\\n"); await delay(${checkDelay});\n` : '') + 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { readFileSync } from "node:fs";\ntest("selected feature behavior", () => assert.equal(readFileSync("feature.txt", "utf8"), "after\\n"));\n';
+  const acceptanceBytes = (checkDelay ? `import {setTimeout as delay} from "node:timers/promises"; import {existsSync} from "node:fs"; process.stdout.write("FLOW_PROJECT_COMMAND_READY\\n"); if (!existsSync("second-feature.txt")) await delay(${checkDelay});\n` : '') + 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { readFileSync } from "node:fs";\ntest("selected feature behavior", () => assert.equal(readFileSync("feature.txt", "utf8"), "after\\n"));\n';
   await writeFile(join(repository, "feature.txt"), "before\n");
   await writeFile(join(repository, "health.test.mjs"), healthBytes);
   await writeFile(join(repository, "acceptance.test.mjs"), acceptanceBytes);
@@ -506,7 +506,7 @@ const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==="object"?Obje
 const digest=v=>"sha256:"+createHash("sha256").update(JSON.stringify(canonical(v))).digest("hex");
 const evidence={kind:"git_file_equals",target:"feature.txt",expected:"after\\n"};
 const output={schema:"flow.delegate-evidence/v1",observation:"actual owned fixture file observation"};
-if(task.phase==="apply") {while(!existsSync(${JSON.stringify(releasePath)}))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);writeFileSync("feature.txt","after\\n");output.feature_evidence={schema:"flow.feature-criterion-evidence/v1",criteria:task.brief.acceptance.map(criterion=>({criterion,...evidence}))};}
+if(task.phase==="apply") {while(!existsSync(${JSON.stringify(releasePath)}))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);writeFileSync("feature.txt","after\\n");if(task.brief.summary==="Add the second feature while preserving the first")writeFileSync("second-feature.txt","second\\n");output.feature_evidence={schema:"flow.feature-criterion-evidence/v1",criteria:task.brief.acceptance.map(criterion=>({criterion,...evidence}))};}
 else {if(readFileSync("feature.txt","utf8")!=="after\\n")process.exit(17);output.feature_critique={schema:"flow.feature-critique-output/v1",candidate_digest:task.candidate_digest,predecessor_evidence_digest:task.predecessor_evidence_digest,task_inputs_digest:digest(task),criteria:task.brief.acceptance.map(criterion=>({criterion,evidence,evidence_digest:digest({criterion,evidence,verdict:"passed"}),verdict:"passed"})),findings:[]};}
 const text=JSON.stringify(output);writeFileSync(process.argv[process.argv.indexOf("--output-last-message")+1],text);
 for(const event of [{type:"thread.started",thread_id:"thread-"+task.phase},{type:"turn.started"},{type:"item.completed",item:{id:"final",type:"agent_message",text}},{type:"turn.completed",usage:{}}])console.log(JSON.stringify(event));
@@ -531,9 +531,12 @@ function confirmation(prepared, dark_opt_in) {
 }
 
 async function waitFor(observe) {
-  const end = Date.now() + 10000;
+  // A check may consume its five-second health and acceptance bounds plus
+  // version/retirement and owner recovery. Keep the fixture bounded above that
+  // supported operation envelope rather than racing it at ten seconds.
+  const end = Date.now() + 30000;
   while (Date.now() < end) { if (await observe()) return; await new Promise(resolve => setTimeout(resolve, 20)); }
-  assert.fail("public feature test did not reach its expected state within ten seconds");
+  assert.fail("public feature test did not reach its expected state within thirty seconds");
 }
 
 async function terminal(client, run_id, scenario) {
@@ -571,7 +574,7 @@ function inspectEffectEvents(authorityDirectory, runId) {
   finally { database.close(); }
 }
 
-for (const scenario of ["success", "restart", "cancel", "cancel-crash"]) {
+for (const scenario of ["success", "restart", "cancel", "cancel-crash", "cancel-settle"]) {
   test(`public project check GREEN-only ${scenario} retains exact candidate and one owned checker`, linuxCheckMechanism, async t => {
     const f = await createFixture(t, `project-${scenario}`, { project: true, checkDelay: scenario.startsWith("cancel") ? 20000 : scenario === "restart" ? 1500 : 0 });
     let owner = await f.start();
@@ -613,6 +616,8 @@ for (const scenario of ["success", "restart", "cancel", "cancel-crash"]) {
     }
     if (scenario.startsWith("cancel")) {
       const active = await client().query({ run_id: launched.run_id });
+      assert.deepEqual(check.resource_claims, active.resource_claims.filter(claim => claim.kind === "workspace"));
+      assert.equal(active.resource_dispositions.find(item => item.claim.kind === "workspace").disposition, "held");
       const action = active.legal_actions.find(action => action.type === "cancel");
       assert.ok(action, JSON.stringify(active));
       if (scenario === "cancel-crash") {
@@ -633,6 +638,51 @@ for (const scenario of ["success", "restart", "cancel", "cancel-crash"]) {
       assert.equal(result.provider_receipt.record.retired, true);
       assert.equal(run.review_candidate_reference ?? null, null);
       assert.equal(await f.invocations(), "apply\n");
+      if (scenario === "cancel-settle") {
+        assert.equal(run.resource_dispositions.find(item => item.claim.kind === "workspace").disposition, "quarantined");
+        const next = await client().prepare({ ...f.request, brief: { ...f.request.brief, id: "brief:after-cancel" } });
+        await retain("cancelled-capture-reuse-probe", { run, next, workspace: inspectWorkspace(f.ownerEnv.FLOW_AUTHORITY_DIRECTORY, run.resource_claims[0].id) });
+        assert.equal(next.code, "workspace_already_claimed");
+        const action = run.legal_actions.find(action => action.recovery === "settle_cancelled_capture");
+        assert.ok(action, "retained captured Git needs an explicit fresh acceptance action");
+        assert.equal(action.accepted_git.commit_sha, f.git(["rev-parse", "HEAD"]));
+        assert.equal((await client().command({ ...action, accepted_git: { ...action.accepted_git, commit_sha: "f".repeat(40) } })).code, "cancelled_workspace_settlement_mismatch");
+        assert.equal((await client().command({ ...action, capture_receipt_digest: "sha256:" + "f".repeat(64) })).code, "cancelled_workspace_settlement_mismatch");
+        assert.equal((await client().command({ ...action, expected_workspace_watermark: "sha256:" + "f".repeat(64) })).code, "stale_workspace_observation");
+        await writeFile(join(f.repository, "feature.txt"), "unaccepted dirty change\n");
+        assert.equal((await client().command(action)).code, "cancelled_workspace_git_changed");
+        await writeFile(join(f.repository, "feature.txt"), "after\n");
+        assert.equal((await f.stop(owner)).state, "stopped");
+        owner = await f.start();
+        assert.equal((await client().command(action)).code, "stale_authority_watermark");
+        const fresh = (await client().query({ run_id: launched.run_id })).legal_actions.find(action => action.recovery === "settle_cancelled_capture");
+        assert.equal((await client().command(fresh)).accepted, true);
+        assert.equal((await client().command(fresh)).replayed, true);
+        const settled = await client().query({ run_id: launched.run_id });
+        assert.equal(settled.phase, "cancelled");
+        assert.equal(settled.resource_dispositions.find(item => item.claim.kind === "workspace").disposition, "released");
+        assert.equal((await f.stop(owner)).state, "stopped");
+        const workspace = inspectWorkspace(f.ownerEnv.FLOW_AUTHORITY_DIRECTORY, run.resource_claims[0].id);
+        assert.deepEqual(workspace.claims, []);
+        assert.deepEqual(workspace.git, fresh.accepted_git);
+        assert.equal(workspace.generation, run.resource_claims[0].generation + 1);
+        const events = inspectEffectEvents(f.ownerEnv.FLOW_AUTHORITY_DIRECTORY, launched.run_id);
+        assert.equal(events.filter(event => event.type === "cancelled_capture_settled").length, 1);
+        owner = await f.start();
+        assert.equal((await client().command(fresh)).replayed, true);
+        const preparedNext = await client().prepare({ ...f.request, brief: { ...f.request.brief,
+          id: "brief:second-feature", summary: "Add the second feature while preserving the first" } });
+        assert.equal(preparedNext.schema, "flow.prepared-run/v1", JSON.stringify(preparedNext));
+        const nextLaunch = await client().launch(confirmation(preparedNext, f.request.dark_opt_in));
+        assert.equal(nextLaunch.created, true, JSON.stringify(nextLaunch));
+        const completedNext = await terminal(client(), nextLaunch.run_id, "after-cancelled-capture-settlement");
+        assert.equal(completedNext.phase, "succeeded", JSON.stringify(completedNext));
+        assert.equal(await readFile(join(f.repository, "second-feature.txt"), "utf8"), "second\n");
+        assert.equal((await client().query({ run_id: launched.run_id })).phase, "cancelled");
+        assert.equal(await f.invocations(), "apply\napply\ncritique\n");
+        await retain("cancelled-capture-settlement-reuse", { before: run, action: fresh, settled, workspace,
+          next_prepared: preparedNext, next_launched: nextLaunch, next_completed: completedNext });
+      }
     } else {
       const run = await terminal(client(), launched.run_id, `project-${scenario}`);
       assert.equal(run.phase, "succeeded", JSON.stringify(run));
@@ -647,12 +697,12 @@ for (const scenario of ["success", "restart", "cancel", "cancel-crash"]) {
       assert.equal(candidate.status, "sealed");
     }
     assert.equal(await readFile(join(checkRoot, "reservation.json"), "utf8"), reservation.toString());
-    assert.equal((await readdir(base)).length, 1);
+    assert.equal((await readdir(base)).length, scenario === "cancel-settle" ? 2 : 1);
     assert.equal((await f.stop(owner)).state, "stopped");
     owner = await f.start();
     const reopened = await client().query({ run_id: launched.run_id });
     assert.equal(reopened.phase, scenario.startsWith("cancel") ? "cancelled" : "succeeded");
-    assert.equal((await readdir(base)).length, 1);
+    assert.equal((await readdir(base)).length, scenario === "cancel-settle" ? 2 : 1);
     assert.equal((await f.stop(owner)).state, "stopped");
     f.completed();
   });

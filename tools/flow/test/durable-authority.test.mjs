@@ -4317,3 +4317,52 @@ test("public cancelled workspace settlement retains uncertainty and releases an 
   assert.equal(runtime.command(runtime.query({ run_id: next.run_id }).legal_actions.find(item => item.type === "cancel")).accepted, true);
  });
 });
+
+test("cancelled capture settlement retains an unsettled or unknown external operation", async t => {
+  const authorityDirectory = await mkdtemp(join(tmpdir(), "flow-cancelled-capture-unknown-"));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+  const authority = createDurableRunAuthority({ authorityDirectory,
+    hostIdentityAdapter: fixedHostIdentity("boot-a", "capture-unknown-owner"),
+    gitWorkspaceObservationAdapter: durableWorkspaceObservationAdapter(),
+  });
+  t.after(() => authority.close());
+  const workspace = getWorkspaceAuthority({ runAuthority: authority });
+  assert.equal(workspace.command(durableWorkspaceRegistration()).accepted, true);
+  const registered = workspace.query(durableWorkspaceQuery());
+  const resource = { kind: "workspace", id: registered.subject_id, generation: registered.generation,
+    mutation_epoch: registered.mutation_epoch, fingerprint: digest({ git: registered.git }) };
+  const proposal = registeredOperationProposal({ checkpointBound: false });
+  proposal.graph.cards[0].resource_claims = [resource];
+  proposal.explicit_facts.resource_claims = [resource];
+  proposal.requested_authority.commands.push("cancel");
+  let finish;
+  const registration = { schema: "flow.registered-operation/v1", classification: "caller_idempotent",
+    invoke: intent => new Promise(resolve => { finish = () => resolve(operationReceipt(intent)); }),
+  };
+  const runtime = createFlowRuntime({ runAuthority: authority, autonomous: false,
+    registeredOperations: { [TEST_OPERATION_CONTRACT]: registration } });
+  const prepared = runtime.prepare(proposal);
+  assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
+  const launched = runtime.launch(confirmedLaunchRequest(prepared));
+  assert.ok(launched.run_id, JSON.stringify(launched));
+  assert.equal(workspace.command({ schema: "work.workspace-claim-command/v1", type: "workspace_claim",
+    command_id: "claim:unknown-capture", contract: "work.workspace/v1", subject_id: registered.subject_id,
+    expected_generation: registered.generation, expected_watermark: registered.watermark,
+    expected_fingerprint: resource.fingerprint, git_observation: registered.git_observation,
+    claim: { claim_id: "claim:unknown-capture", holder: launched.run_id, operations: ["record-outcome"] },
+  }).accepted, true);
+  const query = () => runtime.query({ run_id: launched.run_id });
+  const execution = authority.command(query().legal_actions.find(action => action.type === "operation_execute"));
+  const pending = authority.invokeEffect(execution.effect_intents[0], registration);
+  while (typeof finish !== "function") await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runtime.command(query().legal_actions.find(action => action.type === "cancel")).accepted, true);
+  const forceSettlement = () => runtime.command({ schema: "flow.command/v1", type: "recovery", recovery: "settle_cancelled_capture",
+    run_id: launched.run_id, expected_watermark: query().watermark });
+  assert.equal(forceSettlement().code, "cancelled_workspace_unsettled_effects");
+  finish();
+  await pending;
+  assert.equal(forceSettlement().code, "cancelled_workspace_external_operation_requires_resolution");
+  assert.equal(query().legal_actions.some(action => action.recovery === "settle_cancelled_capture"), false);
+  assert.equal(query().phase, "cancelled");
+  assert.equal(workspace.query(durableWorkspaceQuery()).claims.length, 1);
+});
