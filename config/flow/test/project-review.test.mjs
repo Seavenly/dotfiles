@@ -95,7 +95,7 @@ function publicRuntime(f) {
     }
     if (args[0] === "launch") {
       runtime.launches++;
-      if (runtime.failBeforeAdmission) return { schema: "flow.rejection/v1", operation: "launch", code: "closed_facts_changed", bundle_digest: prepared.bundle_digest };
+      if (runtime.failBeforeAdmission) return { schema: "flow.rejection/v1", operation: "launch", code: runtime.failureCode ?? "closed_facts_changed", bundle_digest: prepared.bundle_digest };
       runtime.launched = true; if (runtime.loseResponse) throw new Error("lost response after admission");
       return { schema: "flow.launch-receipt/v1", run_id: runId };
     }
@@ -269,4 +269,17 @@ test("incomplete preview retains its bridge evidence and requires explicit unlau
   assert.equal(retry.exit, 1); assert.match(retry.stderr, /incomplete owned preview/u); assert.equal(runtime.bridges, 1);
   const next = await invoke(f, runtime, ["--refresh"]);
   assert.equal(next.exit, 0, next.stderr); assert.equal(runtime.bridges, 2); assert.equal(runtime.launches, 0);
+});
+
+
+test("review owner-epoch launch rejection permits only exact unknown-run refresh and fresh confirmation", async t => {
+  const f = fixture(t), runtime = publicRuntime(f), preview = previewOf(await invoke(f, runtime));
+  runtime.failBeforeAdmission = true; runtime.failureCode = "run_authority_changed";
+  assert.equal((await invoke(f, runtime, ["--confirm", preview.confirmation_digest])).exit, 1);
+  runtime.prepared.confirmation = { ...runtime.prepared.confirmation, observed_host_epoch: 2 };
+  runtime.prepared.confirmation_digest = digest(runtime.prepared.confirmation);
+  const refreshed = await invoke(f, runtime, ["--refresh"]);
+  assert.equal(refreshed.exit, 0, refreshed.stderr);
+  assert.notEqual(previewOf(refreshed).confirmation_digest, preview.confirmation_digest);
+  assert.equal(runtime.bridges, 2); assert.equal(runtime.launches, 1); assert.equal(runtime.launched, false);
 });

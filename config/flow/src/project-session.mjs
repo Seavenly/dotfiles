@@ -33,6 +33,11 @@ export function requireRun(value, runId) {
 const runIdFor = prepared => `run:${prepared.bundle_digest.slice(7)}`;
 export const noReceipt = effect => !effect.receipt && !["not_created", "abandoned"].includes(effect.status);
 const beforeAdmissionCodes = new Set(["closed_facts_changed", "facts_changed", "source_run_changed", "workspace_fingerprint_changed", "feature_git_identity_drift", "feature_test_check_drift", "project_check_input_drift"]);
+// These typed launch rejections come from compareReviewPreparationFacts. They
+// authorize refresh only with the same launch bundle and a fresh unknown_run.
+const reviewBeforeAdmissionCodes = new Set(["candidate_changed", "workspace_changed", "run_authority_changed", "review_authority_changed", "workspace_authority_changed", "route_changed", "catalog_changed", "operation_changed", "validator_changed", "time_changed", "authority_changed"]);
+const beforeAdmission = (selection, code) => beforeAdmissionCodes.has(code) ||
+  selection.frontend_command === "review" && reviewBeforeAdmissionCodes.has(code);
 export function manualRunInspection(selection, runId) {
   const client = quoteShell(selection.client), request = quoteShell(JSON.stringify({ run_id: runId }));
   return ["This retained run has no matching guided receipt for the selected request. Preserve its original client and history; inspect it with:",
@@ -72,7 +77,7 @@ export async function preparePreview(selection, { refresh, call, emit, materiali
       const rejectionPath = join(selection.retained_directory, "rejected-before-admission.json");
       const rejection = existsSync(rejectionPath) ? readRunJson(rejectionPath) : null;
       const rejectedBeforeAdmission = rejection?.schema === "flow.rejection/v1" && rejection.operation === "launch" &&
-        beforeAdmissionCodes.has(rejection.code) && rejection.bundle_digest === retained.preview.bundle_digest;
+        beforeAdmission(selection, rejection.code) && rejection.bundle_digest === retained.preview.bundle_digest;
       retireUnlaunchedPreview(selection, { rejectedBeforeAdmission });
       retained = null;
     }
@@ -135,7 +140,7 @@ export async function submitPrepared(selection, retained, confirmation, { call, 
     }
     const receiptPath = join(selection.retained_directory, `launch-response-${Date.now()}-${process.pid}.json`);
     retainRunJson(receiptPath, receipt);
-    if (receipt?.schema === "flow.rejection/v1" && receipt.operation === "launch" && beforeAdmissionCodes.has(receipt.code) &&
+    if (receipt?.schema === "flow.rejection/v1" && receipt.operation === "launch" && beforeAdmission(selection, receipt.code) &&
         receipt.bundle_digest === current.preview.bundle_digest && !existsSync(join(selection.retained_directory, "rejected-before-admission.json"))) retainRunJson(join(selection.retained_directory, "rejected-before-admission.json"), receipt);
     requirePublic(receipt, "Launch");
     if (receipt.run_id !== runId) failRun("Public launch returned a different run identity. Preserve all evidence.", "launch_identity_changed", 1);
