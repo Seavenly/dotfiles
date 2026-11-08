@@ -8,9 +8,9 @@ import { digest } from "../../../tools/flow/src/canonical.mjs";
 import { quoteShell } from "../scripts/feature-client-files.mjs";
 
 export class ProjectRunError extends Error {
-  constructor(message, code = "selection_required", exit = 2) { super(message); this.code = code; this.exit = exit; }
+  constructor(message, code = "selection_required", exit = 2, hints = []) { super(message); this.code = code; this.exit = exit; this.hints = hints; }
 }
-export const failRun = (message, code, exit) => { throw new ProjectRunError(message, code, exit); };
+export const failRun = (message, code, exit, hints) => { throw new ProjectRunError(message, code, exit, hints); };
 
 export function readRunJson(path) {
   const stat = lstatSync(path);

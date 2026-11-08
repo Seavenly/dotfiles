@@ -236,6 +236,7 @@ test("old pinned client with no offline query support starts only its known stop
   assert.equal(result.exit, 1); assert.match(result.stderr, /Existing work/u);
   assert.match(result.stderr, /no matching guided receipt/u);
   assert.ok(result.stderr.includes(f.selection.client)); assert.match(result.stderr, /watch --input/u);
+  assert.ok(result.stderr.split("\n").some(line => line.startsWith("'") && line.includes(" query --input ")), "fallback query is a separate copyable command line");
   assert.equal(runtime.preparations, 0); assert.equal(runtime.launches, 0);
   assert.equal(result.records[0].schema, "flow.project-run-owner/v1");
 });
@@ -308,4 +309,30 @@ test("mismatched attach refuses before querying or starting an old client owner"
   const result = await invoke(f, runtime, ["--attach", "run:" + "c".repeat(64)]);
   assert.equal(result.exit, 1); assert.match(result.stderr, /does not own/u);
   assert.equal(runtime.calls.length, before);
+});
+
+test("a running owner must pass the selected client's public start binding fence before preparation", async t => {
+  const f = fixture(t), runtime = publicRuntime(f);
+  let starts = 0;
+  const call = async (selection, args) => {
+    if (args[0] === "status") return { state: "running" };
+    if (args[0] === "start") { starts++; return { schema: "flow.rejection/v1", code: "owner_runtime_binding_mismatch" }; }
+    return runtime.call(selection, args);
+  };
+  const refused = await invoke(f, runtime, [], { callClient: call });
+  assert.equal(refused.exit, 1); assert.match(refused.stderr, /owner_runtime_binding_mismatch/u);
+  assert.equal(starts, 1); assert.equal(runtime.preparations, 0); assert.equal(runtime.launches, 0);
+});
+
+test("compatible running owner reuse goes through public start rather than spawning another owner", async t => {
+  const f = fixture(t), runtime = publicRuntime(f);
+  let starts = 0;
+  const call = async (selection, args) => {
+    if (args[0] === "status") return { state: "running" };
+    if (args[0] === "start") { starts++; return { state: "running", started: false, already_running: true }; }
+    return runtime.call(selection, args);
+  };
+  const preview = await invoke(f, runtime, [], { callClient: call });
+  assert.equal(preview.exit, 0, preview.stderr); assert.equal(starts, 1);
+  assert.equal(preview.records.at(-1).owner_started, false); assert.equal(runtime.launches, 0);
 });

@@ -73,7 +73,9 @@ const noReceipt = effect => !effect.receipt && !["not_created", "abandoned"].inc
 const beforeAdmissionCodes = new Set(["closed_facts_changed", "facts_changed", "source_run_changed", "workspace_fingerprint_changed", "feature_git_identity_drift", "feature_test_check_drift", "project_check_input_drift"]);
 function manualRunInspection(selection, runId) {
   const client = quoteShell(selection.client), request = quoteShell(JSON.stringify({ run_id: runId }));
-  return `This retained run has no matching guided receipt for the selected request. Preserve its original client and history; inspect it with:\n${client} status --json\n${client} query --input ${request} --json\n${client} watch --input ${request} --json\nIf its owner is stopped, ${client} start --json starts that exact owner and may recover previously accepted work.`;
+  return ["This retained run has no matching guided receipt for the selected request. Preserve its original client and history; inspect it with:",
+    `${client} status --json`, `${client} query --input ${request} --json`, `${client} watch --input ${request} --json`,
+    `If its owner is stopped, ${client} start --json starts that exact owner and may recover previously accepted work.`];
 }
 
 async function ownerStart(selection, call, emit) {
@@ -81,12 +83,11 @@ async function ownerStart(selection, call, emit) {
   if (!["running", "stopped"].includes(before.state)) failRun(`Selected owner is ${before.state}; inspect its public status before continuing.`, "owner_unavailable", 1);
   emit({ schema: "flow.project-run-owner/v1", state: before.state,
     recovery_disclosure: "Starting/reusing this exact owner may recover previously authorized work. A new task still requires exact launch confirmation." });
-  if (before.state === "stopped") {
-    const result = requirePublic(await call(selection, ["start", "--json"]), "Owner start");
-    if (result.state !== "running") failRun(`Selected owner did not become running (${result.state}).`, "owner_unavailable", 1);
-    return true;
-  }
-  return false;
+  // Public start is also the runtime/module/check identity fence for a running
+  // owner. Status alone cannot establish compatible reuse on a shared authority.
+  const result = requirePublic(await call(selection, ["start", "--json"]), "Owner start/reuse");
+  if (result.state !== "running") failRun(`Selected owner did not become running (${result.state}).`, "owner_unavailable", 1);
+  return before.state === "stopped" && result.started !== false;
 }
 
 async function preparePreview(selection, { refresh, call, emit }) {
@@ -120,7 +121,7 @@ async function preparePreview(selection, { refresh, call, emit }) {
       const run = requireRun(await call(selection, input("query", { run_id: id })), id);
       if (run.phase === "active" || run.effects?.some(noReceipt)) existing.push(id);
     }
-    if (existing.length) failRun(`Existing work needs inspection before a new task: ${existing.join(", ")}. ${manualRunInspection(selection, existing[0])}`, "existing_work", 1);
+    if (existing.length) failRun(`Existing work needs inspection before a new task: ${existing.join(", ")}.`, "existing_work", 1, manualRunInspection(selection, existing[0]));
     const ownerStarted = await ownerStart(selection, call, emit);
     const prepared = requirePublic(await call(selection, ["prepare", "--input-file", selection.request, "--json"]), "Preparation");
     mkdirSync(selection.retained_directory, { mode: 0o700 });
@@ -138,7 +139,10 @@ async function submitPrepared(selection, retained, confirmation, { call, emit })
     if (!current || current.preview.confirmation_digest !== confirmation || digest(current.prepared) !== digest(retained.prepared)) failRun("Confirmation does not match the retained exact task. Inspect the preview again.", "confirmation_changed", 1);
     const runId = runIdFor(current.prepared);
     const known = await call(selection, input("query", { run_id: runId }));
-    if (known?.schema === "flow.run-projection/v1") return requireRun(known, runId);
+    if (known?.schema === "flow.run-projection/v1") {
+      await ownerStart(selection, call, emit);
+      return requireRun(known, runId);
+    }
     if (known?.code !== "unknown_run") failRun("The exact launch outcome cannot be inspected. Keep the prepared task and attach; do not refresh it.", "launch_outcome_unknown", 1);
     await ownerStart(selection, call, emit);
     const intentFile = join(selection.retained_directory, "accepted.json");
@@ -175,6 +179,7 @@ async function submitPrepared(selection, retained, confirmation, { call, emit })
 }
 
 async function submitDecision(selection, runId, selectedDigest, call) {
+  await ownerStart(selection, call, () => {});
   const fresh = requireRun(await call(selection, input("query", { run_id: runId })), runId);
   const action = runDecisionActions(fresh).find(candidate => candidate.digest === selectedDigest);
   if (!action) failRun("That decision is no longer offered at the current authority watermark. Reattach and inspect the fresh choices; no command was submitted.", "stale_decision", 1);
@@ -215,7 +220,7 @@ export async function runProject(args, { env = process.env, cwd = process.cwd(),
     if (interactive) prompts = createInterface({ input: stdin, output: stdout });
     if (choices.length === 1) [selection] = choices;
     else {
-      if (!interactive) failRun(`Several initialized requests exist. Select --request FILE:\n${choices.map(choice => choice.request).join("\n")}`);
+      if (!interactive) failRun("Several initialized requests exist. Select --request FILE:", "selection_required", 2, choices.map(choice => choice.request));
       stdout.write("Choose the exact initialized task:\n" + choices.map((choice, index) => `  ${index + 1}. ${terminalText(choice.preparation.brief.summary)} (${terminalText(choice.request)}) [runtime ${terminalText(choice.runtime_root)}]`).join("\n") + "\n");
       const index = Number(await prompts.question("Task number: ")) - 1;
       if (!Number.isInteger(index) || !choices[index]) failRun("Choose one displayed task number; nothing was started.");
@@ -224,7 +229,7 @@ export async function runProject(args, { env = process.env, cwd = process.cwd(),
     let runId = options["--attach"] ?? options["--cancel"];
     if (runId) {
       const retained = loadRetainedPreview(selection);
-      if (!retained || retained.preview.run_id !== runId) failRun(`This request does not own that retained run. Choose its original --request; no owner was started. ${manualRunInspection(selection, runId)}`, "run_request_mismatch", 1);
+      if (!retained || retained.preview.run_id !== runId) failRun("This request does not own that retained run. Choose its original --request; no owner was started.", "run_request_mismatch", 1, manualRunInspection(selection, runId));
       intendedRunId = runId;
       currentRun = requireRun(await call(selection, input("query", { run_id: runId })), runId);
       if (currentRun.bundle_digest !== retained.preview.bundle_digest) failRun("Public run bundle differs from the retained preparation. Preserve all evidence.", "run_request_mismatch", 1);
@@ -304,7 +309,8 @@ export async function runProject(args, { env = process.env, cwd = process.cwd(),
       return interrupted ? 130 : 1;
     }
     stderr.write(`${terminalText(error.message)}\n`);
-    if (selection && intendedRunId) stderr.write(`Retain the exact prepared/launch evidence. Reattach with flow-supervised run --repository ${quoteShell(selection.repository)} --request ${quoteShell(selection.request)} --attach ${quoteShell(intendedRunId)}\n`);
+    for (const hint of error.hints ?? []) stderr.write(terminalText(hint) + "\n");
+    if (selection && intendedRunId) stderr.write(terminalText(`Retain the exact prepared/launch evidence. Reattach with flow-supervised run --repository ${quoteShell(selection.repository)} --request ${quoteShell(selection.request)} --attach ${quoteShell(intendedRunId)}`) + "\n");
     return error.exit ?? 1;
   } finally { prompts?.close(); process.removeListener("SIGINT", onInterrupt); }
 }
