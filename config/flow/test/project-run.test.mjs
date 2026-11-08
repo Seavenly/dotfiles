@@ -350,3 +350,89 @@ test("retry refuses a consistently rehashed saved launch carrying another prepar
   assert.equal(refused.exit, 1); assert.match(refused.stderr, /exact confirmed prepared task/u);
   assert.equal(launchCalls, 1); assert.equal(runtime.preparations, 1);
 });
+
+test("an authentic configured GREEN-only card remains pending before its first effect, rather than content-only", () => {
+  // Reduced from the first official62da projection: writer executing, check
+  // present in the authoritative plan/cards, no project-check effect yet.
+  const run = { run_id: "run:pending", phase: "active", effects: [],
+    active_plan: { cards: [{ id: "feature-project-check", executor: { kind: "operation", contract: "flow.operation/project-check/v2" } }] },
+    cards: [{ id: "feature-apply", executor_kind: "delegate", status: "executing" }, { id: "feature-project-check", executor_kind: "operation", status: "pending" }] };
+  const result = summarizeProjectRun(run, { selection: { repository: "/project", request: "/private/request", retained_directory: "/private/evidence" }, status: "detached" });
+  assert.equal(result.checks.kind, "registered_green_only");
+  assert.equal(result.checks.status, "pending"); assert.equal(result.checks.outcome, null);
+  assert.equal(result.checks.evidence, null); assert.notEqual(result.checks.project_checks, "not_run");
+});
+
+test("configured v1 expected RED/GREEN remains pending before its first effect", () => {
+  const run = { run_id: "run:pending-v1", phase: "active", effects: [],
+    active_plan: { cards: [{ id: "feature-health", executor: { kind: "operation", contract: "flow.operation/feature-test/v1" } }] },
+    cards: [{ id: "feature-health", executor_kind: "operation", status: "pending" }] };
+  const result = summarizeProjectRun(run, { selection: { repository: "/project", request: "/private/request", retained_directory: "/private/evidence" }, status: "detached" });
+  assert.equal(result.checks.kind, "registered_expected_red_then_green"); assert.equal(result.checks.status, "pending");
+  assert.deepEqual(result.checks.evidence, []);
+});
+
+test("official seq20 executing one-attempt check keeps following to check, critique and seal without a second dispatch", async t => {
+  const f = fixture(t), runtime = publicRuntime(f);
+  const preview = await invoke(f, runtime);
+  await invoke(f, runtime, ["--confirm", preview.records.at(-1).confirmation_digest]);
+  const completed = runtime.run;
+  const retry = { schema: "flow.operation-retry-projection/v1", consumed_attempts: 1, max_attempts: 1, remaining_attempts: 0, status: "exhausted", not_before: null };
+  // Exact meaningful seq20 facts from the failed official frontend follow.
+  const executing = { ...completed, phase: "active", progress: "executing", sequence: 20, blocks: [], review_candidate_reference: null,
+    cards: [{ id: "feature-apply", status: "completed" }, { id: "feature-capture", status: "completed" }, { id: "feature-direct-commit", status: "completed" },
+      { id: "feature-project-check", status: "executing" }, { id: "feature-critique", status: "pending" }, { id: "feature-seal", status: "pending" }],
+    effects: [{ effect_id: "check", card_id: "feature-project-check", operation_contract: "flow.operation/project-check/v2", status: "unresolved", invocation_started: true, last_observation: null, receipt: null, retry },
+      { effect_id: "capture", card_id: "feature-capture", operation_contract: "flow.operation/feature-capture/v1", status: "succeeded", receipt: { outcome: "created" }, retry },
+      { effect_id: "commit", card_id: "feature-direct-commit", operation_contract: "flow.operation/feature-direct-commit/v1", status: "succeeded", receipt: { outcome: "created" }, retry }] };
+  let observations = 0;
+  const call = async (selection, args) => {
+    if (args[0] === "query" && JSON.parse(args[2]).run_id) { runtime.run = ++observations <= 2 ? executing : { ...completed, sequence: 30 }; }
+    return runtime.call(selection, args);
+  };
+  const result = await invoke(f, runtime, ["--attach", runtime.runId], { callClient: call });
+  assert.equal(result.exit, 0, result.stderr); assert.equal(result.records.at(-1).status, "succeeded");
+  assert.ok(result.records.some(record => record.sequence === 20)); assert.ok(result.records.some(record => record.sequence === 30));
+  assert.equal(result.records.at(-1).checks.outcome, "passed"); assert.equal(result.records.at(-1).critique, "completed");
+  assert.equal(runtime.launches, 1); assert.equal(runtime.preparations, 1);
+  assert.equal(runtime.calls.filter(args => args[0] === "command").length, 0);
+});
+
+test("an authoritative blocked card still ends follow with legal decisions, without approval", async t => {
+  const f = fixture(t), runtime = publicRuntime(f);
+  const preview = await invoke(f, runtime); await invoke(f, runtime, ["--confirm", preview.records.at(-1).confirmation_digest]);
+  runtime.run = { ...runtime.run, phase: "active", progress: "blocked", cards: [{ id: "feature-critique", status: "blocked" }], review_candidate_reference: null };
+  const result = await invoke(f, runtime, ["--attach", runtime.runId]);
+  assert.equal(result.exit, 1); assert.equal(result.records.at(-1).status, "blocked"); assert.equal(runtime.launches, 1);
+  assert.equal(runtime.calls.filter(args => args[0] === "command").length, 0);
+});
+
+test("known failed registered check is blocked with its actual failure, never a pass or content-only result", async t => {
+  const f = fixture(t), runtime = publicRuntime(f);
+  const preview = await invoke(f, runtime); await invoke(f, runtime, ["--confirm", preview.records.at(-1).confirmation_digest]);
+  runtime.run = { ...runtime.run, phase: "active", progress: "waiting", review_candidate_reference: null,
+    effects: [{ effect_id: "check", card_id: "feature-project-check", operation_contract: "flow.operation/project-check/v2", status: "not_created",
+      receipt: { provider_receipt: { schema: "work.project-check-absence-receipt/v2", found: false, complete: true, record: { schema: "work.project-check-receipt/v2", outcome: "failed", exit_code: 1, retired: true } } } }] };
+  const result = await invoke(f, runtime, ["--attach", runtime.runId, "--follow-seconds", "1"]);
+  assert.equal(result.exit, 1); assert.equal(result.records.at(-1).status, "blocked");
+  assert.equal(result.records.at(-1).checks.kind, "registered_green_only"); assert.equal(result.records.at(-1).checks.outcome, "failed");
+  assert.equal(runtime.calls.filter(args => args[0] === "command").length, 0);
+});
+
+// Reduced public terminal shape; receipt validity itself remains the authority's job.
+test("positively retired cancelled check preserves cancelled result and held workspace without automatic settlement", async t => {
+  const f = fixture(t), runtime = publicRuntime(f);
+  const preview = await invoke(f, runtime); await invoke(f, runtime, ["--confirm", preview.records.at(-1).confirmation_digest]);
+  runtime.run = { ...runtime.run, phase: "cancelled", progress: "complete", review_candidate_reference: null,
+    cards: [{ id: "feature-project-check", status: "abandoned" }],
+    resource_dispositions: [{ claim: { resource: "workspace" }, disposition: "quarantined" }],
+    effects: [{ effect_id: "check", card_id: "feature-project-check", operation_contract: "flow.operation/project-check/v2", status: "not_created",
+      receipt: { outcome: "not_created", provider_receipt: { schema: "work.project-check-absence-receipt/v2", found: false, complete: true,
+        record: { schema: "work.project-check-receipt/v2", outcome: "cancelled", exit_code: null, retired: true } } } }] };
+  const result = await invoke(f, runtime, ["--attach", runtime.runId]);
+  assert.equal(result.exit, 1); assert.equal(result.records.at(-1).status, "cancelled");
+  assert.equal(result.records.at(-1).checks.outcome, "cancelled");
+  assert.deepEqual(result.records.at(-1).unresolved_effects, []);
+  assert.equal(result.records.at(-1).workspace_settlement[0].disposition, "quarantined");
+  assert.equal(runtime.calls.filter(args => args[0] === "command").length, 0);
+});

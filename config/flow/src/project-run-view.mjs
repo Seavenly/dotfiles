@@ -41,8 +41,20 @@ export function renderRunProgress(progress) {
     ...progress.blocks.map(block => `  Blocked: ${block.type ?? block.quarantine_reason ?? "authority decision required"}`), ""].map(terminalText).join("\n");
 }
 
+/** Retry accounting counts admitted attempts, including those still executing. */
+export function projectRunBlocked(run) {
+  return run.progress === "blocked" || (run.cards ?? []).some(card => card.status === "blocked") ||
+    run.phase === "active" && (run.effects ?? []).some(effect => effect.operation_contract === "flow.operation/project-check/v2" &&
+      effect.receipt?.provider_receipt?.schema === "work.project-check-absence-receipt/v2" &&
+      ["failed", "timeout", "output_limit", "cancelled", "environment_failure"].includes(effect.receipt.provider_receipt.record?.outcome));
+}
+
 export function summarizeProjectRun(run, { selection, candidate = null, status, projectionFile } = {}) {
   const effects = run.effects ?? [];
+  const configuredCheck = contract => (run.active_plan?.cards ?? []).find(card => card.executor?.contract === contract);
+  const checkCard = configuredCheck("flow.operation/project-check/v2");
+  const testCard = configuredCheck("flow.operation/feature-test/v1");
+  const cardStatus = card => (run.cards ?? []).find(item => item.id === card?.id)?.status ?? "pending";
   const check = effects.find(effect => effect.operation_contract === "flow.operation/project-check/v2");
   const checkEnvelope = check?.receipt?.provider_receipt;
   const checkReceipt = checkEnvelope?.record ?? checkEnvelope;
@@ -63,9 +75,10 @@ export function summarizeProjectRun(run, { selection, candidate = null, status, 
     request: selection.request, client: selection.client, retained_directory: selection.retained_directory,
     projection_file: projectionFile, candidate: candidate === null ? null : { id: candidate.subject_id ?? run.review_candidate_reference?.candidate_id,
       status: candidate.status, fingerprint: candidate.candidate_fingerprint ?? run.review_candidate_reference?.candidate_fingerprint, commit, ref },
-    checks: check ? { kind: "registered_green_only", status: check.status, outcome: checkReceipt?.outcome ?? null,
+    checks: check || checkCard ? { kind: "registered_green_only", status: check?.status ?? cardStatus(checkCard), outcome: checkReceipt?.outcome ?? null,
       exit_code: checkReceipt?.exit_code ?? null, test_count: checkReceipt?.test_count ?? "unknown", evidence: checkReceipt ?? null }
       : tests.length ? { kind: "registered_expected_red_then_green", evidence: tests.map(effect => effect.receipt?.provider_receipt ?? null) }
+        : testCard ? { kind: "registered_expected_red_then_green", status: cardStatus(testCard), evidence: [] }
         : { kind: "content_only", project_checks: "not_run", scope: (run.trust_posture ?? run.views?.trust?.trust_posture)?.verification_scope ?? null },
     critique: critique?.status ?? "not_observed", separate_review: "not_requested", human_approval: "not_requested",
     unresolved_effects: unresolved.map(effect => effect.effect_id), quarantined_effects: quarantined.map(effect => effect.effect_id),

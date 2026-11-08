@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { digest } from "../../../tools/flow/src/canonical.mjs";
 import { quoteShell } from "../scripts/feature-client-files.mjs";
 import { discoverProjectRuns, failRun, flushRetainedRunFile, loadRetainedPreview, lockProjectSubmission, readRunJson, retainProjectPreview, retainRunJson, retireUnlaunchedPreview } from "./project-run-state.mjs";
-import { projectRunProgress, renderRunPreview, renderRunProgress, renderRunResult, runDecisionActions, summarizeProjectRun, terminalText } from "./project-run-view.mjs";
+import { projectRunBlocked, projectRunProgress, renderRunPreview, renderRunProgress, renderRunResult, runDecisionActions, summarizeProjectRun, terminalText } from "./project-run-view.mjs";
 
 export const RUN_USAGE = `Usage:
   flow-supervised run [--repository PATH] [--request FILE] [--json]
@@ -273,7 +273,7 @@ export async function runProject(args, { env = process.env, cwd = process.cwd(),
       }
       const unresolved = (currentRun.effects ?? []).filter(noReceipt);
       const terminal = ["succeeded", "cancelled", "declined", "failed"].includes(currentRun.phase);
-      const blocked = currentRun.progress === "blocked" || (currentRun.effects ?? []).some(effect => ["blocked", "exhausted"].includes(effect.retry?.status));
+      const blocked = projectRunBlocked(currentRun);
       const decisions = runDecisionActions(currentRun).filter(action => action.type !== "cancel");
       let detachedChoice = false;
       if (interactive && decisions.length && (blocked || terminal || !unresolved.length)) {
