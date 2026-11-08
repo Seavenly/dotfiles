@@ -5,7 +5,6 @@ experimental = true
 lockfile = true
 locked = true
 lockfile_platforms = ["macos-arm64", "linux-x64", "linux-arm64"]
-minimum_release_age = "7d"
 idiomatic_version_file_enable_tools = ["node"]
 dotfiles.default_mode = "symlink"
 

@@ -90,7 +90,7 @@ url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d
 url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.199/darwin-arm64/claude"
 
 [[tools.codex]]
-version = "0.142.5"
+version = "0.167.0"
 backend = "npm:@openai/codex"
 
 [[tools.fd]]

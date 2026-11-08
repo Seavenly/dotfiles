@@ -5,15 +5,9 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=internal/shell/context.sh
 source "$root/internal/shell/context.sh"
 dotfiles_context_init "$root" || true
-if [[ "$DOTFILES_OS" == Darwin ]]; then
-  cutoff="$(date -u -v-7d '+%Y-%m-%dT%H:%M:%SZ')"
-else
-  cutoff="$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%SZ')"
-fi
-
 release_json="$(curl --fail --location --silent --show-error 'https://api.github.com/repos/jdx/mise/releases?per_page=100')"
-tag="$(jq -r --arg cutoff "$cutoff" '[.[] | select(.draft == false and .prerelease == false and .published_at <= $cutoff)][0].tag_name // empty' <<<"$release_json")"
-[[ -n "$tag" ]] || { echo "No eligible mise release found." >&2; exit 1; }
+tag="$(jq -r '[.[] | select(.draft == false and .prerelease == false)][0].tag_name // empty' <<<"$release_json")"
+[[ -n "$tag" ]] || { echo "No stable mise release found." >&2; exit 1; }
 version="${tag#v}"
 current_version="$(mise --version | awk '{print $1}')"
 IFS=. read -r current_year current_month current_patch <<< "$current_version"
@@ -21,7 +15,7 @@ IFS=. read -r next_year next_month next_patch <<< "$version"
 if ((next_year < current_year ||
      (next_year == current_year && next_month < current_month) ||
      (next_year == current_year && next_month == current_month && next_patch <= current_patch))); then
-  echo "mise $current_version is already at or newer than the latest release eligible under the seven-day policy."
+  echo "mise $current_version is already at or newer than the latest stable release."
   exit 0
 fi
 sums="$(curl --fail --location --silent --show-error "https://github.com/jdx/mise/releases/download/${tag}/SHASUMS256.txt")"
@@ -39,9 +33,9 @@ export MISE_UPGRADE_MAC_SHA MISE_UPGRADE_LINUX_X64_SHA MISE_UPGRADE_LINUX_ARM64_
 
 perl -0pi -e '
   s/readonly MISE_VERSION="[^"]+"/readonly MISE_VERSION="$ENV{MISE_UPGRADE_VERSION}"/;
-  s/(Darwin:arm64\).*?expected_sha=")[^"]+/${1}$ENV{MISE_UPGRADE_MAC_SHA}/s;
-  s/(Linux:x86_64\).*?expected_sha=")[^"]+/${1}$ENV{MISE_UPGRADE_LINUX_X64_SHA}/s;
-  s/(Linux:aarch64\|Linux:arm64\).*?expected_sha=")[^"]+/${1}$ENV{MISE_UPGRADE_LINUX_ARM64_SHA}/s;
+  s/(macos-arm64\).*?expected_sha=")[^"]+/${1}$ENV{MISE_UPGRADE_MAC_SHA}/s;
+  s/(linux-x64\).*?expected_sha=")[^"]+/${1}$ENV{MISE_UPGRADE_LINUX_X64_SHA}/s;
+  s/(linux-arm64\).*?expected_sha=")[^"]+/${1}$ENV{MISE_UPGRADE_LINUX_ARM64_SHA}/s;
 ' "$root/internal/commands/install"
 perl -pi -e 's/^min_version = "[^"]+"/min_version = "$ENV{MISE_UPGRADE_VERSION}"/' "$root/mise.toml"
 

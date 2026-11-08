@@ -23,7 +23,7 @@ export MISE_TRUSTED_CONFIG_PATHS="$root"
 export MISE_LOCKED=0
 
 upgrade_tools() {
-  mise lock -C "$root" -E "$env_name" --platform macos-arm64,linux-x64,linux-arm64 --minimum-release-age 7d
+  mise lock -C "$root" -E "$env_name" --platform macos-arm64,linux-x64,linux-arm64
   MISE_LOCKED=1 mise install -C "$root" -E "$env_name"
 }
 upgrade_packages() {
