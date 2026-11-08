@@ -1,0 +1,86 @@
+import { quoteShell } from "../scripts/feature-client-files.mjs";
+import { failRun } from "./project-run-state.mjs";
+import { input, noReceipt, requirePublic } from "./project-session.mjs";
+import { runDecisionActions, terminalText } from "./project-run-view.mjs";
+
+export function reviewAttachCommand(selection, runId) {
+  return `flow-supervised review --repository ${quoteShell(selection.repository)} --client ${quoteShell(selection.directory)} --attach ${quoteShell(runId)}`;
+}
+
+export function renderReviewPreview(preview) {
+  const inspection = preview.inspection;
+  return ["Prepared independent local review", `Project: ${preview.repository}`, `Client runtime: ${preview.runtime_root}`,
+    `Producer: ${preview.producer_run_id}`, `Current sealed target: ${JSON.stringify(preview.target)}`,
+    `Exact comparison: ${preview.comparison.base_commit_sha} -> ${preview.comparison.commit_sha}`,
+    ...preview.comparison.diff.split("\n"),
+    ...(preview.comparison.truncated ? ["Diff preview truncated; inspect the full exact comparison with:"] : ["Full exact comparison:"]),
+    preview.comparison.full_inspection_command,
+    `Inherited producer checks (not rerun by review): ${JSON.stringify(preview.inherited_checks)}`,
+    `Trust: ${JSON.stringify(inspection.trust_posture)}`, `Overall prepared-run limits: ${JSON.stringify(inspection.limits)}`,
+    "These are overall run limits, not independent per-role timers.",
+    `Requested authority: ${JSON.stringify(inspection.requested_authority)}`, `Review roles: ${JSON.stringify(inspection.routes)}`,
+    `Authority: ${preview.authority_directory}`, `Prepared confirmation: ${preview.prepared_file}`,
+    `Confirmation digest: ${preview.confirmation_digest}`, preview.recovery_disclosure,
+    "This command grants no human approval and performs no Git publication.", ""].map(terminalText).join("\n");
+}
+
+/** The record receipt identifies the record; candidate-only legacy IDs are never inferred. */
+export async function readReviewRecord(run, selection, call) {
+  const effects = (run.effects ?? []).filter(effect => effect.operation_contract === "flow.operation/review-record/v1" && effect.receipt?.provider_receipt?.schema === "flow.review-receipt/v1");
+  if (!effects.length) return null;
+  if (effects.length !== 1) failRun("More than one review-record receipt exists for this exact run. Preserve the public projections.", "review_record_changed", 1);
+  const [effect] = effects, receipt = effect.receipt.provider_receipt;
+  const record = requirePublic(await call(selection, input("query", { contract: "work.review/v1", subject_id: receipt.review_id })), "Exact review record");
+  const target = selection.target;
+  if (typeof receipt.review_id !== "string" || record.schema !== "flow.review-projection/v1" || record.contract !== "work.review/v1" ||
+      record.subject_id !== receipt.review_id || record.source_run_id !== run.run_id ||
+      record.operation_contract !== effect.operation_contract || record.operation_effect_id !== effect.effect_id ||
+      record.operation_attempt_id !== effect.attempt_id || record.operation_idempotency_key !== effect.idempotency_key ||
+      !effect.attempt_id || !effect.idempotency_key ||
+      receipt.candidate_fingerprint !== target.candidate_fingerprint || receipt.lifecycle_generation !== target.lifecycle_generation ||
+      record.candidate?.candidate_id !== target.candidate_id || record.candidate_fingerprint !== target.candidate_fingerprint ||
+      record.lifecycle_generation !== target.lifecycle_generation || record.candidate_authority_watermark !== target.candidate_authority_watermark) {
+    failRun("Public review record does not bind this exact review attempt and retained candidate. No completion is inferred.", "review_record_changed", 1);
+  }
+  return { receipt, record, effect_id: effect.effect_id };
+}
+
+export async function summarizeProjectReview(run, { selection, status, projectionFile, call, preview }) {
+  const observed = await readReviewRecord(run, selection, call);
+  const record = observed?.record ?? null;
+  const coverage = record?.coverage ?? record?.summary?.coverage ?? null;
+  const posture = record?.posture ?? record?.summary?.posture ?? null;
+  const complete = record?.current === true && coverage?.complete === true && ["no_findings", "findings"].includes(posture);
+  const actions = runDecisionActions(run);
+  const attach = reviewAttachCommand(selection, run.run_id);
+  return { schema: "flow.project-review-result/v1", status: status === "completed" ? complete ? "succeeded" : "blocked" : status,
+    run_id: run.run_id, phase: run.phase, producer_run_id: selection.producer_run_id, target: selection.target,
+    client: selection.client, runtime_root: selection.runtime_root, retained_directory: selection.retained_directory,
+    projection_file: projectionFile, review_id: record?.subject_id ?? null,
+    review_status: record ? record.current !== true ? "stale" : coverage?.complete !== true ? "review_incomplete" : posture : "not_recorded",
+    record, coverage, posture, cap_reasons: record?.cap_reasons ?? record?.summary?.cap_reasons ?? [], findings: record?.rendered_findings ?? record?.findings ?? record?.summary?.rendered_findings ?? record?.summary?.findings ?? [],
+    inherited_checks: preview.inherited_checks, project_checks_rerun: false,
+    approval: record?.approval ?? null, human_status: record?.human_status ?? null, integration: record?.integration ?? null,
+    guided_approval_granted: false, merge_ready: record?.summary?.merge_ready ?? record?.merge_ready ?? false,
+    unresolved_effects: (run.effects ?? []).filter(noReceipt).map(effect => effect.effect_id),
+    quarantined_effects: (run.effects ?? []).filter(effect => /quarantin/u.test(effect.status)).map(effect => effect.effect_id),
+    workspace_settlement: run.resource_dispositions ?? [],
+    legal_actions: actions.map(({ command: _command, ...action }) => action),
+    next_commands: [attach, ...(record ? [`${quoteShell(selection.client)} query --input ${quoteShell(JSON.stringify({ contract: "work.review/v1", subject_id: record.subject_id }))} --json`] : []),
+      ...actions.filter(action => action.type !== "cancel").map(action => `${attach} --action ${quoteShell(action.digest)}`), preview.comparison.full_inspection_command] };
+}
+
+export function renderReviewResult(result) {
+  return [`Review result: ${result.status} (run phase ${result.phase})`, `Run: ${result.run_id}`, `Producer: ${result.producer_run_id}`,
+    `Review record: ${result.review_id ?? "not recorded"}`, `Review posture: ${result.posture ?? result.review_status}`,
+    `Coverage: ${JSON.stringify(result.coverage)}`, `Authority cap reasons: ${JSON.stringify(result.cap_reasons)}`, ...result.findings.slice(0, 100).map(finding => `Finding: ${JSON.stringify(finding)}`),
+    ...(result.findings.length > 100 ? ["Finding display truncated. Inspect the exact public record below."] : []),
+    `Inherited producer checks (not rerun): ${JSON.stringify(result.inherited_checks)}`,
+    `Observed human approval: ${JSON.stringify(result.approval)}; human status: ${JSON.stringify(result.human_status)}; integration: ${JSON.stringify(result.integration)}`,
+    `This guided command grants no human approval or Git publication. Automated merge_ready: ${result.merge_ready}`,
+    ...(result.status === "detached" ? ["Frontend detached. Durable work continues and has not been cancelled. Reattach below."] : []),
+    ...(result.unresolved_effects.length ? [`Unresolved effects: ${result.unresolved_effects.join(", ")}. Completion is not established.`] : []),
+    ...(result.quarantined_effects.length ? [`Quarantined effects: ${result.quarantined_effects.join(", ")}`] : []),
+    `Workspace dispositions: ${JSON.stringify(result.workspace_settlement)}`,
+    `Retained evidence: ${result.retained_directory}`, "Next commands:", ...result.next_commands.map(command => `  ${command}`), ""].map(terminalText).join("\n");
+}

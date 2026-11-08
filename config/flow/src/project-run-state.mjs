@@ -111,8 +111,9 @@ export function loadRetainedPreview(selection) {
     return null;
   }
   const preview = readRunJson(path);
-  if (preview.schema !== "flow.project-run-preview/v1" || preview.selection_digest !== selection.selection_digest) failRun("The selected request/client changed after preview. Retain old evidence and use --refresh for a new unlaunched preview.", "selection_changed", 1);
+  if (preview.schema !== (selection.preview_schema ?? "flow.project-run-preview/v1") || preview.selection_digest !== selection.selection_digest) failRun("The selected request/client changed after preview. Retain old evidence and use --refresh for a new unlaunched preview.", "selection_changed", 1);
   if (preview.prepared_file !== join(selection.retained_directory, "prepared.json")) failRun("Retained preparation path changed.", "prepared_changed", 1);
+  if (preview.request_digest !== undefined && preview.request_digest !== digest(readRunJson(selection.request))) failRun("Retained preparation request changed.", "prepared_changed", 1);
   const prepared = readRunJson(preview.prepared_file);
   if (preview.prepared_file !== join(selection.retained_directory, "prepared.json") ||
       prepared.bundle_digest !== preview.bundle_digest || prepared.confirmation_digest !== preview.confirmation_digest ||
@@ -121,14 +122,14 @@ export function loadRetainedPreview(selection) {
   return { preview, prepared };
 }
 
-export function retainProjectPreview(selection, prepared, inspection, ownerStarted) {
+export function retainProjectPreview(selection, prepared, inspection, ownerStarted, details = {}) {
   if (prepared.schema !== "flow.prepared-run/v1" || !/^sha256:[a-f0-9]{64}$/u.test(prepared.bundle_digest ?? "") ||
       prepared.confirmation_digest !== digest(prepared.confirmation) || digest(prepared.graph) !== prepared.plan_fingerprint) failRun("Public preparation did not return a valid immutable prepared run.", "invalid_preparation", 1);
   if (!existsSync(selection.retained_directory)) mkdirSync(selection.retained_directory, { mode: 0o700 });
   const preparedFile = join(selection.retained_directory, "prepared.json");
   if (!existsSync(preparedFile)) retainRunJson(preparedFile, prepared);
   else if (digest(readRunJson(preparedFile)) !== digest(prepared)) failRun("Retained preparation changed before preview.", "prepared_changed", 1);
-  const preview = { schema: "flow.project-run-preview/v1", status: "confirmation_required", request: selection.request,
+  const preview = { ...details, schema: selection.preview_schema ?? "flow.project-run-preview/v1", request_digest: digest(readRunJson(selection.request)), status: "confirmation_required", request: selection.request,
     client: selection.client, runtime_root: selection.runtime_root, repository: selection.repository,
     authority_directory: selection.authority_directory, selection_digest: selection.selection_digest,
     prepared_file: preparedFile, prepared_digest: digest(prepared), confirmation_digest: prepared.confirmation_digest,

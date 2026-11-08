@@ -19,6 +19,8 @@ const MAX_STATUS_COUNT = 1_000_000;
 const MAX_INPUT_FILE_BYTES = 4 * 1024 * 1024;
 
 const USAGE = `Usage:
+  flow review [--producer RUN_ID] [--client DIRECTORY] [--json]
+  flow review --attach REVIEW_RUN_ID [--json]
   flow run [--request FILE] [--json]
   flow run [same selection] --confirm sha256:DIGEST [--json]
   flow run --attach RUN_ID [--json]
@@ -81,6 +83,10 @@ export async function runCli(
   if (args[0] === "run") {
     const { runProject } = await import("./project-run.mjs");
     return runProject(args.slice(1), { env, stdin, stdout, stderr });
+  }
+  if (args[0] === "review") {
+    const { reviewProject } = await import("./project-review.mjs");
+    return reviewProject(args.slice(1), { env, stdin, stdout, stderr });
   }
   if (["pilot", "local"].includes(args[0])) {
     try {
