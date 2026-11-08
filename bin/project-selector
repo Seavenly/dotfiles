@@ -13,9 +13,9 @@ selection="$({
   if [[ -d "$projects_dir" ]]; then
     while IFS= read -r -d '' metadata; do
       repo="${metadata%/*}"
-      # Linked worktrees use a .git file; let Git validate its target before
-      # offering it so malformed or dangling pointers are skipped.
-      if [[ -f "$metadata" ]] && ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+      # Validate each marker explicitly, including linked worktree .git files,
+      # so invalid directories cannot fall back to a parent repository.
+      if ! git --git-dir="$metadata" rev-parse --git-dir >/dev/null 2>&1; then
         continue
       fi
       project="${repo##*/}"
