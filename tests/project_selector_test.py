@@ -90,6 +90,32 @@ done
             self.assertIn(arg, args)
         self.assertIn(result.stdout.rstrip('\n'), rows)
 
+    def test_empty_and_malformed_git_directories_are_not_projects(self):
+        repo = self.repository(self.projects / 'team' / 'real')
+        for name in ['empty directory marker', 'malformed directory marker']:
+            marker = self.projects / 'team' / name / '.git'
+            marker.mkdir(parents=True)
+            if name.startswith('malformed'):
+                (marker / 'ordinary.txt').write_text('not Git metadata\n')
+            self.assertTrue(marker.is_dir())
+        result, rows = self.selector('--query', 'real')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(rows), {str(repo)})
+
+    def test_invalid_directory_markers_do_not_inherit_parent_repository_identity(self):
+        self.repository(self.projects)
+        repo = self.repository(self.projects / 'team' / 'real')
+        for name in ['empty directory marker', 'malformed directory marker']:
+            path = self.projects / 'team' / name
+            (path / '.git').mkdir(parents=True)
+            if name.startswith('malformed'):
+                (path / '.git' / 'ordinary.txt').write_text('not Git metadata\n')
+            inherited = self.git('-C', path, 'rev-parse', '--show-toplevel')
+            self.assertEqual(inherited.stdout.strip(), str(self.projects))
+        result, rows = self.selector()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(rows), {str(repo)})
+
     def test_malformed_and_dangling_git_files_are_not_projects(self):
         repo = self.repository(self.projects / 'team' / 'real')
         for name, marker in [('plain-file', 'ordinary text\n'), ('dangling', 'gitdir: /nonexistent/selector-fixture\n')]:
