@@ -128,7 +128,7 @@ const graph={cards:[{id:'review-lens-security',executor:{kind:'delegate'},inputs
 const finding={schema:'flow.review-finding/v1',finding_id:'finding:'+'9'.repeat(64),source:'lens',lens:'security',urgency:'medium',classification:'non_blocking',summary:'Explain rejected measurements',detail:'Invalid measurements need an actionable diagnostic.',location:{path:'measurements.txt',line:1}};
 const summary={schema:'flow.review-summary/v1',candidate_fingerprint:fingerprint,enabled_lenses:['security'],findings:[finding],rendered_findings:[finding],coverage:{complete:true,lenses:[{lens:'security',status:'produced'}],critic:{status:'produced'}},posture:'findings',merge_ready:false};
 const receipt={schema:'flow.review-receipt/v1',review_id:'review:'+'8'.repeat(64),candidate_fingerprint:fingerprint,lifecycle_generation:1,review_authority_watermark:watermark,summary};
-const producerProjection={schema:'flow.run-projection/v1',run_id:producer,phase:'succeeded',progress:'completed',watermark:'sha256:'+'2'.repeat(64),review_candidate_reference:{candidate_id:candidateId,candidate_fingerprint:fingerprint},cards:[],effects:[{effect_id:'effect:commit',status:'completed',operation_contract:'flow.operation/feature-direct-commit/v1',receipt:{provider_receipt:{schema:'flow.git-candidate-commit-receipt/v1',old_commit_sha:${JSON.stringify(f.base)},...git}}}],active_plan:{cards:[{id:'feature-project-check',executor:{kind:'operation',contract:'flow.operation/project-check/v2'}}]},trust_posture:{execution_contract:'flow.supervised-native-cli/v1',verification_scope:'Registered project command GREEN-only'}};
+const producerProjection={schema:'flow.run-projection/v1',run_id:producer,phase:'succeeded',progress:'completed',watermark:'sha256:'+'2'.repeat(64),review_candidate_reference:{candidate_id:candidateId,candidate_fingerprint:fingerprint},cards:[],effects:[{effect_id:'effect:commit',status:'completed',operation_contract:'flow.operation/feature-direct-commit/v1',receipt:{provider_receipt:{schema:'flow.git-candidate-commit-receipt/v1',old_commit_sha:${JSON.stringify(f.base)},...git}}},{effect_id:'effect:project-check',status:'succeeded',operation_contract:'flow.operation/project-check/v2',receipt:{provider_receipt:{schema:'work.project-check-receipt/v2',record:{outcome:'passed',exit_code:0,candidate:git}}}}],active_plan:{cards:[{id:'feature-project-check',executor:{kind:'operation',contract:'flow.operation/project-check/v2'}}]},views:{trust:{trust_posture:{execution_contract:'flow.supervised-native-cli/v1',verification_scope:'Registered project command GREEN-only'}}}};
 state.calls.push(args);
 let result;
 switch(args[0]) {
@@ -154,7 +154,7 @@ case 'query':{
  const q=input();
  if(q.query==='review_preparation_facts'){result={schema:'flow.review-preparation-facts/v1',candidate:{candidate_id:candidateId,candidate_fingerprint:fingerprint}};break;}
  if(q.contract==='work.review/v1'){
-  result=q.subject_id===candidateId?candidateProjection:{schema:'flow.review-projection/v1',contract:'work.review/v1',subject_id:receipt.review_id,review_id:receipt.review_id,status:'current',current:true,candidate,candidate_fingerprint:fingerprint,lifecycle_generation:1,candidate_authority_watermark:watermark,source_run_id:reviewRun,operation_contract:'flow.operation/review-record/v1',operation_effect_id:'effect:review-record',operation_attempt_id:reviewRun+':review-record:attempt:1',operation_idempotency_key:'operation:review-record',summary,coverage:summary.coverage,findings:summary.findings,approval:'not_requested',merge_ready:false};break;
+  result=q.subject_id===candidateId?candidateProjection:{schema:'flow.review-projection/v1',contract:'work.review/v1',subject_id:receipt.review_id,review_id:receipt.review_id,status:'automated_completed',current:true,evidence_currency:'current',candidate,candidate_fingerprint:fingerprint,lifecycle_generation:1,candidate_authority_watermark:watermark,source_run_id:reviewRun,operation_contract:'flow.operation/review-record/v1',operation_effect_id:'effect:review-record',operation_attempt_id:reviewRun+':review-record:attempt:1',operation_idempotency_key:'operation:review-record',summary,coverage:summary.coverage,findings:summary.findings,approval:'not_requested',merge_ready:false};break;
  }
  if(!q.run_id){result={schema:'flow.run-index-projection/v1',authority_schema:{status:'compatible'},runs:[producer,...(state.launched?[reviewRun]:[])]};break;}
  if(q.run_id===producer){result=producerProjection;break;}
@@ -259,6 +259,8 @@ test("public review previews the exact diff without dispatch, and PTY confirmati
   assert.equal(result.approval, "not_requested");
   assert.equal(result.merge_ready, false);
   assert.equal(result.inherited_checks.rerun, false);
+  assert.equal(result.inherited_checks.kind, "registered_green_only");
+  assert.equal(result.inherited_checks.outcome, "passed");
   const rendered = f.run([...plain, "--attach", `run:${"b".repeat(64)}`]);
   assert.equal(rendered.status, 0, rendered.stdout + rendered.stderr);
   assert.match(rendered.stdout, /Explain rejected measurements/u);
