@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.review-comments.v1.schema.json",
+  "title": "agent-flow.review-comments/v1",
+  "description": "Critic-verified review findings before deterministic policy caps.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "run_id",
+    "stage",
+    "urgency",
+    "posture",
+    "posture_rationale",
+    "cluster",
+    "findings"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.review-comments/v1" },
+    "run_id": { "$ref": "#/$defs/identifier" },
+    "stage": { "const": "critic" },
+    "urgency": { "enum": ["hotfix", "fast", "standard"] },
+    "posture": {
+      "enum": [
+        "do_not_merge",
+        "merge_after_fixes",
+        "merge_ready_with_followups"
+      ]
+    },
+    "posture_rationale": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "cluster": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": { "$ref": "#/$defs/finding" }
+    }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "line", "side", "tier", "lens", "body"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "line": { "type": "integer", "minimum": 1 },
+        "side": { "enum": ["LEFT", "RIGHT"] },
+        "tier": { "enum": ["critical", "important", "recommended", "nit"] },
+        "lens": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$" },
+        "body": { "type": "string", "minLength": 1, "maxLength": 10000 }
+      }
+    }
+  }
+}

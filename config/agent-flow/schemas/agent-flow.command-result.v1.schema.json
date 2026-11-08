@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.command-result.v1.schema.json",
+  "title": "agent-flow.command-result/v1",
+  "description": "Deterministic evidence for one command in a sealed gate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "run_id",
+    "stage",
+    "gate_name",
+    "gate_version",
+    "command_index",
+    "argv",
+    "cwd",
+    "termination",
+    "exit_code",
+    "stdout",
+    "stderr"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.command-result/v1" },
+    "run_id": { "$ref": "#/$defs/runId" },
+    "stage": { "$ref": "#/$defs/stageKey" },
+    "gate_name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,127}$" },
+    "gate_version": { "type": "integer", "minimum": 1 },
+    "command_index": { "type": "integer", "minimum": 0 },
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "cwd": { "$ref": "#/$defs/absolutePath" },
+    "termination": {
+      "enum": ["exit", "timeout", "signal", "spawn-error", "output-limit"]
+    },
+    "exit_code": { "type": "integer", "minimum": 0, "maximum": 255 },
+    "stdout": { "type": "string" },
+    "stderr": { "type": "string" }
+  },
+  "$defs": {
+    "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "stageKey": { "type": "string", "pattern": "^[a-z][a-z0-9:-]{0,127}$" }
+  }
+}

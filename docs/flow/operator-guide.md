@@ -1,0 +1,1549 @@
+# Flow operator guide
+
+This guide covers the strict first-release path and explicitly selected
+supervised native execution. Current strict source qualification is `not_run`,
+so strict public admission returns `qualification_withheld`. Strict-release
+examples require a separately qualified release and disposable local resources
+that you own. Supervised local requests follow the separate operator-selected
+trust contract below, including for existing clean repositories. The legacy
+Claude launcher remains the default; strict normal-use rollout stays withheld.
+Neither contract grants remote-mutation authority.
+
+For work on the personal and work MacBooks, start with the
+[Mac verification handoff](mac-verification-handoff.md). Its ownership diagnostic
+is unadmitted; Mac native execution remains unsupported.
+
+For installed npm, Python or Go suites, start with
+[`flow-supervised init`](guided-setup.md), or use [manual registered project checks](project-checks.md).
+The additive v2 check runs in `verify` mode and reports GREEN-only command
+evidence; the v1 test-first contract and plain content-only `verify` remain distinct.
+
+## Supervised local repositories
+
+The explicit supervised contract also accepts an existing clean repository.
+It is independent of the strict release's rollout/qualification fields: those
+fields remain false or `not_run`, while an operator may select this per-request
+local contract. The existing `flow` launcher and its authority state stay
+unchanged. Use the reviewed `flow-supervised` launcher pinned to this source, or
+invoke `node /absolute/path/to/this/checkout/config/flow/src/cli.mjs` directly.
+
+Write the accepted feature brief outside the target repository:
+
+```json
+{
+  "schema": "flow.feature-brief/v1",
+  "id": "brief:local-change",
+  "summary": "Describe the requested local change",
+  "acceptance": ["Describe the exact expected content or behavior"]
+}
+```
+
+Select the repository and official executable explicitly. The optional client
+link must be a new name; setup never replaces an existing command:
+
+```sh
+flow-supervised local setup --execution-trust supervised-native-cli \
+  --repository /absolute/path/to/project --brief /path/to/brief.json \
+  --codex-executable /absolute/path/to/official/codex-0.166.0 \
+  --client-link "$HOME/.local/bin/flow-project"
+```
+
+The result prints four `next_commands`: start the private owner, prepare the
+request by file, inspect a compact confirmation summary, and materialize the
+accepted launch request. Setup itself does none of those actions. Inspect the
+complete retained confirmation before `local accept-prepared`; that helper
+prints an explicit `launch --input-file` command and still starts no provider.
+Keep the owner running while accepting a separate review: owner restart advances
+authority epochs, so review facts must be freshly prepared after a restart.
+
+Setup reads the author and committer from the selected Git configuration and
+binds that identity into the client and preparation confirmation. Configure
+`user.name` and `user.email` before setup, including when an isolated
+`XDG_CONFIG_HOME` selects a different Git configuration. Missing identity stops
+setup before any owner or model task. Later host configuration changes cannot
+change the selected commit identity; setup never writes repository or global
+Git configuration.
+
+One private profile is reused for each canonical repository, with one durable
+authority and workspace claim namespace. Later setup calls create new request
+files. They preserve prior state and reject unselected runtime or changed tool pins; they do
+not create a second authority for a new brief or overwrite an active client.
+Changing the profile's host state directory selects a different authority and
+must not be used to work around an existing workspace claim.
+
+For a different checked feature or a verify-to-test change, first settle all
+retained runs, uncertain effects and workspace claims, then stop the owner.
+Repeat `local setup` with the new brief/check and `--reconfigure-check yes`.
+This creates an immutable client revision sharing the original authority;
+old clients, owner modules, requests and receipts remain intact. Use the
+returned client path or a new `--client-link` name. An existing link is preserved.
+After a profile contains several different check revisions, selecting any check through
+setup requires this explicit stopped/settled procedure. A client starting later
+also checks retained active work under the authority lease before recovery:
+checked work can resume only with its original exact check fingerprint.
+
+To select a new runtime release for an existing project, settle retained runs,
+uncertain effects, workspace claims and taint, then stop its owner. Invoke the
+new runtime's public `local setup` command with the original state directory,
+repository, Node executable, official Codex executable, trust contract and Git
+identity, adding `--upgrade-runtime yes`. Only the runtime root may change.
+When the selected runtime differs from the original profile runtime, creating a
+revision or supplying `--upgrade-runtime yes` requires a stopped, settled owner.
+Original-runtime reuse remains ordinary setup. Setup creates an immutable client sharing the same authority and
+preserves the original profile and every old client. Repeating the upgrade
+reuses that revision; subsequent setup using an already registered runtime needs
+no upgrade flag, just as an existing client can already start directly. This
+reuse does not grant recovery or dispatch authority. Two runtime revisions of the same check do not count as two
+different checks. A changed check still requires `--reconfigure-check yes`.
+Use the returned client or a new link name; the old command is never replaced.
+Setup starts no owner or provider. Owner/configuration handshakes and fresh
+preparation fences still decide whether a later start or launch is compatible.
+
+Without an explicit v2 project check, default `verify` means **Git-backed content observations plus independent model
+critique; project checks NOT_RUN; runtime behavior not established**. The
+registered operation checks exact committed `git_file_equals` observations or,
+for explicitly versioned tasks, raw captured-file `git_file_sha256` digests for
+every criterion and a changed clean workspace. Both establish content identity.
+They do not prove that broad
+behavioral prose works or that an agent's claimed test command passed.
+
+For behavioral evidence, add `--mode test --check /path/to/check.json` at setup.
+The check must satisfy `flow.production-feature-test-check/v1`: one committed
+Node 22 health test, one committed acceptance test, pinned executable/file
+digests, exact criterion coverage, and one expected `ERR_ASSERTION` /
+`strictEqual` failure with string values before the change. The registered worker
+must observe that expected RED and subsequent GREEN. It accepts no arbitrary
+shell command, npm suite or GREEN-only suite as a substitute. The check is
+validated at setup without executing it and embedded into the private owner.
+The selected verification scope is bound into the prepared confirmation and
+retained in `views.operator.trust_posture` and `views.trust.trust_posture`.
+
+Use `flow-project local review-request CLIENT_DIRECTORY PRODUCER_RUN_ID` after
+the producer succeeds, prepare that returned request with `--input-file`, inspect
+it, then use `local accept-prepared` and its printed launch command. Review binds
+the exact sealed candidate and remains automated review, not human approval or
+Git integration. Cancellation and positive task retirement follow the public
+actions described below. The named client is reversible: after all work has
+positively retired and its owner is stopped, remove only its optional named
+link; keep the profile and receipts for recovery and inspection.
+
+## Supervised native pilot
+
+ADR-0012 adds an explicit Linux contract that trusts the official CLI's requested
+permissions and ambient startup. Flow does not independently enforce workspace,
+protected-path, escalation or tool-network boundaries under this contract.
+Strict qualification remains `not_run`. Supervise a disposable repository and
+inspect the exact preparation confirmation before launch. Setup and accepting
+a prepared artifact start no provider task.
+
+Use the CLI from this source version. From an uninstalled checkout, replace the
+first `flow` below with `node config/flow/src/cli.mjs`:
+
+```sh
+PILOT="$(flow pilot setup --execution-trust supervised-native-cli \
+  --codex-executable /absolute/path/to/official/codex-0.166.0 \
+  --mode test | jq -er '.directory')"
+"$PILOT/flow" start --json
+"$PILOT/flow" prepare --input-file "$PILOT/prepare-request.json" --json \
+  > "$PILOT/receipts/prepared.json"
+jq '{confirmation,trust_posture,requested_authority,explicit_facts}' \
+  "$PILOT/receipts/prepared.json"
+```
+
+After inspecting and accepting those exact facts, materialize the launch request.
+The helper binds the prepared graph, confirmation, closed facts and supervised
+acknowledgment. The final `launch` command starts native work:
+
+```sh
+LAUNCH_REQUEST="$("$PILOT/flow" pilot accept-prepared "$PILOT" \
+  "$PILOT/receipts/prepared.json" | jq -er '.request')"
+"$PILOT/flow" launch --input-file "$LAUNCH_REQUEST" --json \
+  | tee "$PILOT/receipts/launched.json"
+RUN_ID="$(jq -er '.run_id' "$PILOT/receipts/launched.json")"
+"$PILOT/flow" query --input "$(jq -cn --arg id "$RUN_ID" '{run_id:$id}')" \
+  --json | tee "$PILOT/receipts/run.json"
+```
+
+Repeat the last query to inspect progress and returned legal actions. The test
+route retains its expected pre-change failure, successful post-change check,
+registered local commit, independent critique and exact sealed candidate.
+`--mode verify` creates a separate verification-first pilot.
+
+After the producer succeeds, prepare a separate review of its exact candidate:
+
+```sh
+REVIEW_REQUEST="$("$PILOT/flow" pilot review-request "$PILOT" "$RUN_ID" \
+  | jq -er '.request')"
+"$PILOT/flow" prepare --input-file "$REVIEW_REQUEST" --json \
+  > "$PILOT/receipts/review-prepared.json"
+jq '.confirmation' "$PILOT/receipts/review-prepared.json"
+```
+
+Inspect the independent review confirmation, then use `accept-prepared` and
+`launch` with `review-prepared.json` as above. Automated review cannot approve or
+integrate the candidate. To cancel an active run, refresh its public query and
+submit its returned cancel action:
+
+```sh
+CANCEL="$(jq -ce '.views.operator.legal_actions[] | select(.type == "cancel")' \
+  "$PILOT/receipts/run.json")"
+"$PILOT/flow" command --input "$CANCEL" --json
+```
+
+Require exact task-retirement evidence before treating the workspace as idle.
+Owner `stop` alone does not cancel workers. When all work has settled,
+`"$PILOT/flow" stop --json` stops this pilot's owner. Keep the receipts. This
+procedure grants no publication, remote mutation, normal-use rollout, global
+permission change or default cutover.
+
+ADR-0011 makes direct CLI tasks primary for Flow execution. The first direct
+implementation uses Linux subreaper and pidfd support with Python; macOS direct
+mutation is unavailable. Claude native admission remains blocked by
+`claude_native_policy_unproven`. The existing Drovr examples below describe the
+optional backend selected with `FLOW_EXECUTION_BACKEND=drovr`; they do not prove
+native provider qualification. The integrated direct feature-to-review bridge
+is covered by deterministic subprocess fixtures only; it does not qualify a
+native provider.
+
+The approved scope for issue #92 is a Linux Codex-first dark pilot. This scope
+decision does not qualify native execution: current release qualification remains
+`not_run`, and public admission remains `qualification_withheld`. Issue #84 must
+qualify real Codex startup and permission enforcement against the exact pilot
+release before native pilot use. The later full release under parent #2 still
+requires both official harnesses. Claude remains blocked by
+`claude_native_policy_unproven`; macOS direct execution is unsupported. Sole owner
+authority, conservative recovery and independent review remain mandatory. This
+pilot does not authorize normal use, legacy-default cutover or remote mutation.
+
+## Release and authority boundary
+
+The default `flow-release-1.0-dark/v1` path below is bound to these exact source
+records. The release content tree is
+the governed candidate tree for the release; it is not a future flow-run
+candidate, run result, or operator-supplied identity.
+
+| Record | Exact identity |
+| --- | --- |
+| Release | `flow-release-1.0-dark/v1` |
+| Implementation | `flow-runtime/v1` |
+| Historical release source commit (`transition-ledger.v1.json`) | `cffa34f5b8c92e2c2fc398c14c2eb841ac0a82a8` |
+| Qualification base commit | `a4a9a88a330be2b668339cf1a9b1b7c1b992564e` |
+| Governed release candidate tree (`release-content.v1.json`) | `3271dc082a264db735c93f48af9f2d8f337dcab4` |
+| Governed release content | `sha256:2af1d7cc986b5bd958161c52a81ce3248dfd2b94dcaa4fc7f21bfe98111c2992` |
+| Contract catalog | `config/flow/contracts/catalog.v1.json`, `flow.contract-catalog/v1@39`, `sha256:aa5566fb02c9fece5963fc55eeb1ac202b5715c01c1dfa948540868523043443` |
+| Capability manifest | `config/flow/release-manifest.v1.json`, `sha256:8b0b4bc7287f887d869cafef5cb61e41d385ceea733a1a41e585cff5471546d9` |
+| Launch policy | `flow.launch-policy/v1`, `config/flow/launch-policy.v1.json`, `sha256:9718f8719e206895d6b760c247dc01c1ec9b34830413c9bc0acf04be2a438c8c` |
+| Transition ledger | `config/flow/transition-ledger.v1.json`, schema `flow.transition-ledger/v1`, sequence 32, `sha256:448f7c9884d5ce783714ae91a4af14588fb6c7d0091177524b0b27f1791590c4` |
+| Deterministic qualification evidence | Current ledger: `not_run`, no bound path or digest. Historical `config/flow/evidence/release-qualification.v1.json`, `sha256:99a55c5b01bca1f5199dcef233f76e1114da9e3a67993ae2eaf805312d3398d6` |
+| Production-route evidence | `not_run`, `config/flow/evidence/production-route-conformance.v1.json`, `sha256:5bae4da135fec46479ccc09751159f0c722bc220c8657d87029fb3d45444fcaa` |
+| Release-content evidence | `config/flow/evidence/release-content.v1.json`, `sha256:3e82fd7a7207cddba1e909f7e42246a4eeca106d9136cc2c24384038dc681c31` |
+
+Historical deterministic qualification evidence is bound to its recorded
+release and is not bound to the current ticket candidate. The current ledger
+withholds deterministic and production-route qualification as `not_run`.
+
+The ledger records the historical `source_commit`; it does not say that this
+working tree is that commit. The current governed release tree is the separate
+`candidate_tree_sha` above. Recheck the ledger and its evidence before every
+dark selection:
+
+```sh
+npm --silent --prefix tools/flow run status
+jq '{release,contracts,decision,environment_fingerprint,evidence,not_run}' \
+  config/flow/transition-ledger.v1.json
+jq '{release_id,implementation,scope,normal_use_authorized,remote_mutations_authorized,supported_routes,disabled_routes,sacrificial_followups}' \
+  config/flow/release-manifest.v1.json
+jq '{default_implementation,implementations}' config/flow/launch-policy.v1.json
+```
+
+`RunAuthority` is the only lifecycle authority. The public `flow` client is a
+disposable caller. `flow.runtime/v1` has exactly five operations:
+`prepare`, `launch`, `command`, `query`, and `watch`. A projection's
+`watermark` and `legal_actions` are the authority-produced inputs to the next
+command. This boundary follows ADR-0011 for direct execution, ADR-0007 for optional
+Drovr delegation, and ADR-0008 for
+the sole RunAuthority. Do not edit local authority files, database records, provider
+registries, or harness transcripts. Do not invent a run ID, candidate ID,
+result digest, authority watermark, or future Git identity.
+
+For a separately qualified direct Linux Codex release, select
+`FLOW_EXECUTION_BACKEND=direct` and configure `FLOW_REPOSITORY_ROOT` to the
+retained candidate repository. `FLOW_QUALIFICATION_REPOSITORY_ROOT` identifies
+the runtime release being admitted. Direct local-review lens and critic routes
+use `read-only` with distinct launch roles, such as `lens:security` and `critic`,
+and separate attempts. The public facts query obtains the canonical workspace
+path privately from WorkspaceAuthority for preflight and launch revalidation;
+callers never put that path in the public facts envelope. Both description
+contracts retain exact digest, authority, candidate and watermark fences.
+Unconfigured cross-repository discovery by a fresh owner is not supported.
+
+## What the default release admits
+
+The manifest's only supported routes are:
+
+| Flow | Mode | Contracts |
+| --- | --- | --- |
+| `feature` | `verify` | `flow.definition/feature/v1`, `flow.feature-verification-request/v1`, `flow.operation/feature-verify/v1`, `work.feature-verification-receipt/v1` |
+| `review` | `local` | `flow.review-local-candidate/v1`, `flow.operation/review-record/v1`, `flow.review-provenance/v1` |
+
+`feature/verify` accepts an ordinary brief and a clean starting workspace. It
+produces an execution-created candidate and stops at a local review handoff.
+`review/local` consumes the exact returned candidate identity and never accepts
+`latest` as a selector. The candidate and result identities below are always
+read from returned authority projections.
+
+The following are disabled or unsupported in this release: `feature/test`,
+`feature/mixed`, `spike/quick`, `spike/deep`, `epic/default`,
+`review/github`, `tracker/github`, `tracker/jira`, `forge/default`,
+`publication/default`, `merge/default`, `push/default`, and
+`remote/mutation`. A disabled route is not enabled by changing JSON, and an
+unsupported route is not repaired by adding an adapter locally. Feature test
+and mixed modes, spike, epic, GitHub review, tracker, forge, publication,
+merge, push, and remote mutation remain outside the release gates.
+
+The ledger marks issue 84, issue 44, and issue 46 as `not_run`; no compatible
+receipts currently prove those later scenarios. This guide documents their
+public contracts where needed for diagnosis and recovery, but does not claim
+issue 84's real feature/candidate and separate review scenarios, issue 44's
+mixed delegation, or issue 46's host recovery/concurrency/rendering evidence.
+Issue #85 must refresh the documentation and evidence for the expanded release
+before issue #53 can authorize a later transition. This is the required
+issue #85 refresh boundary, not a claim that its expanded scenarios have run.
+
+## Separate feature-test pilot
+
+`flow-release-1.1-dark-test/v1` adds one direct Linux Codex feature-test route
+in `config/flow/releases/1.1-dark-test/`. It requires explicit configuration
+selection and its own exact release qualification. Native test qualification
+is **NOT_RUN**. The deterministic public fixtures prove real check execution,
+one writer and same-boot owner recovery with local fixture delegates; they do
+not qualify native Codex startup or permissions. Old historical qualification
+does not grant this route permission. Until the exact qualification passes,
+public admission remains withheld; these examples describe the request shape
+for that separately qualified, disposable pilot.
+
+| Test release binding | Value |
+| --- | --- |
+| Test pilot manifest | `config/flow/releases/1.1-dark-test/release-manifest.v1.json`, `flow-release-1.1-dark-test/v1`, `sha256:a6c659694e10344f416a805ba7acc87517d7bd2cd1f3188639d208d82e9a088b` |
+| Test pilot catalog | `flow.contract-catalog/v1@39`, `sha256:aa5566fb02c9fece5963fc55eeb1ac202b5715c01c1dfa948540868523043443` |
+| Test pilot qualification base | `c34c6e881ce375691d4f3e4ca626c1af9eef81cc` |
+| Test pilot content | `3271dc082a264db735c93f48af9f2d8f337dcab4`, `sha256:2ed9f790c1a5b641ce082ad6ad0c0ef62eb8137e1849bb13d505821d877b6ca0`, `sha256:d78bcab7ef6aa55ef0383007bd3b99eca75ffb0fbf8902d07a5d0b4e4aba2530` |
+| Test pilot source qualification | Final qualification `not_run`; deterministic prerequisites `not_run`, production prerequisites `not_run`; historical host aggregate is not consumed as new native qualification |
+| Historical fixture bootstrap | Generator input: retained pre-D deterministic fixture `sha256:3e001e0924fa8b3466c02488029bcbaabf74a48140966e372ac986a82c23e050`. Current prerequisite TAP: `config/flow/releases/1.1-dark-test/evidence/receipts/public-production-feature-test.tap`, `sha256:c3cd531c73d4f788e4007fe19e4b9f5add5db2e165fd9364d8beb33483a223be`; neither grants native qualification |
+
+Keep the runtime repository separate from the disposable feature workspace:
+
+```sh
+# FLOW_RUNTIME_ROOT is the absolute repository containing this Flow runtime.
+export FLOW_CONFIG_DIRECTORY="$FLOW_RUNTIME_ROOT/config/flow/releases/1.1-dark-test"
+export FLOW_QUALIFICATION_REPOSITORY_ROOT="$FLOW_RUNTIME_ROOT"
+export FLOW_EXECUTION_BACKEND=direct
+```
+
+Selected host-recovery collection and validation must use the same explicit
+configuration directory. Follow the [selected host evidence recipe](../../config/flow/qualification/README.md)
+with `--config-directory`; historical default-release evidence is not proof for
+this pilot. Its first host binding uses `--initialize-selected-release` only for
+an initially unbound selected release, with `--preserve-historical-directory`
+retaining the prior aggregate and ledger bytes outside the repository. Later
+bound replacements retain the strict `--replace-tracked-successor` path. Every
+required scenario and native witness still needs actual current receipts. The
+aggregate and ledger have separate atomic writes; interruption between them
+leaves admission withheld until their exact bindings agree.
+
+Apply these settings to the trusted owner before it starts. Selecting files
+does not install a test check or grant qualification. The owner must also be
+provisioned with one private `featureTestCheck` through the production runtime
+constructor. The public CLI has no check-configuration loader. The
+[composition notes](../../config/flow/README.md#separate-feature-test-pilot)
+describe the supported host recipe; do not put executable paths, commands,
+environment, timeout, expected failure, health assertions or receipts in the
+public request. Missing or invalid host configuration returns an unavailable
+test route and leaves verify/review construction usable.
+
+#### Provision the trusted owner
+
+The existing `FLOW_OWNER_RUNTIME_MODULE` hook loads an approved host factory.
+Keep this module outside the disposable feature repository and make it private;
+it is trusted host code, not public caller input. Embed the fixed recipe in its
+bytes rather than reading a mutable external recipe file. The owner records the
+module SHA-256 together with the selected configuration and rechecks that binding
+before importing it. Do not point a host at `test-support/direct-feature-test-runtime.mjs`;
+that wrapper belongs to deterministic fixtures.
+
+This concrete example selects a committed test for changing `feature.txt` from
+`before\n` to `after\n`. Before preparation, the clean disposable repository
+must already commit `feature.txt` containing `before` plus these two files:
+
+```js
+// health.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+test("positive health probe", () => assert.equal(2 + 2, 4));
+```
+
+```js
+// acceptance.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+test("selected feature behavior", () =>
+  assert.equal(readFileSync("feature.txt", "utf8"), "after\n"));
+```
+
+Choose the exact accepted runtime, canonical disposable workspace, approved Node
+22 executable and an owned private receipt directory. The following preparation
+writes one new factory module. It reads file bytes but runs no check, native CLI
+or provider, and uses exclusive creation so it cannot overwrite another module:
+
+```sh
+export FLOW_CHECK_WORKSPACE=/absolute/path/to/disposable/repository
+export FLOW_CHECK_NODE=/absolute/path/to/approved/node22
+export FLOW_OWNER_RUNTIME_MODULE="$RECEIPTS/trusted-feature-test-owner.mjs"
+"$FLOW_CHECK_NODE" --input-type=module <<'NODE'
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+if (!/^v22\.[0-9]+\.[0-9]+$/.test(process.version)) throw new Error("Node 22 required");
+const runtimeRoot = realpathSync(process.env.FLOW_RUNTIME_ROOT);
+const workspace = realpathSync(process.env.FLOW_CHECK_WORKSPACE);
+const executable = realpathSync(process.execPath);
+const sha = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+const file = (path, case_name) => ({
+  path, sha256: sha(readFileSync(join(workspace, path))), case_name,
+});
+const featureTestCheck = {
+  schema: "flow.production-feature-test-check/v1",
+  check_id: "check:feature-text",
+  executable: { path: executable, version: process.version, sha256: sha(readFileSync(executable)) },
+  health: file("health.test.mjs", "positive health probe"),
+  acceptance: file("acceptance.test.mjs", "selected feature behavior"),
+  pinned_files: [],
+  criteria: ["feature.txt contains after"],
+  expected_failure: {
+    code: "ERR_ASSERTION", operator: "strictEqual", expected: "after\n", actual: "before\n",
+  },
+  environment: { PATH: "/usr/bin:/bin" },
+  limits: { timeout_ms: 5000, max_output_bytes: 65536 },
+};
+const runtime = pathToFileURL(join(runtimeRoot, "config/flow/src/runtime.mjs")).href;
+const moduleBytes = `import { createFlowRuntime as production } from ${JSON.stringify(runtime)};
+const featureTestCheck = ${JSON.stringify(featureTestCheck, null, 2)};
+export function createFlowRuntime(options = {}) {
+  return production({ ...options, featureTestCheck });
+}
+`;
+writeFileSync(process.env.FLOW_OWNER_RUNTIME_MODULE, moduleBytes, { flag: "wx", mode: 0o600 });
+NODE
+```
+
+For another check, replace the committed files, names, exact ordered criteria and
+expected assertion together. List additional immutable check dependencies in
+`pinned_files` with their relative paths and SHA-256; do not pin implementation
+files that the writer must change. This first pilot accepts one fixed recipe.
+Preparation verifies the selected files still match their committed HEAD bytes,
+the approved executable and the bounded runner. It does not infer a healthy
+result from the configuration.
+
+Apply the release selection above and the factory setting to the same isolated
+owner and public clients. Allocate explicit private authority/socket/endpoint
+paths and the disposable repository before starting it:
+
+```sh
+export FLOW_AUTHORITY_DIRECTORY="$RECEIPTS/authority"
+export FLOW_OWNER_SOCKET_PATH="$FLOW_AUTHORITY_DIRECTORY/owner.sock"
+export FLOW_OWNER_ENDPOINT_PATH="$FLOW_AUTHORITY_DIRECTORY/owner.json"
+export FLOW_REPOSITORY_ROOT="$FLOW_CHECK_WORKSPACE"
+"$FLOW_CHECK_NODE" "$FLOW_RUNTIME_ROOT/config/flow/src/cli.mjs" start --json
+"$FLOW_CHECK_NODE" "$FLOW_RUNTIME_ROOT/config/flow/src/cli.mjs" status --json
+```
+
+These commands are for a separately authorized isolated owner after exact release
+qualification and native pre-effect policy are established. They do not enable a
+host manager, switch the legacy default, qualify native execution or authorize
+paid work. Missing or invalid recipes leave the test route unavailable. A stale
+module binding refuses construction; changed check/configuration fingerprints
+refuse launch before claims or dispatch. To change a recipe, first use returned
+public actions to retire any active work, stop only this owned owner, retain its
+evidence, create an approved new module and reprepare after restarting. Do not
+edit a module under an active owner or replay an old prepared run after drift.
+
+After the owner has selected a committed check whose exact criteria match the
+brief, a request uses only its `check_id`. For example, if the owner has
+provisioned `check:feature-text` with criterion `feature.txt contains after`:
+
+```json
+{
+  "schema": "flow.feature-preparation-request/v1",
+  "brief": {
+    "schema": "flow.feature-brief/v1",
+    "id": "brief:feature-text",
+    "summary": "Change feature.txt to after",
+    "acceptance": ["feature.txt contains after"]
+  },
+  "repository": "/absolute/path/to/disposable/repository",
+  "mode": "test",
+  "test": { "check_id": "check:feature-text" },
+  "routes": {
+    "apply": { "harness": "codex", "capability": "workspace-write-denied" },
+    "critique": { "harness": "codex", "capability": "read-only" }
+  },
+  "dark_opt_in": {
+    "schema": "flow.dark-opt-in/v1",
+    "release_id": "flow-release-1.1-dark-test/v1",
+    "purpose": "sacrificial_qualification"
+  }
+}
+```
+
+Save the actual request as `$RECEIPTS/test-prepare-request.json` and submit it
+through the existing public interface:
+
+```sh
+flow prepare --input "$(<"$RECEIPTS/test-prepare-request.json")" --json
+```
+
+Preparation requires a clean canonical workspace and committed selected
+acceptance and positive health checks. One test slice owns every brief
+criterion exactly once; unknown checks, incomplete criteria, mixed mode,
+caller commands or generic caller-derived test slices are rejected. Preparation
+runs neither probes nor a writer and returns no future candidate identity.
+Its healthy-environment field is a requirement, not evidence that health passed.
+Retain the complete returned prepared bundle. Follow the confirmation and launch
+procedure below using that bundle, its actual returned digests and facts, and
+the same `flow-release-1.1-dark-test/v1` opt-in on launch. Do not reuse a 1.0
+opt-in or edit a prepared slice. Launch recomputes the complete trusted selection
+and refuses changed check/configuration/runner fingerprints before creating a
+run or claiming the workspace; reprepare after an authorized change.
+
+Admitted execution runs a positive health case and the exact intended RED case
+before one workspace writer. Checks use the fixed bounded Node runner under
+bubblewrap on supported Linux: workspace read-only, host network isolated,
+host home/auth directories absent, and private effect scratch. Missing sandbox
+support, timeout, output overflow, malformed output, unhealthy environment or
+an unrelated failure blocks mutation. Registered direct commit and capture then
+bind the changed Git snapshot. The same health and acceptance checks must go
+GREEN; retained RED evidence, independent critique, aggregate verification and
+seal are all required for the local candidate. The contract supports this single
+test slice, not arbitrary test commands or mixed workflows.
+
+The Flow owner and check worker have distinct lifetimes. A client exit does not
+cancel work. Same-boot checker takeover may adopt exact terminal evidence when
+the worker has positively retired before the new owner observes it, preserving
+one checker and one writer. If takeover observes a pending checker, the outcome
+remains indeterminate without consuming a fresh attempt. Later retirement does
+not automatically reopen exhausted recovery. Preserve the claims and evidence
+and use the actions actually returned by the runtime, currently cancel; no
+reconciliation command is implied. Changed boot and uncertain effects also
+retain their claims. Do not replay checks or writers blindly, delete
+reservations, or force-unlock Git. Actual reboot and manager shutdown remain
+separate qualification scenarios.
+
+The default root configuration still rejects test and mixed modes. This
+separate release leaves the legacy default unchanged; normal-use and
+remote-mutation authorization remain false. Issue #89's native qualification and
+acceptance checklist remain incomplete; deterministic success does not close it.
+
+## Supported hosts, configuration, and retention
+
+The supported host matrix is macOS 26+ arm64, Ubuntu Server 24.04, and
+Ubuntu Server 26.04 on x86_64 or arm64. The qualifying evidence record is
+environment-bound; a
+passed Linux x64 record does not silently qualify a different host class.
+
+The production composition uses a mode-0700 authority directory, normally
+`$XDG_STATE_HOME/flow` or `~/.local/state/flow`, and mode-0600 endpoint/socket
+files. Use `FLOW_AUTHORITY_DIRECTORY` for a real private directory owned by the
+current user. The autonomous owner has separate delegate and operation
+capacities, each defaulting to one and bounded to 1 through 64:
+
+```sh
+export FLOW_RUNNER_DELEGATE_CAPACITY=1
+export FLOW_RUNNER_OPERATION_CAPACITY=1
+```
+
+Passive child observation does not consume operation capacity. The runner does
+not auto-approve checkpoints, expand capabilities, repeat uncertain effects,
+or choose terminal dispositions. `flow status --json` reports capacity,
+active counts, and bounded sanitized errors.
+
+For an example, make every mutable root unique and disposable. The repository
+is the workspace subject; the receipt directory is only for captured public
+JSON; result bytes remain under the authority's retention and handoff rules.
+Do not reuse the default authority while qualifying an example.
+
+```sh
+set -euo pipefail
+umask 077
+
+FLOW_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/flow-operator.XXXXXXXX")"
+REPOSITORY="$FLOW_ROOT/workspace/repository"
+RECEIPTS="$FLOW_ROOT/receipts"
+RESULTS="$FLOW_ROOT/results"
+mkdir -p "$REPOSITORY" "$RECEIPTS" "$RESULTS" \
+  "$FLOW_ROOT/authority" "$FLOW_ROOT/runtime" "$FLOW_ROOT/state"
+chmod 700 "$FLOW_ROOT" "$FLOW_ROOT/workspace" "$REPOSITORY" \
+  "$RECEIPTS" "$RESULTS" "$FLOW_ROOT/authority" \
+  "$FLOW_ROOT/runtime" "$FLOW_ROOT/state"
+
+export FLOW_AUTHORITY_DIRECTORY="$FLOW_ROOT/authority"
+export FLOW_OWNER_ENDPOINT_PATH="$FLOW_ROOT/runtime/owner.json"
+export FLOW_SOCKET_PATH="$FLOW_ROOT/runtime/owner.sock"
+export FLOW_OWNER_SOCKET_PATH="$FLOW_SOCKET_PATH"
+export XDG_STATE_HOME="$FLOW_ROOT/state"
+export FLOW_RUNNER_DELEGATE_CAPACITY=1
+export FLOW_RUNNER_OPERATION_CAPACITY=1
+```
+
+`RESULTS` and `RECEIPTS` are operator-owned disposable capture roots, not a
+second lifecycle authority. A sealed review candidate keeps exact workspace
+generation, clean Git commit/tree, artifact bytes, Git retention, and a
+generation-bound `flow.resource-handoff/v1`. Retention is released only after
+the returned Work-domain disposition and consumer obligations permit it.
+The workspace retention and artifact retention therefore remain active until those
+exact obligations settle.
+Never remove a retained workspace, artifact, handoff, or Git retention ref by
+path. Query the exact subject and use its authority-projected cleanup action.
+
+## Host owner lifecycle
+
+The owner holds the fenced `RunAuthority` and survives client exit. Start it and
+inspect it; keep this owner running through preparation, launch, observation,
+authority commands, and local review. Stop only the recorded owner during the
+final cleanup below:
+
+```sh
+flow start --json | tee "$RECEIPTS/owner-start.json"
+flow status --json | tee "$RECEIPTS/owner-status.json"
+```
+
+`flow stop` checks the recorded endpoint identity immediately before signaling.
+If status reports `owner_mismatch` or a stale endpoint, do not signal a guessed
+PID or remove an unrelated socket. Follow only the returned legal action for
+the exact endpoint. A client may exit and reconnect without changing an
+accepted run.
+
+The host-manager definitions are explicit opt-in sources, not a second
+authority. On macOS, after the release has been authorized for that host:
+
+```sh
+mkdir -p "$HOME/Library/LaunchAgents"
+ln -s "$HOME/.config/flow/host/macos/com.seavenly.flow-owner.plist" \
+  "$HOME/Library/LaunchAgents/com.seavenly.flow-owner.plist"
+launchctl bootstrap "gui/$(id -u)" \
+  "$HOME/Library/LaunchAgents/com.seavenly.flow-owner.plist"
+launchctl enable "gui/$(id -u)/com.seavenly.flow-owner"
+```
+
+On Ubuntu, use the per-user unit after the same explicit admission:
+
+```sh
+mkdir -p "$HOME/.config/systemd/user"
+ln -s "$HOME/.config/flow/host/ubuntu/flow-owner.service" \
+  "$HOME/.config/systemd/user/flow-owner.service"
+systemctl --user daemon-reload
+systemctl --user enable --now flow-owner.service
+```
+
+`launchctl` or `systemctl --user` only supervises the owner process. It never
+approves a flow card or resumes a run after a changed boot. Normal dotfiles
+convergence exposes these templates but does not load or enable them.
+
+The Ubuntu unit stops and restarts only the Flow owner. Active direct task workers remain running under their original exact attempt and workspace bindings, so stopping the owner does not mean the workspace is idle. Before disabling the unit or treating a workspace as available, use the public Flow cancellation and recovery actions and require exact task retirement evidence. A restarted owner may adopt the same proven task or receipt; a lost worker, changed boot or uncertain outcome retains the workspace claim and requires the returned operator action. Manager and host shutdown remain separate qualification scenarios.
+
+## Prepare with an ordinary brief
+
+First create a disposable clean repository and inspect its starting facts. The
+facts are an operator sanity check; `prepare` captures and returns the
+identity-bearing facts used by `launch`. Do not put a future candidate commit,
+tree, artifact digest, patch, or result hash in the request.
+
+```sh
+git init --quiet --initial-branch=main "$REPOSITORY"
+git -C "$REPOSITORY" config user.email flow-operator@example.test
+git -C "$REPOSITORY" config user.name "Flow Operator"
+printf '%s\n' 'starting workspace' > "$REPOSITORY/README.md"
+git -C "$REPOSITORY" add README.md
+git -C "$REPOSITORY" commit --quiet -m 'initial disposable workspace'
+
+test -z "$(git -C "$REPOSITORY" status --porcelain=v1 --untracked-files=all)"
+START_COMMIT="$(git -C "$REPOSITORY" rev-parse HEAD)"
+START_TREE="$(git -C "$REPOSITORY" rev-parse 'HEAD^{tree}')"
+jq -n --arg commit "$START_COMMIT" --arg tree "$START_TREE" \
+  '{clean:true,commit_sha:$commit,tree_sha:$tree}' \
+  | tee "$RECEIPTS/starting-git-facts.json"
+```
+
+Inspect both supported harness routes through the public non-mutating
+`DelegatedAgentPort` query. The returned projection is the compatibility
+authority for the exact launch; a blocked projection means stop and follow its
+returned legal actions.
+
+```sh
+flow query delegated-agent --harness codex --role reviewer \
+  --capability workspace-write \
+  --caller-metadata '{"owner":"operator-guide"}' --json \
+  | tee "$RECEIPTS/drovr-codex-apply.json"
+flow query delegated-agent --harness codex --role reviewer \
+  --capability read-only \
+  --caller-metadata '{"owner":"operator-guide"}' --json \
+  | tee "$RECEIPTS/drovr-codex-critique.json"
+flow query delegated-agent --harness claude --role reviewer \
+  --capability workspace-write \
+  --caller-metadata '{"owner":"operator-guide"}' --json \
+  | tee "$RECEIPTS/drovr-claude-apply.json"
+flow query delegated-agent --harness claude --role reviewer \
+  --capability read-only \
+  --caller-metadata '{"owner":"operator-guide"}' --json \
+  | tee "$RECEIPTS/drovr-claude-critique.json"
+```
+
+Use one compatible harness route per disposable run. The public values are
+`harness: codex` and `harness: claude`; `HARNESS` is the only
+operator-selected route choice; use `codex` or `claude` after inspecting all
+four returned projections. The request values `model`, `effort`, and
+`capability` below are read from the selected route's returned description, not
+copied from a model catalog or this guide. The apply route must advertise
+`workspace-write`; the independent critique route must advertise `read-only`.
+The scoped release does not claim issue 44's mixed-delegation qualification.
+
+Every delegate receives one complete `flow.delegate-input-envelope/v1` from
+RunAuthority: bounded instructions, minimal task inputs, exact authority-owned
+resource references, accepted predecessor evidence where declared, and output
+requirements. It never receives an ambient transcript, credential, capability
+secret, or caller-invented workspace path.
+
+Set an ordinary brief, choose `codex` or `claude` from the compatible query,
+and send the closed preparation request. This is a normal shell and `jq` path;
+it does not call a private module or generate orchestration code.
+
+```sh
+HARNESS=codex   # use claude for the separately inspected Claude route
+if test "$HARNESS" = codex; then
+  APPLY_DESCRIPTION="$RECEIPTS/drovr-codex-apply.json"
+  CRITIQUE_DESCRIPTION="$RECEIPTS/drovr-codex-critique.json"
+else
+  APPLY_DESCRIPTION="$RECEIPTS/drovr-claude-apply.json"
+  CRITIQUE_DESCRIPTION="$RECEIPTS/drovr-claude-critique.json"
+fi
+jq -e '.status == "compatible" and
+  .description.launch.harness and
+  .description.launch.model and
+  .description.launch.effort and
+  .description.launch.capability == "workspace-write"' \
+  "$APPLY_DESCRIPTION" >/dev/null
+jq -e '.status == "compatible" and
+  .description.launch.harness and
+  .description.launch.model and
+  .description.launch.effort and
+  .description.launch.capability == "read-only"' \
+  "$CRITIQUE_DESCRIPTION" >/dev/null
+APPLY_HARNESS="$(jq -er '.description.launch.harness' "$APPLY_DESCRIPTION")"
+APPLY_MODEL="$(jq -er '.description.launch.model' "$APPLY_DESCRIPTION")"
+APPLY_EFFORT="$(jq -er '.description.launch.effort' "$APPLY_DESCRIPTION")"
+APPLY_CAPABILITY="$(jq -er '.description.launch.capability' "$APPLY_DESCRIPTION")"
+CRITIQUE_HARNESS="$(jq -er '.description.launch.harness' "$CRITIQUE_DESCRIPTION")"
+CRITIQUE_MODEL="$(jq -er '.description.launch.model' "$CRITIQUE_DESCRIPTION")"
+CRITIQUE_EFFORT="$(jq -er '.description.launch.effort' "$CRITIQUE_DESCRIPTION")"
+CRITIQUE_CAPABILITY="$(jq -er '.description.launch.capability' "$CRITIQUE_DESCRIPTION")"
+test "$APPLY_HARNESS" = "$HARNESS"
+test "$CRITIQUE_HARNESS" = "$HARNESS"
+BRIEF_ID="brief:operator-guide-$(date -u +%Y%m%dT%H%M%SZ)"
+
+jq -cn \
+  --arg id "$BRIEF_ID" \
+  --arg repository "$REPOSITORY" \
+  --arg apply_harness "$APPLY_HARNESS" \
+  --arg apply_model "$APPLY_MODEL" \
+  --arg apply_effort "$APPLY_EFFORT" \
+  --arg apply_capability "$APPLY_CAPABILITY" \
+  --arg critique_harness "$CRITIQUE_HARNESS" \
+  --arg critique_model "$CRITIQUE_MODEL" \
+  --arg critique_effort "$CRITIQUE_EFFORT" \
+  --arg critique_capability "$CRITIQUE_CAPABILITY" \
+  '{
+    schema:"flow.feature-preparation-request/v1",
+    brief:{
+      schema:"flow.feature-brief/v1",
+      id:$id,
+      summary:"Make one observable local change",
+      acceptance:["the changed behavior is observable"]
+    },
+    repository:{path:$repository},
+    mode:"verify",
+    dark_opt_in:{
+      schema:"flow.dark-opt-in/v1",
+      release_id:"flow-release-1.0-dark/v1",
+      purpose:"sacrificial_qualification"
+    },
+    routes:{
+      apply:{launch:{harness:$apply_harness,role:"reviewer",model:$apply_model,
+        effort:$apply_effort,capability:$apply_capability}},
+      critique:{launch:{harness:$critique_harness,role:"reviewer",
+        model:$critique_model,effort:$critique_effort,
+        capability:$critique_capability}}
+    },
+    limits:{max_elapsed_seconds:600}
+  }' > "$RECEIPTS/prepare-request.json"
+
+set +e
+flow prepare --input "$(<"$RECEIPTS/prepare-request.json")" --json \
+  > "$RECEIPTS/prepare.stdout.json" \
+  2> "$RECEIPTS/prepare.stderr.json"
+PREPARE_STATUS=$?
+set -e
+if test -s "$RECEIPTS/prepare.stderr.json" &&
+   jq -e '.schema == "flow.rejection/v1"' \
+     "$RECEIPTS/prepare.stderr.json" >/dev/null; then
+  jq '{code,reason,outcome,legal_actions,authority_watermark}' \
+    "$RECEIPTS/prepare.stderr.json" >&2
+  exit "$PREPARE_STATUS"
+fi
+if test "$PREPARE_STATUS" -ne 0; then
+  cat "$RECEIPTS/prepare.stderr.json" >&2
+  exit "$PREPARE_STATUS"
+fi
+PREPARED="$RECEIPTS/prepare.stdout.json"
+jq -e '(.schema == "flow.prepared-run/v1") and
+  (.bundle_digest|type == "string") and
+  (.confirmation_digest|type == "string") and
+  (.explicit_facts|type == "object")' "$PREPARED"
+```
+
+Preparation is non-authoritative. A `disabled` or `unsupported` result is a
+truthful release boundary, not an invitation to alter the manifest. For a
+Drovr compatibility block, run only the returned repair/refresh action and
+prepare a fresh bundle afterward.
+
+## Inspect, confirm, and launch returned values
+
+Inspect the returned confirmation, graph, route snapshot, limits, authority
+bindings, and initial workspace facts before accepting. These are values from
+the prepared bundle, not values copied from this document:
+
+```sh
+jq '{bundle_digest,confirmation_digest,definition,selection,confirmation,
+     explicit_facts,required_authorities,limits}' \
+  "$PREPARED" > "$RECEIPTS/confirmation-view.json"
+```
+
+Accept the exact predefined confirmation by digest and carry the exact
+`explicit_facts` into the `flow.closed-fact-observation/v1` value. The closed
+facts are returned by `prepare`; never recompute or edit them for launch.
+
+```sh
+BUNDLE_DIGEST="$(jq -r '.bundle_digest' "$PREPARED")"
+CONFIRMATION_DIGEST="$(jq -r '.confirmation_digest' "$PREPARED")"
+jq -cn \
+  --slurpfile prepared "$PREPARED" \
+  --arg bundle "$BUNDLE_DIGEST" \
+  --arg confirmation "$CONFIRMATION_DIGEST" \
+  --argjson facts "$(jq -c '.explicit_facts' "$PREPARED")" \
+  '{
+    prepared:$prepared[0],
+    dark_opt_in:{
+      schema:"flow.dark-opt-in/v1",
+      release_id:"flow-release-1.0-dark/v1",
+      purpose:"sacrificial_qualification"
+    },
+    confirmation:{
+      schema:"flow.predefined-flow-confirmation-decision/v1",
+      decision:"accept",
+      bundle_digest:$bundle,
+      confirmation_digest:$confirmation
+    },
+    closed_facts:{
+      schema:"flow.closed-fact-observation/v1",
+      bundle_digest:$bundle,
+      facts:$facts
+    }
+  }' > "$RECEIPTS/launch-request.json"
+
+set +e
+flow launch --input "$(<"$RECEIPTS/launch-request.json")" --json \
+  > "$RECEIPTS/launch.stdout.json" \
+  2> "$RECEIPTS/launch.stderr.json"
+LAUNCH_STATUS=$?
+set -e
+if test -s "$RECEIPTS/launch.stderr.json" &&
+   jq -e '.schema == "flow.rejection/v1"' \
+     "$RECEIPTS/launch.stderr.json" >/dev/null; then
+  jq '{code,reason,outcome,legal_actions,authority_watermark}' \
+    "$RECEIPTS/launch.stderr.json" >&2
+  exit "$LAUNCH_STATUS"
+fi
+if test "$LAUNCH_STATUS" -ne 0; then
+  cat "$RECEIPTS/launch.stderr.json" >&2
+  exit "$LAUNCH_STATUS"
+fi
+LAUNCHED="$RECEIPTS/launch.stdout.json"
+jq -e '(.schema == "flow.launch-receipt/v1") and
+  (.run_id|type == "string") and
+  (.authority_watermark|type == "string") and
+  (.launch_watermark|type == "string")' "$LAUNCHED"
+AUTHORITY_WATERMARK="$(jq -er '.authority_watermark' "$LAUNCHED")"
+LAUNCH_WATERMARK="$(jq -er '.launch_watermark' "$LAUNCHED")"
+RUN_ID="$(jq -r '.run_id' "$LAUNCHED")"
+```
+
+`launch` is host-idempotent. Repeating this exact request adopts the same
+returned run; it does not compile a new plan or refresh the route. A changed
+bundle, confirmation, or closed fact produces a typed rejection.
+
+## Status, query, watch, and authority-projected actions
+
+Use the host owner for status and the five-operation interface for observations:
+
+```sh
+flow status --json | tee "$RECEIPTS/status.json"
+flow query --input '{"schema":"flow.query/v1","query":"autonomous_runner_status"}' \
+  --json | tee "$RECEIPTS/runner.json"
+flow query --input "$(jq -cn --arg run_id "$RUN_ID" '{run_id:$run_id}')" \
+  --json | tee "$RECEIPTS/run.json"
+```
+
+`query` returns one watermarked projection. `watch` returns the current
+projection first and then later watermarks. Run the long-lived watch in a
+separate terminal with the same disposable-root environment; end it by closing
+that terminal or pressing Ctrl-C, not by issuing a lifecycle command. The first
+terminal remains connected to the same owner for the subsequent commands:
+
+```sh
+flow watch --input "$(jq -cn --arg run_id "$RUN_ID" \
+  '{schema:"flow.watch/v1",run_id:$run_id}')" --json \
+  | tee "$RECEIPTS/run-watch.ndjson"
+# End this watch terminal with Ctrl-C when the observation is sufficient.
+```
+
+The operator view includes phase, admission, revision, card readiness, route
+and capability facts, checkpoints, attempts, effects, result bindings,
+workspace/artifact/handoff facts, and closed `legal_actions`.
+
+Always select a complete operator action from the latest projection and submit
+it unchanged. The autonomous runner owns ready `operation_execute` and
+`delegate_execute` actions. The operator refreshes and observes those actions;
+do not race the runner by submitting either execute action manually. Operator
+commands remain appropriate for authority-projected checkpoints, recovery,
+terminal disposition, and cancellation; the `jq` selectors must find a
+returned action before invoking `flow command`:
+
+```sh
+RUN_JSON="$RECEIPTS/run.json"
+
+ACTION="$(jq -ce '.views.operator.legal_actions[] |
+  select(.type == "checkpoint_decision" and .decision == "approve")' "$RUN_JSON")"
+flow command --input "$ACTION" --json | tee "$RECEIPTS/checkpoint.json"
+```
+
+Refresh `run.json` after every receipt or autonomous-runner observation. Do not
+reuse a stale watermark or materialize a command by hand. A card block exposes only its named
+`capability_grant` or `revision_decision`; there is no generic unblock. An
+operation-bound checkpoint requires a fresh `checkpoint_decision`, and an
+uncertain effect requires the exact returned recovery action rather than a
+retry guess.
+
+## Fresh runtime limits and diagnosis
+
+Set finite limits in the request, such as `max_elapsed_seconds: 600`. The
+projection reports both wall elapsed and admitted active execution in its
+`execution_time` view. Fresh typed time observations are checked at launch,
+before dispatch, at receipt/failure, at cancellation/settlement, and at timer
+evaluation. An uncertain or straddling bound blocks new admission. Passive
+checkpoint and retained waits are not active execution capacity, but they still
+appear in wall elapsed.
+
+For an operational failure, preserve the returned evidence and inspect only
+public projections:
+
+```sh
+flow status --json | jq '{state,runner,error,runner_error}'
+flow query --input "$(jq -cn --arg run_id "$RUN_ID" '{run_id:$run_id}')" --json \
+  | tee "$RECEIPTS/diagnosis.json" \
+  | jq '{phase,admission,execution_time,cards,blocks,effects,legal_actions,
+         result_bindings,views:{operator:.views.operator}}'
+```
+
+Sanitized runner errors and typed effect failures are actionable observations,
+not proof that an external effect is absent. A missing receipt retains the
+attempt, claims, and idempotency identity. For `read_only` or
+`caller_idempotent`, use the returned `recovery` action; for `reconcilable`,
+observe first and invoke only after positive provider evidence of absence; for
+`one_shot_uncertain`, adopt exact presence or use the returned
+`terminal_disposition`/checkpoint path. When an attempt cap is exhausted,
+submit only the returned `terminal_disposition` action:
+
+```sh
+TERMINAL="$(jq -ce '.views.operator.legal_actions[] |
+  select(.type == "terminal_disposition")' "$RECEIPTS/diagnosis.json")"
+flow command --input "$TERMINAL" --json | tee "$RECEIPTS/terminal-disposition.json"
+```
+
+Never reset a retry budget or repeat an uncertain effect because a process
+exited.
+
+An interrupted direct-commit operation may retain a per-effect reservation without a completed commit record, or a recorded commit whose ref changed before ordinary index publication. Both remain indeterminate; missing records and an unchanged index tree do not prove absence or permit replay. A retained ordinary index lock is not released by age or owner restart. Preserve the returned effect identity, workspace claims and Git evidence, query the current public projection, and follow only its legal actions. Do not delete reservation records, force-unlock Git, or rewrite the index as automatic recovery. If a separate explicitly authorized repair restores the exact recorded ref, commit, tree and clean index, reconciliation can adopt that existing commit; it never constructs a replacement.
+
+The direct-commit operation rejects every defined filter attribute, including explicit -filter and sentinel-looking driver names, as candidate_commit_external_filter_unsupported; only unspecified filter attributes are supported.
+
+Cancellation is irreversible convergence. Select the exact authority-projected
+action and submit it with its current watermark:
+
+```sh
+RUN_JSON="$RECEIPTS/diagnosis.json"
+CANCEL="$(jq -ce '.views.operator.legal_actions[] |
+  select(.type == "cancel")' "$RUN_JSON")"
+flow command --input "$CANCEL" --json | tee "$RECEIPTS/cancel.json"
+```
+
+Cancellation stops new admission, fences uninvoked intents, preserves accepted
+evidence, abandons incomplete attempts, and quarantines outstanding or late
+effects. A quarantined result cannot satisfy a dependency. If no `cancel`
+action is returned, refresh the projection and follow the action that is
+actually legal.
+
+### Settle a cancelled workspace
+
+After cancellation, process retirement alone does not release a quarantined
+workspace claim. Query the same run through its retained local client. If the
+public projection offers `recovery: settle_cancelled_workspace`, inspect that
+exact action and submit it with `command --input-file`. This explicit settlement
+requires every invoked native task to have a bound positive retirement receipt,
+no unresolved external operation, the sole exact workspace claim, and a fresh
+registered clean Git observation equal to the recorded baseline. It releases the
+claim atomically while retaining the cancellation and settlement history.
+
+A registered project check runs after direct commit and capture. Its cancelled
+run may instead offer `recovery: settle_cancelled_capture`. This action explicitly
+accepts the exact retained captured Git state, rather than the original pre-writer
+baseline. Inspect `accepted_git` and the bound commit, capture and check receipt
+digests before accepting it. It requires successful bound direct commit/capture,
+a complete positively retired check result, every native task retired, and no
+unknown or unresolved external operation. Current Git must be clean and exactly
+equal to that capture. From a fresh run query, retain and submit only the returned
+action through the same local client:
+
+```sh
+jq -ce '.views.operator.legal_actions[] |
+  select(.type == "recovery" and .recovery == "settle_cancelled_capture")' \
+  "$RUN_JSON" > "$RECEIPTS/accept-retained-capture.json"
+"$LOCAL_CLIENT" command --input-file "$RECEIPTS/accept-retained-capture.json" --json
+```
+
+The atomic settlement retains the cancelled phase and prior evidence, releases
+the exact old claim and reobserves the accepted capture for the next feature in
+the same repository authority. It grants no approval and performs no rollback.
+An exact duplicate action returns its existing receipt; stale watermarks require
+a fresh query and inspection.
+
+Dirty or changed Git state, missing retirement proof, and unsupported invoked
+external operations remain blocked with a concrete rejection. This observes the
+managed Git baseline; it does not establish that ignored or ambient filesystem
+writes were undone. Never delete authority records or manufacture a low-level
+claim-release command to bypass the public settlement.
+
+## Same-boot recovery and explicit reboot admission
+
+If a client or owner process exits during a run, restart the owner and query
+the same returned `RUN_ID`:
+
+```sh
+flow start --json | tee "$RECEIPTS/restarted-owner.json"
+flow query --input "$(jq -cn --arg run_id "$RUN_ID" '{run_id:$run_id}')" \
+  --json | tee "$RECEIPTS/recovered-run.json"
+```
+
+same-boot recovery replays `RunAuthority`, adopts exact child/delegate
+identities, and reconciles unresolved effects. The autonomous owner continues
+safe authority-projected work; an operator does not manually advance ordinary
+ready cards. A competing process remains read-only and cannot take over by
+timeout, heartbeat age, or PID guess.
+
+After a host reboot, restart or reconnect the owner. Each nonterminal run is
+suspended. Query the affected run again into a fresh post-reboot projection,
+validate that projection and its current watermark, and submit only its exact
+`reboot_admission` action from that fresh file:
+
+```sh
+flow start --json | tee "$RECEIPTS/post-reboot-owner.json"
+POST_REBOOT="$RECEIPTS/post-reboot-run.json"
+flow query --input "$(jq -cn --arg run_id "$RUN_ID" '{run_id:$run_id}')" \
+  --json | tee "$POST_REBOOT"
+POST_REBOOT_WATERMARK="$(jq -er \
+  '.views.operator.authority_watermark' "$POST_REBOOT")"
+jq -e --arg run_id "$RUN_ID" --arg watermark "$POST_REBOOT_WATERMARK" '
+  (.run_id == $run_id) and
+  (.admission == "suspended_after_reboot") and
+  (.views.operator.authority_watermark == $watermark) and
+  ([.views.operator.legal_actions[] |
+    select(.type == "reboot_admission" and
+           .expected_watermark == $watermark)] | length == 1)
+' "$POST_REBOOT"
+ADMIT="$(jq -ce --arg watermark "$POST_REBOOT_WATERMARK" \
+  '.views.operator.legal_actions[] |
+   select(.type == "reboot_admission" and
+          .expected_watermark == $watermark)' "$POST_REBOOT")"
+flow command --input "$ADMIT" --json | tee "$RECEIPTS/reboot-admission.json"
+```
+
+Admission rechecks the catalog, route snapshot, capability envelopes,
+operation and validator contracts, limits, typed time facts, subject
+generations, and every unresolved-effect observation. A changed or uncertain
+fact remains blocked. Child runs require independent `reboot_admission`; a
+parent action never admits a child. One-shot effects may be adopted only with
+exact presence evidence and are never retried on absence.
+
+## Candidate inspection and local review
+
+When feature verify succeeds, independently refresh the exact run projection.
+Require the terminal `succeeded` phase and a returned candidate
+reference before extracting its ID. Do not predict its ID or Git SHA:
+
+```sh
+COMPLETED="$RECEIPTS/completed-run.json"
+flow query --input "$(jq -cn --arg run_id "$RUN_ID" '{run_id:$run_id}')" \
+  --json | tee "$COMPLETED"
+jq -e --arg run_id "$RUN_ID" '
+  (.run_id == $run_id) and
+  (.phase == "succeeded") and
+  ((.review_candidate_reference.candidate_id | type) == "string")
+' "$COMPLETED"
+CANDIDATE_ID="$(jq -er '.review_candidate_reference.candidate_id' "$COMPLETED")"
+flow query --input "$(jq -cn --arg id "$CANDIDATE_ID" \
+  '{contract:"work.review/v1",subject_id:$id}')" --json \
+  | tee "$RECEIPTS/candidate.json"
+jq -e --arg id "$CANDIDATE_ID" '
+  (.schema == "work.review-candidate-projection/v1") and
+  (.contract == "work.review/v1") and
+  (.subject_id == $id) and
+  (.status == "sealed") and
+  (.candidate.candidate_id == $id) and
+  (.candidate_fingerprint == .candidate.candidate_fingerprint) and
+  ((.watermark | type) == "string") and
+  ((.workspace.subject_id | type) == "string") and
+  ((.workspace.generation | type) == "number") and
+  ((.workspace.mutation_epoch | type) == "number") and
+  ((.workspace.fingerprint | type) == "string")
+' "$RECEIPTS/candidate.json"
+```
+
+The candidate projection must show a sealed candidate with clean workspace
+generation, mutation epoch, exact Git commit/tree, retained artifact bytes,
+Git retention, and an active generation-bound `flow.resource-handoff/v1`.
+`stale`, `blocked`, dirty, tainted, missing, mismatched, or unresolved
+observations remove review authorization while preserving history. A consumer
+pins the exact handoff and rechecks it before mutation; it never selects
+`latest`.
+
+The candidate is not itself a review. The public `review/local` path starts by
+asking the owner for one bounded, authority-derived preparation envelope. The
+request selects the exact candidate, finding lenses, and read-only Drovr route
+choices; it contains no authority facts. Use the candidate fingerprint returned
+by the candidate projection, never a value copied from this document:
+
+```sh
+CANDIDATE_FINGERPRINT="$(jq -er '.candidate_fingerprint' \
+  "$RECEIPTS/candidate.json")"
+jq -cn --arg id "$CANDIDATE_ID" --arg fingerprint "$CANDIDATE_FINGERPRINT" '{
+  schema:"flow.query/v1",
+  query:"review_preparation_facts",
+  candidate_id:$id,
+  candidate_fingerprint:$fingerprint,
+  selection:{
+    schema:"flow.review-preparation-selection/v1",
+    target:{candidate_id:$id,candidate_fingerprint:$fingerprint},
+    lenses:["security"],
+    routes:{
+      lenses:{security:{launch:{harness:"codex",role:"reviewer",capability:"read-only"}}},
+      critic:{launch:{harness:"claude",role:"reviewer",capability:"read-only"}}
+    }
+  }
+}' > "$RECEIPTS/review-preparation-query.json"
+flow query --input "$(<"$RECEIPTS/review-preparation-query.json")" --json \
+  | tee "$RECEIPTS/review-preparation-facts.json"
+jq -e --arg id "$CANDIDATE_ID" --arg fingerprint "$CANDIDATE_FINGERPRINT" '
+  (.schema == "flow.review-preparation-facts/v1") and
+  (.candidate.candidate_id == $id) and
+  (.candidate.candidate_fingerprint == $fingerprint) and
+  ([.route.bindings[].card_id] | index("review-lens-security")) != null and
+  ([.route.bindings[].card_id] | index("review-critic")) != null
+' "$RECEIPTS/review-preparation-facts.json"
+```
+
+Prepare the actual predefined review definition from that returned envelope.
+The delegation descriptions and route bindings below are selected from the
+same authority response; the operator does not invent them. The owner may
+observe the routes asynchronously, so a transport client must await the query
+before preparing:
+
+```sh
+jq -cn --slurpfile candidate "$RECEIPTS/candidate.json" \
+  --slurpfile facts "$RECEIPTS/review-preparation-facts.json" \
+  --slurpfile request "$RECEIPTS/review-preparation-query.json" \
+  --arg fingerprint "$CANDIDATE_FINGERPRINT" '
+  ($candidate[0]) as $candidate |
+  ($facts[0]) as $facts |
+  ($request[0]) as $request |
+  ($facts.route.bindings | map({key:.card_id,value:.}) | from_entries) as $routes |
+  {
+    schema:"flow.predefined-flow-selection/v1",
+    definition:"review/v1",
+    inputs:{
+      schema:"flow.review-request/v1",
+      target:{
+        schema:"flow.review-local-candidate/v1",
+        candidate:$candidate.candidate,
+        candidate_fingerprint:$fingerprint,
+        candidate_authority_watermark:$candidate.watermark,
+        lifecycle_generation:$candidate.generation
+      },
+      lenses:["security"],
+      preparation_selection:$request.selection,
+      preparation_facts:$facts,
+      delegation:{
+        schema:"flow.review-delegation-bindings/v1",
+        lenses:{security:{
+          description:$routes["review-lens-security"].description,
+          route:$routes["review-lens-security"].route
+        }},
+        critic:{
+          description:$routes["review-critic"].description,
+          route:$routes["review-critic"].route
+        }
+      }
+    },
+    dark_opt_in:{
+      schema:"flow.dark-opt-in/v1",
+      release_id:"flow-release-1.0-dark/v1",
+      purpose:"sacrificial_qualification"
+    }
+  }
+' > "$RECEIPTS/review-prepare-request.json"
+flow prepare --input "$(<"$RECEIPTS/review-prepare-request.json")" --json \
+  | tee "$RECEIPTS/review-prepared.json"
+jq -e '.schema == "flow.prepared-run/v1" and
+  .selection.inputs.preparation_facts.schema == "flow.review-preparation-facts/v1"' \
+  "$RECEIPTS/review-prepared.json"
+```
+
+Launch only the returned review bundle and its returned confirmation. Copy the
+closed authority observation from that bundle unchanged. Fresh launch-time
+revalidation checks the candidate, workspace, selected provider descriptions,
+route, catalog, operation and validator contracts, time source, and required
+authority bindings. Any replay drift is a typed fail-closed rejection. The
+same retained authorities remain usable after the producer client exits or is
+restarted:
+
+```sh
+jq -cn --slurpfile prepared "$RECEIPTS/review-prepared.json" '{
+  prepared:$prepared[0],
+  dark_opt_in:{
+    schema:"flow.dark-opt-in/v1",
+    release_id:"flow-release-1.0-dark/v1",
+    purpose:"sacrificial_qualification"
+  },
+  confirmation:{
+    schema:"flow.predefined-flow-confirmation-decision/v1",
+    decision:"accept",
+    bundle_digest:$prepared[0].bundle_digest,
+    confirmation_digest:$prepared[0].confirmation_digest
+  },
+  closed_facts:{
+    schema:"flow.closed-fact-observation/v1",
+    bundle_digest:$prepared[0].bundle_digest,
+    facts:$prepared[0].explicit_facts
+  }
+}' > "$RECEIPTS/review-launch-request.json"
+flow launch --input "$(<"$RECEIPTS/review-launch-request.json")" --json \
+  | tee "$RECEIPTS/review-launch.json"
+```
+
+Issue 84's real feature/candidate plus separate review remains `not_run`, as do
+issue 44's mixed delegation and issue 46's host recovery/concurrency/rendering
+scenarios. These instructions do not claim a live or billed exercise. After a
+successful launch, use the inbox and review projection commands below; their
+rendered provenance is owned by `ReviewAuthority`, not by the preparation
+request.
+
+Local review is the supported human route. It is a projection-only consumer
+such as tuicr; `ReviewAuthority` owns review lifecycle and `FlowRuntime` owns
+the command. The review inbox is the disposable
+`flow.review-inbox-projection/v1` view. The following commands are conditional
+on a separately authorized `review/local` run having already produced an exact
+current `flow.review-projection/v1`; this guide does not produce that run.
+Refresh the inbox only after that run succeeds, then select the exact current
+review item. Derive `REVIEW_ID` from
+the item's `.review_id`; do not derive it from `CANDIDATE_ID` or construct a
+`review:<candidate-fingerprint>:<generation>` identity. Materialize an action
+using the public `work.review-human-command/v1` shape: remove its
+presentation-only `operator_input`, add only values the operator supplied, and
+send the unchanged authority fields.
+
+```sh
+flow query --input '{"schema":"flow.query/v1","query":"review_inbox"}' \
+  --json | tee "$RECEIPTS/review-inbox.json"
+if jq -e --arg candidate "$CANDIDATE_ID" '
+  any(.items[]; .candidate_id == $candidate and
+    (.review == null or .review_id == .candidate_id))
+' "$RECEIPTS/review-inbox.json" >/dev/null; then
+  echo "candidate-only inbox item is not a review; refresh after review/v1" >&2
+  exit 1
+fi
+ITEM="$(jq -ce --arg candidate "$CANDIDATE_ID" '
+  .items[] | select(.candidate_id == $candidate and
+    .review_id != .candidate_id and
+    .review.schema == "flow.review-projection/v1" and
+    .review.current == true)
+' "$RECEIPTS/review-inbox.json")"
+REVIEW_ID="$(jq -er '.review_id' <<<"$ITEM")"
+jq -e --arg review "$REVIEW_ID" --arg candidate "$CANDIDATE_ID" '
+  (.review_id == $review) and
+  (.candidate_id == $candidate) and
+  (.review_id != .candidate_id) and
+  (.review.schema == "flow.review-projection/v1") and
+  (.review.current == true)
+' <<<"$ITEM"
+SESSION_ID="session:${REVIEW_ID}:operator"
+START="$(jq -ce --arg review_id "$REVIEW_ID" --arg session "$SESSION_ID" \
+  '.legal_actions[] | select(.type == "review_session_start" and
+    .review_id == $review_id) | del(.operator_input) |
+    . + {session_id:$session}' <<<"$ITEM")"
+flow command --input "$START" --json | tee "$RECEIPTS/review-session.json"
+
+REVIEW="$(flow query --input "$(jq -cn --arg id "$REVIEW_ID" \
+  '{contract:"work.review/v1",subject_id:$id}')" --json)"
+ACTION="$(jq -ce --arg review_id "$REVIEW_ID" \
+  --arg id "comment:${REVIEW_ID}:operator" \
+  --arg body "The retained candidate is ready for review." \
+  '.legal_actions[] | select(.type == "review_comment" and
+    .review_id == $review_id) \
+   | del(.operator_input) | . + {comment_id:$id,body:$body}' <<<"$REVIEW")"
+flow command --input "$ACTION" --json | tee "$RECEIPTS/review-comment.json"
+
+REVIEW="$(flow query --input "$(jq -cn --arg id "$REVIEW_ID" \
+  '{contract:"work.review/v1",subject_id:$id}')" --json)"
+ACTION="$(jq -ce --arg review_id "$REVIEW_ID" '.legal_actions[] |
+  select(.type == "review_disposition" and .review_id == $review_id) |
+  del(.operator_input) \
+  | . + {disposition:"accept"}' <<<"$REVIEW")"
+flow command --input "$ACTION" --json | tee "$RECEIPTS/review-disposition.json"
+
+REVIEW="$(flow query --input "$(jq -cn --arg id "$REVIEW_ID" \
+  '{contract:"work.review/v1",subject_id:$id}')" --json)"
+ACTION="$(jq -ce --arg review_id "$REVIEW_ID" '.legal_actions[] |
+  select(.type == "review_approval" and .decision == "approve" and
+    .review_id == $review_id) \
+  | del(.operator_input)' \
+  <<<"$REVIEW")"
+flow command --input "$ACTION" --json | tee "$RECEIPTS/review-approval.json"
+```
+
+Refresh the review after each command. Approval, finding disposition, and
+integration evidence must repeat the current review watermark, candidate
+fingerprint, and lifecycle generation. `review_integration` records evidence
+and authorization only; it never runs Git integration. The first release has
+no GitHub review, push, merge, publication, tracker, or forge action. Stop at
+the exact local review record and retained handoff.
+
+## Backup, restore, selector, and rollback
+
+Backup and restore use the same five-operation interface. The idle backup
+projection has no `backup_create` legal action, so submit this explicit typed
+request first. Every later reconcile or retry must be the exact action returned
+by a fresh projection. Stock production has no backup writer or restore adapter
+by default and returns typed unavailable outcomes until an approved adapter is
+configured; never add a private bypass or edit authority state:
+
+```sh
+BACKUP_REQUEST="$(jq -cn \
+  '{schema:"flow.command/v1",type:"backup_create"}')"
+set +e
+flow command --input "$BACKUP_REQUEST" --json \
+  > "$RECEIPTS/backup-create.stdout.json" \
+  2> "$RECEIPTS/backup-create.stderr.json"
+BACKUP_STATUS=$?
+set -e
+BACKUP_AVAILABLE=true
+if test -s "$RECEIPTS/backup-create.stderr.json" &&
+   jq -e '.schema == "flow.rejection/v1"' \
+     "$RECEIPTS/backup-create.stderr.json" >/dev/null; then
+  jq '{code,reason,outcome,legal_actions,authority_watermark}' \
+    "$RECEIPTS/backup-create.stderr.json" >&2
+  BACKUP_AVAILABLE=false
+elif test "$BACKUP_STATUS" -ne 0; then
+  cat "$RECEIPTS/backup-create.stderr.json" >&2
+  exit "$BACKUP_STATUS"
+fi
+
+# Continue only when the configured adapter returned an accepted receipt.
+if test "$BACKUP_AVAILABLE" = true; then
+  BACKUP="$(flow query --input \
+    '{"schema":"flow.query/v1","query":"backup"}' --json \
+    | tee "$RECEIPTS/backup-after-create.json")"
+  if jq -e '.state == "reconciling" or .state == "failed"' <<<"$BACKUP" >/dev/null; then
+    BACKUP_ACTION="$(jq -ce '.legal_actions[] |
+      select(.type == "backup_reconcile")' <<<"$BACKUP")"
+    flow command --input "$BACKUP_ACTION" --json \
+      | tee "$RECEIPTS/backup-reconcile.json"
+    BACKUP="$(flow query --input \
+      '{"schema":"flow.query/v1","query":"backup"}' --json \
+      | tee "$RECEIPTS/backup-after-reconcile.json")"
+  elif jq -e '.state == "retryable"' <<<"$BACKUP" >/dev/null; then
+    BACKUP_ACTION="$(jq -ce '.legal_actions[] |
+      select(.type == "backup_create")' <<<"$BACKUP")"
+    flow command --input "$BACKUP_ACTION" --json \
+      | tee "$RECEIPTS/backup-retry.json"
+    BACKUP="$(flow query --input \
+      '{"schema":"flow.query/v1","query":"backup"}' --json \
+      | tee "$RECEIPTS/backup-after-retry.json")"
+  fi
+  MANIFEST="$(jq -ce '.manifest // empty' <<<"$BACKUP" || \
+    jq -ce '.manifest' "$RECEIPTS/backup-create.stdout.json")"
+  test -n "$MANIFEST"
+fi
+```
+
+The backup manifest covers replacement authority, artifact manifests and
+bytes, legacy roots, external pointers, and Drovr obligations. A receipt-less
+backup is not assumed absent. To restore, use the exact returned backup
+manifest, enter the host-wide restore barrier, reconcile each returned domain
+action, and admit only the exact final action. If BACKUP_AVAILABLE is false,
+skip the restore block; stock production has no restore adapter to bypass:
+
+```sh
+if test "${BACKUP_AVAILABLE:-false}" != true; then
+  printf '%s\n' 'Skipping restore: backup writer/adapter is unavailable.'
+elif test -z "${MANIFEST:-}"; then
+  printf '%s\n' 'Skipping restore: no accepted backup manifest was returned.' >&2
+else
+RESTORE="$(jq -cn --argjson manifest "$MANIFEST" \
+  '{schema:"flow.command/v1",type:"restore",manifest:$manifest}')"
+set +e
+flow command --input "$RESTORE" --json \
+  > "$RECEIPTS/restore.stdout.json" \
+  2> "$RECEIPTS/restore.stderr.json"
+RESTORE_STATUS=$?
+set -e
+if test -s "$RECEIPTS/restore.stderr.json" &&
+   jq -e '.schema == "flow.rejection/v1"' \
+     "$RECEIPTS/restore.stderr.json" >/dev/null; then
+  jq '{code,reason,outcome,legal_actions,authority_watermark}' \
+    "$RECEIPTS/restore.stderr.json" >&2
+  exit "$RESTORE_STATUS"
+fi
+if test "$RESTORE_STATUS" -ne 0; then
+  cat "$RECEIPTS/restore.stderr.json" >&2
+  exit "$RESTORE_STATUS"
+fi
+
+RESTORE_STATE="$(flow query --input \
+  '{"schema":"flow.query/v1","query":"restore"}' --json)"
+RECONCILE="$(jq -ce '.legal_actions[] |
+  select(.type == "restore_reconcile")' <<<"$RESTORE_STATE")"
+flow command --input "$RECONCILE" --json \
+  | tee "$RECEIPTS/restore-reconcile.json"
+
+RESTORE_STATE="$(flow query --input \
+  '{"schema":"flow.query/v1","query":"restore"}' --json)"
+ADMIT_RESTORE="$(jq -ce '.legal_actions[] |
+  select(.type == "restore_admit")' <<<"$RESTORE_STATE")"
+flow command --input "$ADMIT_RESTORE" --json \
+  | tee "$RECEIPTS/restore-admit.json"
+fi
+```
+
+Restore remains blocked until database streams, artifact state, Git state,
+filesystem state, external effects, and Drovr obligations have exact
+reconciliation evidence. A failed component remains failed at the narrowest
+provable boundary; it is not repaired by deleting a suffix or fabricating a
+receipt.
+
+The launch selector is `config/flow/launch-policy.v1.json`. Its current
+selection is `legacy-claude/v1`; `flow-runtime/v1` has dark opt-in enabled but
+`launch_enabled: false`. Rollback changes only which implementation accepts
+future launches. It does not transfer, translate, resume, or delete runs made
+by another implementation, and re-enabling this exact release still requires
+normal compatibility and reboot admission. Do not edit the selector or ledger
+as an operator shortcut.
+
+## Executable example evidence
+
+The examples above are public-interface instructions. The retained receipts
+describe earlier deterministic or isolated local test executions. Current source
+qualification is `not_run`; those receipts do not qualify the candidate tree
+above. They do not authorize paid or live delegates, remote mutation, or a claim
+that issue 44 or issue 84 has passed. The issue 46 evidence has its own recorded
+host and scope and cannot qualify direct provider execution.
+
+The paths below are relative to `config/flow/` and are taken from the recipe
+source recipe declarations and the retained historical evidence:
+
+| Guide concern | Recipe ID | Generated receipt |
+| --- | --- | --- |
+| Owner lifecycle, status/query/watch/command, and same-boot/reboot | `host_fault_reboot` | `evidence/receipts/host-fault-reboot.tap` |
+| Runtime reboot and fresh time-bound observations | `production_runtime_reboot` | `evidence/receipts/production-runtime-reboot.tap` |
+| Exact prepare-confirm-launch production feature verify | `production_feature_verify` | `evidence/receipts/production-feature-verify.tap` |
+| Both Codex and Claude Drovr launch-contract coverage | `feature_review_drovr_conformance` | `evidence/receipts/feature-review-drovr.tap` |
+| Public Drovr finding/rejection contract | `public_drovr_finding_schema` | `evidence/receipts/public-drovr-finding-schema.tap` |
+| Production local-review process | `public_local_review_process` | `evidence/receipts/public-local-review-process.tap` |
+| Disabled and unsupported public routes | `public_host_negative_routes` | `evidence/receipts/public-host-negative-routes.tap` |
+| Legacy selector and dark admission boundary | `launch_selector` | `evidence/receipts/launch-selector.tap` |
+| Governed release-tree binding | `release_tree_integrity` | `evidence/receipts/release-tree-integrity.tap` |
+| Schema and contract catalog checks | `schema_contracts`; `contract_catalog` | `evidence/receipts/schema-contracts.tap`; `evidence/receipts/contract-catalog.tap` |
+
+The deterministic recipe records contract and fault behavior for the historical
+release-content digest stored in its qualification file. That record is not
+bound to the current ticket candidate. The current deterministic and production
+qualification records remain `not_run` until recaptured against their declared
+identities. The production-route records are isolated local process evidence.
+Neither substitutes for an operator's separately authorized disposable
+exercise or creates a future result identity. Read the returned public
+projections and receipts from the exact run before taking any legal action.
+
+## Evidence boundary and later expansion
+
+The retained historical qualification record is passed for its earlier
+environment and scope. The current ledger withholds deterministic and production
+route qualification as `not_run`; no current admission is claimed. A later scope
+requires a new manifest, content binding, and
+qualification evidence. In particular, issue 85 must refresh this guide and
+the compatibility/evidence records before issue 53 considers expanded parity
+or cutover.
+
+Feature verify and local review are the only supported routes in the default
+`flow-release-1.0-dark/v1` configuration. Feature
+test/mixed, spike, epic, GitHub review, tracker, forge, publication, merge,
+push, and remote mutation are disabled or unsupported and must remain visibly
+so in operator tooling. Never treat an unsupported outcome as a reason to
+touch private authority, alter a projection, or run a remote command.
+
+When the disposable exercise is complete, inspect the returned workspace,
+artifact, handoff, and Git-retention projections and settle every retention
+obligation first. Do not delete while a handoff is retained, a consumer is
+active, a subject is dirty or uncertain, or any cleanup action remains pending.
+After those obligations settle, stop only the recorded owner, verify that it is
+stopped, and remove only the exact `$FLOW_ROOT` created by this example:
+
+```sh
+test -n "${FLOW_ROOT:-}" && test -d "$FLOW_ROOT"
+flow status --json
+flow stop --json | tee "$RECEIPTS/owner-stop.json"
+flow status --json | tee "$RECEIPTS/owner-stopped.json"
+jq -e '.state == "stopped"' "$RECEIPTS/owner-stopped.json" >/dev/null
+FLOW_TMP_ROOT="${TMPDIR:-/tmp}"
+case "$FLOW_ROOT" in
+  "$FLOW_TMP_ROOT"/flow-operator.*)
+    test "$(dirname -- "$FLOW_ROOT")" = "$FLOW_TMP_ROOT"
+    ;;
+  *)
+    printf 'refusing to remove non-mktemp Flow root: %s\n' "$FLOW_ROOT" >&2
+    exit 1
+    ;;
+esac
+rm -rf -- "$FLOW_ROOT"
+```
+
+This final cleanup is limited to the unique disposable root. It is not a
+replacement for authority-projected workspace, artifact, handoff, or Git
+retention disposition.

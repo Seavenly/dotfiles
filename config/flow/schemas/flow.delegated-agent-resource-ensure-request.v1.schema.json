@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.delegated-agent-resource-ensure-request.v1.schema.json",
+  "title": "flow.delegated-agent-resource-ensure-request/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "owner", "workspace_claim", "launch", "launch_binding"],
+  "properties": {
+    "schema": { "const": "flow.delegated-agent-resource-ensure-request/v1" },
+    "resource_key": { "$ref": "#/$defs/digest" },
+    "owner": { "$ref": "#/$defs/owner" },
+    "workspace_claim": { "$ref": "#/$defs/workspaceClaim" },
+    "launch": { "$ref": "#/$defs/launch" },
+    "launch_binding": { "$ref": "#/$defs/launchBinding" }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "card_id", "route_key"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "card_id": { "type": "string", "minLength": 1 },
+        "route_key": { "type": "string", "minLength": 1 },
+        "managed_agent_binding_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "workspaceClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "authority",
+        "contract",
+        "subject_id",
+        "generation",
+        "mutation_epoch",
+        "fingerprint",
+        "access"
+      ],
+      "properties": {
+        "kind": { "const": "workspace" },
+        "authority": { "const": "WorkspaceAuthority" },
+        "contract": { "const": "work.workspace/v1" },
+        "subject_id": { "type": "string", "minLength": 1 },
+        "generation": { "type": "integer", "minimum": 1 },
+        "mutation_epoch": { "type": "integer", "minimum": 1 },
+        "fingerprint": { "$ref": "#/$defs/digest" },
+        "access": { "enum": ["read_only", "mutation"] },
+        "operation": { "type": "string", "minLength": 1 }
+      }
+    },
+    "launch": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["harness", "role", "model", "effort", "capability"],
+      "properties": {
+        "harness": { "enum": ["claude", "codex"] },
+        "role": { "type": ["string", "null"] },
+        "model": { "type": "string", "minLength": 1 },
+        "effort": { "enum": ["low", "medium", "high", "xhigh"] },
+        "capability": {
+          "enum": ["read-only", "on-approve", "workspace-write", "auto", "unrestricted"]
+        }
+      }
+    },
+    "launchBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description_digest",
+        "launch_comparison_key",
+        "effective_authority_comparison_key",
+        "configuration_watermark"
+      ],
+      "properties": {
+        "description_digest": { "$ref": "#/$defs/digest" },
+        "launch_comparison_key": { "$ref": "#/$defs/digest" },
+        "effective_authority_comparison_key": { "$ref": "#/$defs/digest" },
+        "configuration_watermark": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

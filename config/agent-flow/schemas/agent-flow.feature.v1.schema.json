@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.feature.v1.schema.json",
+  "title": "agent-flow.feature/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "run_id", "summary", "repo", "base", "branch", "kanban",
+    "external_ref", "acceptance", "slices", "verification", "limits"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.feature/v1" },
+    "run_id": { "$ref": "#/$defs/runId" },
+    "parent_run_id": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/runId" }],
+      "default": null
+    },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "repo": { "$ref": "#/$defs/absolutePath" },
+    "base": { "$ref": "#/$defs/revision" },
+    "branch": { "$ref": "#/$defs/branch" },
+    "kanban": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board", "task"],
+      "properties": {
+        "board": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+        "task": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "external_ref": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "pattern": "^(github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*|jira:[A-Za-z][A-Za-z0-9_]*-[1-9][0-9]*)$", "maxLength": 256 }
+      ]
+    },
+    "supersedes": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/runId" }
+      ],
+      "default": null
+    },
+    "acceptance": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": { "type": "string", "minLength": 1, "maxLength": 2000 }
+    },
+    "slices": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/slice" }
+    },
+    "verification": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/command" }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_slice_retries", "max_completeness_fixes", "max_critique_fixes", "max_elapsed_seconds"],
+      "properties": {
+        "max_slice_retries": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "max_completeness_fixes": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "max_critique_fixes": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "max_elapsed_seconds": { "type": "integer", "minimum": 60, "maximum": 604800 }
+      }
+    }
+  },
+  "$defs": {
+    "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "branch": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^(?!HEAD$)(?![0-9a-f]{40,64}$)(?![-./])(?!.*(?:\\.\\.|@\\{|[~^:?*\\\\\\[\\s]))(?!.*[./]$).+$" },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch", "sha"],
+      "properties": { "branch": { "$ref": "#/$defs/branch" }, "sha": { "$ref": "#/$defs/sha" } }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["argv"],
+      "properties": {
+        "argv": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "type": "string", "minLength": 1, "maxLength": 4096 } }
+      }
+    },
+    "slice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "verification"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "verification": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/command" } }
+      }
+    }
+  }
+}

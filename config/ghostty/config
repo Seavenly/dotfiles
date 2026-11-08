@@ -1,0 +1,30 @@
+# https://ghostty.org/docs/config
+theme = Rose Pine Moon
+
+font-family = CommitMono Nerd Font Mono
+font-style = Medium
+font-style-bold = Bold
+font-style-italic = Medium Italic
+font-style-bold-italic = Bold Italic
+font-size = 15
+
+cursor-style-blink = false
+shell-integration-features = no-cursor
+mouse-hide-while-typing = true
+
+adjust-cell-height = 30%
+adjust-cursor-height = 30%
+window-padding-balance = true
+window-padding-color = extend
+macos-titlebar-style = hidden
+
+link-url = true
+
+background-opacity = 0.9
+
+desktop-notifications = true
+
+quick-terminal-position = center
+quick-terminal-size = 800px,80%
+quick-terminal-animation-duration = 0.1
+keybind = global:cmd+backquote=toggle_quick_terminal

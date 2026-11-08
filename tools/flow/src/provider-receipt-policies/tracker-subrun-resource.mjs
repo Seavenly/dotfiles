@@ -1,0 +1,63 @@
+/** Versioned receipt policy owned by tracker, subrun, and resource modules. */
+
+export const TRACKER_SUBRUN_RESOURCE_RECEIPT_SCHEMA_FIELDS = new Map([
+  ["flow.resource-handoff/v1", new Set([
+    "attempt_id",
+    "durable_holder",
+    "managed_agent_binding",
+    "planning_identity",
+    "reason",
+    "resource",
+    "resource_binding",
+    "resource_projection",
+    "schema",
+    "terminal_disposition",
+    "turn_disposition",
+  ])],
+  ["flow.resource-cleanup-receipt/v1", new Set([
+    "outcome",
+    "request",
+    "schema",
+  ])],
+  ["flow.resource-cleanup-request/v1", new Set([
+    "contract",
+    "expected_watermark",
+    "preview_digest",
+    "schema",
+    "subject_id",
+  ])],
+  ["flow.git-retention-receipt/v1", new Set([
+    "commit_sha",
+    "ref",
+    "repository_id",
+    "retention_ref",
+    "schema",
+    "tree_sha",
+  ])],
+]);
+
+export const TRACKER_SUBRUN_RESOURCE_NESTED_FIELDS = new Set([
+  "agent_id",
+  "authority",
+  "body",
+  "clean",
+  "commit_id",
+  "commit_sha",
+  "content_sha256",
+  "fingerprint",
+  "generation",
+  "git",
+  "git_retention",
+  "id",
+  "mutation_epoch",
+  "owner",
+  "path",
+  "publication_digest",
+  "planning_identity",
+  "ref",
+  "repository",
+  "resource",
+  "resource_binding",
+  "tree_sha",
+  "type",
+]);

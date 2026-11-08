@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.delegate-execution-resource-selection.v1.schema.json",
+  "title": "flow.delegate-execution-resource-selection/v1",
+  "description": "A plan-time ID-only selection of an execution resource. RunAuthority resolves the selected authority binding before transmission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "kind",
+    "authority",
+    "contract",
+    "subject_id",
+    "fingerprint",
+    "access",
+    "authority_binding_id"
+  ],
+  "properties": {
+    "schema": { "const": "flow.delegate-execution-resource-selection/v1" },
+    "kind": { "enum": ["workspace", "artifact"] },
+    "authority": { "type": "string", "minLength": 1 },
+    "contract": { "type": "string", "minLength": 1 },
+    "subject_id": { "type": "string", "minLength": 1 },
+    "generation": { "type": "integer", "minimum": 1 },
+    "mutation_epoch": { "type": "integer", "minimum": 0 },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "access": { "enum": ["read_only", "mutation"] },
+    "operation": { "type": "string", "minLength": 1 },
+    "authority_binding_id": { "type": "string", "minLength": 1 }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["access"],
+        "properties": { "access": { "const": "mutation" } }
+      },
+      "then": {
+        "required": ["operation"],
+        "properties": {
+          "operation": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["kind"],
+        "properties": { "kind": { "const": "workspace" } }
+      },
+      "then": {
+        "properties": { "authority": { "const": "WorkspaceAuthority" } }
+      }
+    },
+    {
+      "if": {
+        "required": ["kind"],
+        "properties": { "kind": { "const": "artifact" } }
+      },
+      "then": {
+        "properties": { "authority": { "const": "ArtifactAuthority" } }
+      }
+    }
+  ]
+}

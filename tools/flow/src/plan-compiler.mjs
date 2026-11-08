@@ -1,0 +1,1969 @@
+import { isDirectDescription, directDescriptionIssue } from "./execution-contract.mjs";
+import {
+  digest,
+  freezeCanonical,
+  isPlainRecord,
+  uniqueCanonical,
+} from "./canonical.mjs";
+import {
+  hasActiveDependencyOnSuperseded,
+  hasDependencyCycle,
+} from "./plan-graph.mjs";
+import {
+  createDynamicPlanConfirmation,
+  createPreparedBundle,
+  createPredefinedFlowConfirmation,
+} from "./prepared-contracts.mjs";
+import {
+  effectClassPolicy,
+  operationRegistrationIssue,
+  registeredOperation,
+} from "./operation-effects.mjs";
+import {
+  isTrackerProgressContract,
+  validateTrackerProgressBinding,
+} from "./tracker-progress.mjs";
+import {
+  SUBRUN_CONTRACT,
+  SUBRUN_RECEIPT_VALIDATOR,
+} from "./subrun-effects.mjs";
+import {
+  canonicalizeSubjectGenerations,
+  canonicalizeTimeFacts,
+  validateRebootFacts,
+} from "./reboot-facts.mjs";
+import { validateFeatureRepairContract } from "./feature-repair-contract.mjs";
+import {
+  authorityGeneration,
+  authorityWatermark,
+  normalizeRequiredAuthorities,
+  prepareAuthorityBindings,
+} from "./authority-bindings.mjs";
+import {
+  applyResultBindingDelta,
+  normalizeResultBindingDelta,
+  validateResultBindingDeclarations,
+} from "./result-bindings.mjs";
+import {
+  DELEGATE_RESOURCE_CONTRACTS,
+  DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA,
+  DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+  validateDelegateInputInstructions,
+  validateDelegateOutputSchemas,
+  validateDelegateOutputRequirements,
+  validateDelegateTaskInputs,
+} from "./delegate-input-envelope.mjs";
+import { flowGrantIdsForDrovrCapability } from "./delegate-capabilities.mjs";
+
+const EXECUTOR_KINDS = ["delegate", "operation", "checkpoint", "subrun"];
+const CHECKPOINT_CONTRACT = "flow.checkpoint/confirmation/v1";
+const CHECKPOINT_VALIDATOR = "flow.validator/checkpoint-decision/v1";
+const OPERATION_RECEIPT_VALIDATOR = "flow.validator/operation-receipt/v1";
+const DELEGATE_CONTRACT = "flow.delegated-agent-port/v1";
+const CARD_ARRAY_FIELDS = [
+  "outputs",
+  "success_criteria",
+  "validators",
+  "data_references",
+  "evidence_references",
+  "resource_claims",
+];
+const FACT_ARRAY_FIELDS = [
+  "capability_envelopes",
+  "operation_contracts",
+  "validator_contracts",
+  "resource_claims",
+  "block_observations",
+  "time_facts",
+  "subject_generations",
+];
+const LIMIT_FIELDS = [
+  "max_cards",
+  "max_revisions",
+  "max_cards_per_revision",
+  "max_capabilities",
+  "max_resources",
+  "max_elapsed_seconds",
+];
+const PREDEFINED_SELECTION_SCHEMA = "flow.predefined-flow-selection/v1";
+const PREDEFINED_DEFINITION_SCHEMA = "flow.predefined-definition/v1";
+const PREDEFINED_DEFINITION_ID = /^[A-Za-z0-9._-]+\/v[0-9]+$/;
+
+export function applyRevisionGraphChanges(graph, changes) {
+  const cards = [...graph.cards, ...changes.add_cards]
+    .map((card) => structuredClone(card));
+  for (const { from, to } of changes.add_edges) {
+    const target = cards.find(({ id }) => id === to);
+    target.dependencies = [...new Set([...target.dependencies, from])].sort();
+  }
+  const revised = { ...graph, cards };
+  if (Object.hasOwn(graph, "result_bindings")) {
+    revised.result_bindings = applyResultBindingDelta({
+      baseBindings: graph.result_bindings,
+      cards: graph.cards,
+      changes,
+      delta: changes.result_binding_changes,
+    });
+  } else if (Object.hasOwn(changes, "result_binding_changes")) {
+    throw new TypeError(
+      "result binding delta requires a base result binding declaration set",
+    );
+  }
+  return revised;
+}
+
+const CARD_BLOCK_FIELDS = [
+  "schema",
+  "id",
+  "type",
+  "trigger",
+  "required_capabilities",
+  "revision_template_ids",
+];
+
+export class DynamicPlanValidationError extends Error {
+  constructor(reason, message) {
+    super(message);
+    this.name = "DynamicPlanValidationError";
+    this.reason = reason;
+  }
+}
+
+export function compileDynamicPlan(proposal, options = {}) {
+  const validatedRevisionTemplates = validateDynamicPlan(proposal, options);
+  const graph = canonicalizeDynamicGraph(proposal.graph);
+  const explicitFacts = canonicalizeExplicitFacts(proposal.explicit_facts);
+  const revisionTemplates = canonicalizeRevisionTemplates(
+    validatedRevisionTemplates ?? proposal.revision_templates ?? [],
+  );
+  const planFingerprint = digest(graph);
+  const bundle = createPreparedBundle({
+    kind: "dynamic",
+    graph,
+    planFingerprint,
+    requestedAuthority: proposal.requested_authority,
+    explicitFacts,
+    revisionTemplates,
+  });
+  const bundleDigest = digest(bundle);
+  const confirmation = createDynamicPlanConfirmation({
+    bundleDigest,
+    graph,
+    requestedAuthority: proposal.requested_authority,
+    explicitFacts,
+    revisionTemplates,
+  });
+  const confirmationDigest = digest(confirmation);
+
+  return freezeCanonical({
+    schema: "flow.prepared-run/v1",
+    kind: "dynamic",
+    bundle_digest: bundleDigest,
+    plan_fingerprint: planFingerprint,
+    confirmation_digest: confirmationDigest,
+    graph,
+    requested_authority: proposal.requested_authority,
+    explicit_facts: explicitFacts,
+    revision_templates: revisionTemplates,
+    confirmation,
+  });
+}
+
+export const PlanCompiler = Object.freeze({
+  compile: compileDynamicPlan,
+  compileDynamic: compileDynamicPlan,
+  compilePredefined: compilePredefinedFlowSelection,
+});
+
+export class PredefinedFlowValidationError extends Error {
+  constructor(reason, message, options) {
+    super(message, options);
+    this.name = "PredefinedFlowValidationError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * Snapshot the trusted definition registry when a runtime is constructed.
+ * Selection input never carries a graph, executor contract, or confirmation
+ * metadata. Those values come only from this registration and its compiler.
+ */
+export function snapshotPredefinedDefinitions(definitions = {}) {
+  if (definitions === null ||
+      !(definitions instanceof Map) &&
+      (typeof definitions !== "object" || Array.isArray(definitions))) {
+    throw new TypeError("predefinedDefinitions must be an object or Map");
+  }
+  const entries = definitions instanceof Map
+    ? [...definitions.entries()]
+    : Object.entries(definitions);
+  const snapshot = new Map();
+  for (const [key, definition] of entries) {
+    const registration = normalizePredefinedDefinition(definition, key);
+    if (snapshot.has(registration.identity.id)) {
+      throw new TypeError(
+        `predefined definition is registered more than once: ${registration.identity.id}`,
+      );
+    }
+    snapshot.set(registration.identity.id, registration);
+  }
+  return snapshot;
+}
+
+export function isPredefinedFlowSelection(value) {
+  return value?.schema === PREDEFINED_SELECTION_SCHEMA;
+}
+
+export function compilePredefinedFlowSelection(
+  selection,
+  registration,
+  { registeredOperations = null, registeredAuthorities = null } = {},
+) {
+  const normalizedSelection = canonicalizePredefinedSelection(selection);
+  if (!registration) {
+    invalidPredefined(
+      "unknown_predefined_definition",
+      `predefined definition is not registered: ${normalizedSelection.definition}`,
+    );
+  }
+
+  const context = {
+    schema: PREDEFINED_SELECTION_SCHEMA,
+    definition: registration.identity,
+    inputs: normalizedSelection.inputs,
+    explicit_facts: normalizedSelection.explicit_facts,
+  };
+  const generated = runPredefinedCompiler(registration, context);
+  const proposal = normalizePredefinedProposal(generated, normalizedSelection);
+  const validatedRevisionTemplates = validateDynamicPlan(proposal, {
+    registeredOperations,
+    allowUnboundResourceSelections: true,
+  });
+
+  let requiredAuthorities;
+  try {
+    requiredAuthorities = prepareAuthorityBindings(
+      registration.required_authorities,
+      registeredAuthorities,
+      {
+        definition: registration.identity,
+        selection: normalizedSelection,
+      },
+    );
+  } catch (error) {
+    if (error?.name === "RequiredAuthorityError") {
+      invalidPredefined(
+        error.code,
+        `required authority is unavailable: ${error.reason}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+
+  validatePreparedDelegateResourceBindings(proposal, requiredAuthorities);
+
+  const graph = canonicalizeDynamicGraph(proposal.graph);
+  const explicitFacts = canonicalizeExplicitFacts(proposal.explicit_facts);
+  const revisionTemplates = canonicalizeRevisionTemplates(
+    validatedRevisionTemplates ?? proposal.revision_templates ?? [],
+  );
+  const planFingerprint = digest(graph);
+  const confirmationFacts = predefinedConfirmationFacts(
+    registration,
+    graph,
+    revisionTemplates,
+  );
+  const bundle = createPreparedBundle({
+    kind: "predefined",
+    definition: registration.identity,
+    selection: normalizedSelection,
+    graph,
+    planFingerprint,
+    requestedAuthority: proposal.requested_authority,
+    explicitFacts,
+    revisionTemplates,
+    promisedOutcomes: confirmationFacts.promised_outcomes,
+    negativeOutcomes: confirmationFacts.negative_outcomes,
+    routes: confirmationFacts.routes,
+    trustPosture: confirmationFacts.trust_posture,
+    requiredAuthorities,
+  });
+  const bundleDigest = digest(bundle);
+  const confirmation = createPredefinedFlowConfirmation({
+    bundleDigest,
+    definition: registration.identity,
+    inputs: normalizedSelection.inputs,
+    promisedOutcomes: confirmationFacts.promised_outcomes,
+    negativeOutcomes: confirmationFacts.negative_outcomes,
+    requestedAuthority: proposal.requested_authority,
+    limits: explicitFacts.limits,
+    routes: confirmationFacts.routes,
+    trustPosture: confirmationFacts.trust_posture,
+    revisionTemplates,
+    requiredAuthorities,
+  });
+  const confirmationDigest = digest(confirmation);
+
+  return freezeCanonical({
+    schema: "flow.prepared-run/v1",
+    kind: "predefined",
+    bundle_digest: bundleDigest,
+    plan_fingerprint: planFingerprint,
+    confirmation_digest: confirmationDigest,
+    definition: registration.identity,
+    selection: normalizedSelection,
+    graph,
+    requested_authority: proposal.requested_authority,
+    explicit_facts: explicitFacts,
+    revision_templates: revisionTemplates,
+    promised_outcomes: confirmationFacts.promised_outcomes,
+    negative_outcomes: confirmationFacts.negative_outcomes,
+    routes: confirmationFacts.routes,
+    trust_posture: confirmationFacts.trust_posture,
+    required_authorities: requiredAuthorities,
+    confirmation,
+  });
+}
+
+export function canonicalizePredefinedSelection(selection) {
+  if (!isPlainRecord(selection) ||
+      Object.keys(selection).sort().join(",") !==
+        "definition,explicit_facts,inputs,schema" ||
+      selection.schema !== PREDEFINED_SELECTION_SCHEMA ||
+      typeof selection.definition !== "string" ||
+      !selection.definition ||
+      !isPlainRecord(selection.inputs) ||
+      !hasCompleteIdentityFacts(selection.explicit_facts)) {
+    invalidPredefined(
+      "invalid_predefined_selection",
+      "predefined flow selection must name a registered definition, inputs, and explicit facts",
+    );
+  }
+  let explicitFacts;
+  try {
+    explicitFacts = canonicalizeExplicitFacts(selection.explicit_facts);
+  } catch {
+    invalidPredefined(
+      "invalid_predefined_selection",
+      "predefined flow selection explicit facts are invalid",
+    );
+  }
+  return freezeCanonical({
+    schema: PREDEFINED_SELECTION_SCHEMA,
+    definition: selection.definition,
+    inputs: selection.inputs,
+    explicit_facts: explicitFacts,
+  });
+}
+
+function normalizePredefinedDefinition(definition, key) {
+  if (!isPlainRecord(definition)) {
+    throw new TypeError(`predefined definition registration is invalid: ${key}`);
+  }
+  const fields = [
+    "compile",
+    "contract",
+    "id",
+    "negative_outcomes",
+    "promised_outcomes",
+    "schema",
+    "trust_posture",
+    "required_authorities",
+  ];
+  const keys = Reflect.ownKeys(definition);
+  const requiredAuthoritiesPresent = Object.hasOwn(
+    definition,
+    "required_authorities",
+  );
+  const allowedFields = requiredAuthoritiesPresent
+    ? fields
+    : fields.filter((field) => field !== "required_authorities");
+  if (keys.length !== allowedFields.length ||
+      keys.some((key) => typeof key !== "string" || !allowedFields.includes(key))) {
+    throw new TypeError(`predefined definition registration is incomplete: ${key}`);
+  }
+  if (definition.schema !== PREDEFINED_DEFINITION_SCHEMA) {
+    throw new TypeError(`predefined definition contract is invalid: ${key}`);
+  }
+  if (typeof definition.id !== "string" ||
+      !PREDEFINED_DEFINITION_ID.test(definition.id) ||
+      key !== definition.id) {
+    throw new TypeError(`predefined definition identity is invalid: ${key}`);
+  }
+  if (typeof definition.contract !== "string" ||
+      definition.contract.trim() === "" ||
+      typeof definition.compile !== "function" ||
+      !Array.isArray(definition.promised_outcomes) ||
+      !Array.isArray(definition.negative_outcomes) ||
+      !isPlainRecord(definition.trust_posture)) {
+    throw new TypeError(`predefined definition registration is incomplete: ${key}`);
+  }
+  const identity = freezeCanonical({
+    schema: PREDEFINED_DEFINITION_SCHEMA,
+    id: definition.id,
+    contract: definition.contract,
+  });
+  let requiredAuthorities;
+  try {
+    requiredAuthorities = normalizeRequiredAuthorities(
+      definition.required_authorities ?? [],
+    );
+  } catch {
+    throw new TypeError(`predefined definition required authorities are invalid: ${key}`);
+  }
+  return {
+    identity,
+    compile: definition.compile,
+    promised_outcomes: freezeCanonical(definition.promised_outcomes),
+    negative_outcomes: freezeCanonical(definition.negative_outcomes),
+    trust_posture: freezeCanonical(definition.trust_posture),
+    required_authorities: requiredAuthorities,
+  };
+}
+
+function runPredefinedCompiler(registration, context) {
+  let generated;
+  try {
+    generated = registration.compile(context);
+  } catch (error) {
+    if (error instanceof PredefinedFlowValidationError) throw error;
+    invalidPredefined(
+      "invalid_predefined_definition",
+      `predefined definition compiler failed: ${registration.identity.id}`,
+      { cause: error },
+    );
+  }
+  if (generated === undefined || generated === null) {
+    invalidPredefined(
+      "invalid_predefined_definition",
+      `predefined definition did not produce a plan: ${registration.identity.id}`,
+    );
+  }
+  return generated;
+}
+
+function normalizePredefinedProposal(generated, selection) {
+  if (!isPlainRecord(generated) ||
+      generated.schema !== "flow.dynamic-plan-proposal/v1" ||
+      generated.graph === undefined ||
+      !isPlainRecord(generated.requested_authority)) {
+    invalidPredefined(
+      "invalid_predefined_definition",
+      "predefined definition must produce a dynamic plan proposal",
+    );
+  }
+  const proposal = generated;
+  const generatedFacts = proposal.explicit_facts ?? selection.explicit_facts;
+  if (!hasCompleteIdentityFacts(generatedFacts)) {
+    invalidPredefined(
+      "invalid_predefined_definition",
+      "predefined definition returned invalid explicit facts",
+    );
+  }
+  let explicitFacts;
+  try {
+    explicitFacts = canonicalizeExplicitFacts(generatedFacts);
+  } catch {
+    invalidPredefined(
+      "invalid_predefined_definition",
+      "predefined definition returned invalid explicit facts",
+    );
+  }
+  if (!sameCanonicalValue(explicitFacts, selection.explicit_facts)) {
+    invalidPredefined(
+      "definition_changed_explicit_facts",
+      "predefined definition cannot replace the selected explicit facts",
+    );
+  }
+  const normalized = {
+    schema: "flow.dynamic-plan-proposal/v1",
+    graph: proposal.graph,
+    requested_authority: proposal.requested_authority,
+    explicit_facts: selection.explicit_facts,
+    revision_templates: proposal.revision_templates ?? [],
+  };
+  return normalized;
+}
+
+function predefinedConfirmationFacts(
+  registration,
+  graph,
+  revisionTemplates,
+) {
+  return {
+    promised_outcomes: registration.promised_outcomes,
+    negative_outcomes: registration.negative_outcomes,
+    routes: predefinedRoutes(graph, revisionTemplates),
+    trust_posture: registration.trust_posture,
+  };
+}
+
+export function predefinedRoutes(graph, revisionTemplates) {
+  return freezeCanonical([
+    ...graph.cards,
+    ...revisionTemplates.flatMap(({ changes }) => changes.add_cards),
+  ].filter(({ route }) => route !== null)
+    .map(({ id, route }) => ({ card_id: id, route }))
+    .sort((left, right) => left.card_id < right.card_id ? -1 :
+      left.card_id > right.card_id ? 1 : 0));
+}
+
+function invalidPredefined(reason, message, options) {
+  throw new PredefinedFlowValidationError(reason, message, options);
+}
+
+function validatePreparedDelegateResourceBindings(proposal, bindings) {
+  const bindingById = new Map(bindings.map((binding) => [binding.id, binding]));
+  const cards = [
+    ...proposal.graph.cards,
+    ...(proposal.revision_templates ?? []).flatMap(({ changes }) =>
+      changes.add_cards ?? []),
+  ];
+  for (const card of cards) {
+    if (card.executor?.kind !== "delegate") continue;
+    for (const reference of card.inputs?.resource_references ?? []) {
+      const binding = bindingById.get(reference.authority_binding_id);
+      if (!binding || binding.contract !== "flow.resource-authority/v1" ||
+          binding.observation_input?.fact !== "resource_claims") {
+        invalidPredefined(
+          "invalid_delegate_resource_binding",
+          `delegate resource selection is not bound to resource facts: ${card.id}`,
+        );
+      }
+      if (![
+            "available",
+            "present",
+          ].includes(binding.observation?.status) ||
+          authorityWatermark(binding.observation) === null &&
+            authorityGeneration(binding.observation) === null) {
+        invalidPredefined(
+          "required_authority_stale",
+          `delegate resource facts are not an available prepared snapshot: ${card.id}`,
+        );
+      }
+    }
+  }
+}
+
+export function validateDynamicPlan(proposal, {
+  registeredOperations = null,
+  skipRevisionTemplates = false,
+  supersededCardIds = [],
+  replacementBindings = new Map(),
+  allowUnboundResourceSelections = false,
+} = {}) {
+  if (proposal?.schema !== "flow.dynamic-plan-proposal/v1") {
+    invalidPlan("invalid_proposal_contract", "dynamic plan proposal contract is invalid");
+  }
+  if (!isRecord(proposal.requested_authority) ||
+      !["commands", "capabilities", "mutations"].every((field) =>
+        Array.isArray(proposal.requested_authority[field]))) {
+    invalidPlan(
+      "missing_explicit_authority",
+      "dynamic plan requires explicit authority and facts",
+    );
+  }
+  const facts = proposal.explicit_facts;
+  if (!hasCompleteIdentityFacts(facts)) {
+    invalidPlan(
+      "incomplete_identity_facts",
+      "dynamic plan identity facts are incomplete",
+    );
+  }
+  if (!validateRebootFacts(facts.time_facts, facts.subject_generations)) {
+    invalidPlan(
+      "invalid_reboot_facts",
+      "reboot time and subject facts are invalid",
+    );
+  }
+  if (proposal.graph?.schema !== "flow.run-plan/v1" ||
+      !Array.isArray(proposal.graph.cards) || proposal.graph.cards.length === 0) {
+    invalidPlan(
+      "invalid_finite_graph",
+      "dynamic plan requires a non-empty finite graph",
+    );
+  }
+  const ignoredCards = new Set(supersededCardIds);
+  const countedCards = proposal.graph.cards.filter(({ id }) =>
+    !ignoredCards.has(id));
+  if (countedCards.length > facts.limits.max_cards) {
+    invalidPlan(
+      "card_limit_exceeded",
+      "dynamic plan exceeds the explicit card limit",
+    );
+  }
+  if (new Set(proposal.requested_authority.capabilities).size >
+      facts.limits.max_capabilities) {
+    invalidPlan(
+      "capability_limit_exceeded",
+      "dynamic plan exceeds the explicit capability limit",
+    );
+  }
+  if (uniqueCanonical(facts.resource_claims).length > facts.limits.max_resources) {
+    invalidPlan(
+      "resource_limit_exceeded",
+      "dynamic plan exceeds the explicit resource limit",
+    );
+  }
+  if (facts.elapsed_seconds > facts.limits.max_elapsed_seconds) {
+    invalidPlan(
+      "elapsed_limit_exceeded",
+      "dynamic plan exceeds the explicit elapsed-time limit",
+    );
+  }
+
+  const cardIds = new Set();
+  const subrunCards = proposal.graph.cards.filter(
+    ({ executor }) => executor?.kind === "subrun",
+  );
+  if (subrunCards.length > 1) {
+    invalidPlan(
+      "subrun_card_limit_exceeded",
+      "this runtime slice accepts exactly one child run",
+    );
+  }
+  for (const card of proposal.graph.cards) {
+    if (!isRecord(card) || typeof card.id !== "string" || !card.id ||
+        cardIds.has(card.id)) {
+      invalidPlan(
+        "invalid_card_identity",
+        "dynamic plan card identities must be unique",
+      );
+    }
+    cardIds.add(card.id);
+    if (!EXECUTOR_KINDS.includes(card.executor?.kind) ||
+        typeof card.executor?.contract !== "string" ||
+        !Array.isArray(card.dependencies)) {
+      invalidPlan("incomplete_card", `dynamic plan card is incomplete: ${card.id}`);
+    }
+    if (!isRecord(card.inputs) || !isRecord(card.limits) ||
+        !CARD_ARRAY_FIELDS.every((field) => Array.isArray(card[field])) ||
+        !(card.route === null || isRecord(card.route)) ||
+        typeof card.recovery !== "string" || !card.recovery) {
+      invalidPlan(
+        "incomplete_card_contract",
+        `dynamic plan card contract is incomplete: ${card.id}`,
+      );
+    }
+    if (card.executor.kind === "checkpoint") {
+      validateCheckpointCard(card, facts);
+    } else if (card.executor.kind === "operation") {
+      validateOperationCard(card, proposal, registeredOperations);
+    } else if (card.executor.kind === "delegate") {
+      validateDelegateCard(card, proposal, { allowUnboundResourceSelections });
+    } else if (card.executor.kind === "subrun") {
+      validateSubrunCard(card, proposal, registeredOperations);
+    } else {
+      invalidPlan(
+        "unsupported_executor_kind",
+        `dynamic plan does not support executor kind: ${card.executor.kind}`,
+      );
+    }
+  }
+  for (const card of proposal.graph.cards) {
+    if (card.dependencies.some((dependency) => !cardIds.has(dependency))) {
+      invalidPlan(
+        "unknown_dependency",
+        `dynamic plan dependency is unknown: ${card.id}`,
+      );
+    }
+  }
+  validateManagedAgentBindings(
+    proposal.graph.cards,
+    supersededCardIds,
+    replacementBindings,
+  );
+  if (proposal.graph.cards.some(({ executor }) => executor.kind === "checkpoint") &&
+      !proposal.requested_authority.commands.includes("checkpoint_decision")) {
+    invalidPlan(
+      "incomplete_checkpoint_authority",
+      "dynamic plan checkpoint authority is incomplete",
+    );
+  }
+  if (proposal.graph.cards.some(({ executor }) => executor.kind === "subrun") &&
+      !proposal.requested_authority.commands.includes("subrun_execute")) {
+    invalidPlan(
+      "incomplete_subrun_authority",
+      "dynamic plan subrun authority is incomplete",
+    );
+  }
+  if (!allowUnboundResourceSelections && proposal.graph.cards.some((card) =>
+      card.executor?.kind === "delegate" &&
+      Array.isArray(card.inputs?.resource_references) &&
+      card.inputs.resource_references.length > 0)) {
+    invalidPlan(
+      "dynamic_resource_bindings_unavailable",
+      "dynamic resource-bearing delegates require prepared authority bindings",
+    );
+  }
+  assertAcyclic(proposal.graph.cards);
+  validateResultBindingGraph(proposal.graph, supersededCardIds);
+  validateBlockObservations(proposal);
+  let validatedRevisionTemplates = proposal.revision_templates ?? [];
+  if (!skipRevisionTemplates) {
+    validatedRevisionTemplates = validateRevisionTemplates(
+      proposal,
+      registeredOperations,
+      { allowUnboundResourceSelections },
+    );
+    validateDeclaredRecoveryCapacity(proposal);
+  }
+  return validatedRevisionTemplates;
+}
+
+function validateResultBindingGraph(graph, supersededCardIds = []) {
+  if (!Object.hasOwn(graph, "result_bindings")) {
+    if (Object.hasOwn(graph, "result_binding_changes")) {
+      invalidPlan(
+        "invalid_result_binding_delta",
+        "result binding delta requires graph declarations",
+      );
+    }
+    return;
+  }
+  try {
+    validateResultBindingDeclarations({
+      bindings: graph.result_bindings,
+      cards: graph.cards,
+      superseded: supersededCardIds,
+    });
+  } catch (error) {
+    invalidPlan(
+      "invalid_result_binding_declarations",
+      error?.message ?? "result binding declarations are invalid",
+    );
+  }
+}
+
+function hasCompleteIdentityFacts(facts) {
+  return isRecord(facts) && isDigest(facts.catalog_fingerprint) &&
+    isRecord(facts.route_snapshot) &&
+    isDigest(facts.route_snapshot.watermark) &&
+    Array.isArray(facts.route_snapshot.bindings) &&
+    FACT_ARRAY_FIELDS.every((field) => Array.isArray(facts[field])) &&
+    isRecord(facts.limits) &&
+    LIMIT_FIELDS.every((field) =>
+      Number.isInteger(facts.limits[field]) && facts.limits[field] >= 0) &&
+    facts.limits.max_cards >= 1 &&
+    Number.isInteger(facts.elapsed_seconds) && facts.elapsed_seconds >= 0;
+}
+
+function validateSubrunCard(card, proposal, registeredOperations) {
+  const launch = card.inputs?.child_launch_request;
+  let expectedPrepared = null;
+  try {
+    expectedPrepared = compileDynamicPlan({
+      schema: "flow.dynamic-plan-proposal/v1",
+      graph: launch?.prepared?.graph,
+      requested_authority: launch?.prepared?.requested_authority,
+      explicit_facts: launch?.prepared?.explicit_facts,
+      revision_templates: launch?.prepared?.revision_templates,
+    }, { registeredOperations });
+  } catch (error) {
+    if (!(error instanceof DynamicPlanValidationError)) throw error;
+  }
+  const expectedConfirmation = expectedPrepared === null ? null : {
+    schema: "flow.dynamic-plan-confirmation-decision/v1",
+    decision: "accept",
+    bundle_digest: expectedPrepared.bundle_digest,
+    confirmation_digest: expectedPrepared.confirmation_digest,
+  };
+  const expectedClosedFacts = expectedPrepared === null ? null : {
+    schema: "flow.closed-fact-observation/v1",
+    bundle_digest: expectedPrepared.bundle_digest,
+    facts: expectedPrepared.explicit_facts,
+  };
+  if (card.executor.contract !== SUBRUN_CONTRACT ||
+      card.executor.effect_classification !== "reconcilable" ||
+      card.recovery !== "reconcile" ||
+      card.validators.length !== 1 ||
+      card.validators[0] !== SUBRUN_RECEIPT_VALIDATOR ||
+      card.limits.max_attempts !== 1 ||
+      launch?.prepared?.schema !== "flow.prepared-run/v1" ||
+      launch?.confirmation?.schema !==
+        "flow.dynamic-plan-confirmation-decision/v1" ||
+      launch.confirmation.decision !== "accept" ||
+      launch?.closed_facts?.schema !== "flow.closed-fact-observation/v1" ||
+      !sameCanonicalValue(launch.prepared, expectedPrepared) ||
+      !sameCanonicalValue(launch.confirmation, expectedConfirmation) ||
+      !sameCanonicalValue(launch.closed_facts, expectedClosedFacts) ||
+      expectedPrepared?.explicit_facts.tracker_binding !== undefined ||
+      proposal.requested_authority.commands.includes("cancel") &&
+        !expectedPrepared?.requested_authority.commands.includes("cancel") ||
+      !proposal.requested_authority.mutations.includes(SUBRUN_CONTRACT) ||
+      !proposal.explicit_facts.operation_contracts.includes(SUBRUN_CONTRACT) ||
+      !proposal.explicit_facts.validator_contracts.includes(
+        SUBRUN_RECEIPT_VALIDATOR,
+      )) {
+    invalidPlan("invalid_subrun_contract", `subrun card is incomplete: ${card.id}`);
+  }
+  const issue = operationRegistrationIssue(
+    registeredOperation(registeredOperations, SUBRUN_CONTRACT),
+    "reconcilable",
+  );
+  if (registeredOperations !== null && issue) {
+    invalidPlan(issue, `subrun Adapter is unavailable: ${card.id}`);
+  }
+}
+
+function validateManagedAgentBindings(
+  cards,
+  supersededCardIds = [],
+  replacementBindings = new Map(),
+) {
+  const superseded = new Set(supersededCardIds);
+  cards = cards
+    .filter(({ id }) => !superseded.has(id))
+    .map((card) => {
+      const binding = card.inputs?.managed_agent;
+      if (!isPlainRecord(binding) || replacementBindings.size === 0) {
+        return card;
+      }
+      const rebound = {
+        ...binding,
+        card_ids: binding.card_ids?.map((id) =>
+          replacementBindings.get(id) ?? id),
+        terminal_card_id: replacementBindings.get(binding.terminal_card_id) ??
+          binding.terminal_card_id,
+      };
+      return {
+        ...card,
+        inputs: { ...card.inputs, managed_agent: rebound },
+      };
+    });
+  const delegates = cards.filter(({ executor }) => executor.kind === "delegate");
+  for (const card of delegates.filter(({ inputs }) => inputs.fallback)) {
+    if (delegates.some((candidate) => candidate.id !== card.id && [
+      candidate.route.agent_id,
+      candidate.inputs.fallback?.route?.agent_id,
+    ].includes(card.inputs.fallback.route.agent_id))) {
+      invalidPlan("ambient_managed_agent_reuse",
+        `fallback route reuses an undeclared managed agent: ${card.id}`);
+    }
+  }
+  const routesByAgent = Map.groupBy(delegates, ({ route }) => route.agent_id);
+  const boundAgentIds = new Map();
+  for (const [agentId, routedCards] of routesByAgent) {
+    if (routedCards.length === 1 &&
+        routedCards[0].inputs.managed_agent === undefined) continue;
+    const bindings = routedCards.map(({ inputs }) => inputs.managed_agent);
+    if (bindings.some((binding) => !isRecord(binding)) ||
+        new Set(bindings.map((binding) => digest(binding))).size !== 1) {
+      invalidPlan("ambient_managed_agent_reuse",
+        `managed agent reuse must be declared identically: ${agentId}`);
+    }
+    const binding = bindings[0];
+    const cardIds = binding.card_ids;
+    const routedCardIds = routedCards.map(({ id }) => id).sort();
+    const orderedCards = Array.isArray(cardIds)
+      ? cardIds.map((cardId) => routedCards.find(({ id }) => id === cardId))
+      : [];
+    if (binding.schema !== "flow.managed-agent-binding/v1" ||
+        Object.keys(binding).sort().join(",") !==
+          "binding_id,card_ids,schema,terminal_card_id" ||
+        typeof binding.binding_id !== "string" || !binding.binding_id ||
+        !Array.isArray(binding.card_ids) ||
+        digest([...binding.card_ids].sort()) !== digest(routedCardIds) ||
+        binding.terminal_card_id !== cardIds.at(-1) ||
+        orderedCards.some((card) => card === undefined) ||
+        orderedCards.some((card) => card.inputs.fallback !== undefined) ||
+        new Set(routedCards.map(({ route }) => digest(route))).size !== 1 ||
+        orderedCards.slice(1).some((card, index) =>
+          !card.dependencies.includes(orderedCards[index].id))) {
+      invalidPlan("invalid_managed_agent_binding",
+        `managed agent reuse is not one ordered immutable binding: ${agentId}`);
+    }
+    const priorAgentId = boundAgentIds.get(binding.binding_id);
+    if (priorAgentId !== undefined && priorAgentId !== agentId) {
+      invalidPlan("invalid_managed_agent_binding",
+        `managed agent binding names multiple routes: ${binding.binding_id}`);
+    }
+    boundAgentIds.set(binding.binding_id, agentId);
+  }
+}
+
+function validateDeclaredRecoveryCapacity(proposal) {
+  const templates = proposal.revision_templates ?? [];
+  const capabilityLimit = proposal.explicit_facts.limits.max_capabilities;
+  const declaredCapabilities = declaredRecoveryCapabilities(proposal);
+  if (declaredCapabilities.size > capabilityLimit) {
+    invalidPlan(
+      "declared_recovery_capability_limit",
+      "declared recovery capability limit exceeded",
+    );
+  }
+
+  const resourceLimit = proposal.explicit_facts.limits.max_resources;
+  const declaredResources = uniqueCanonical([
+    ...proposal.explicit_facts.resource_claims,
+    ...templates.flatMap(({ changes }) => changes.resource_additions),
+    ...templates.flatMap(({ changes }) => changes.add_cards.flatMap(
+      ({ resource_claims: claims }) => claims ?? [],
+    )),
+  ]);
+  if (declaredResources.length > resourceLimit) {
+    invalidPlan(
+      "declared_recovery_resource_limit",
+      "declared recovery resource limit exceeded",
+    );
+  }
+}
+
+function declaredRecoveryCapabilities(proposal) {
+  return new Set([
+    ...proposal.requested_authority.capabilities,
+    ...proposal.explicit_facts.block_observations.flatMap(
+      ({ block }) => block.required_capabilities,
+    ),
+    ...(proposal.revision_templates ?? []).flatMap(({ changes }) =>
+      changes.capability_additions.map(({ capability }) => capability)),
+  ]);
+}
+
+function validateCardBlock(block, cardId, proposal) {
+  const exactFields = isRecord(block) &&
+    Object.keys(block).length === CARD_BLOCK_FIELDS.length &&
+    CARD_BLOCK_FIELDS.every((field) => Object.hasOwn(block, field));
+  if (!exactFields || block.schema !== "flow.card-block/v1" ||
+      typeof block.id !== "string" || !block.id ||
+      !["capability_required", "plan_revision_required"].includes(block.type) ||
+      block.trigger?.schema !== "flow.revision-trigger/v1" ||
+      block.trigger?.type !== block.type ||
+      typeof block.trigger.type !== "string" || !block.trigger.type ||
+      typeof block.trigger.code !== "string" || !block.trigger.code ||
+      Object.keys(block.trigger).length !== 3 ||
+      !Array.isArray(block.required_capabilities) ||
+      !block.required_capabilities.every((capability) =>
+        typeof capability === "string" && capability) ||
+      !Array.isArray(block.revision_template_ids) ||
+      !block.revision_template_ids.every((id) => typeof id === "string" && id)) {
+    invalidPlan("invalid_card_block", `dynamic plan card block is invalid: ${cardId}`);
+  }
+  if (block.type === "capability_required" &&
+      block.revision_template_ids.length > 0) {
+    invalidPlan(
+      "ambiguous_block_recovery",
+      `capability block cannot name revision templates: ${cardId}`,
+    );
+  }
+  if (block.type === "capability_required" &&
+      (block.required_capabilities.length === 0 ||
+       !proposal.requested_authority.commands.includes("capability_grant"))) {
+    invalidPlan(
+      "incomplete_capability_authority",
+      `dynamic plan capability grant authority is incomplete: ${cardId}`,
+    );
+  }
+  if (block.type === "plan_revision_required" &&
+      (block.revision_template_ids.length === 0 ||
+       block.required_capabilities.length > 0 ||
+       !proposal.requested_authority.commands.includes("revision_decision"))) {
+    invalidPlan(
+      "incomplete_revision_authority",
+      `dynamic plan revision authority is incomplete: ${cardId}`,
+    );
+  }
+  if (!block.required_capabilities.every((capability) =>
+    proposal.explicit_facts.capability_envelopes.includes(capability))) {
+    invalidPlan(
+      "capability_outside_envelope",
+      `dynamic plan block exceeds the capability envelope: ${cardId}`,
+    );
+  }
+}
+
+function validateBlockObservations(proposal) {
+  const cardIds = new Set(proposal.graph.cards.map(({ id }) => id));
+  const blockIds = new Set();
+  const observedCards = new Set();
+  for (const observation of proposal.explicit_facts.block_observations) {
+    const fields = [
+      "schema",
+      "adapter_contract",
+      "validator_contract",
+      "card_id",
+      "block",
+      "evidence_digest",
+    ];
+    const exact = isRecord(observation) &&
+      Object.keys(observation).length === fields.length &&
+      fields.every((field) => Object.hasOwn(observation, field));
+    const { schema: _schema, evidence_digest: _digest, ...evidence } =
+      observation ?? {};
+    if (!exact || observation?.schema !== "flow.card-block-observation/v1" ||
+        observation?.adapter_contract !==
+          "flow.adapter/card-block-observation/v1" ||
+        observation?.validator_contract !==
+          "flow.validator/card-block-observation/v1" ||
+        !proposal.explicit_facts.operation_contracts.includes(
+          observation?.adapter_contract,
+        ) || !proposal.explicit_facts.validator_contracts.includes(
+          observation?.validator_contract,
+        ) || !cardIds.has(observation?.card_id) ||
+        observation?.evidence_digest !== digest(evidence)) {
+      invalidPlan(
+        "invalid_block_observation",
+        "card block observation evidence is invalid",
+      );
+    }
+    validateCardBlock(observation.block, observation.card_id, proposal);
+    if (blockIds.has(observation.block.id)) {
+      invalidPlan(
+        "duplicate_card_block",
+        "dynamic plan card block identities must be unique",
+      );
+    }
+    if (observedCards.has(observation.card_id)) {
+      invalidPlan(
+        "duplicate_card_block_observation",
+        "dynamic plan cards accept only one block observation",
+      );
+    }
+    blockIds.add(observation.block.id);
+    observedCards.add(observation.card_id);
+  }
+}
+
+function validateRevisionTemplates(
+  proposal,
+  registeredOperations,
+  { allowUnboundResourceSelections = false } = {},
+) {
+  const templates = proposal.revision_templates === undefined
+    ? []
+    : proposal.revision_templates;
+  if (!Array.isArray(templates)) {
+    invalidPlan("invalid_revision_templates", "revision templates must be an array");
+  }
+  const referencedTemplates = new Map();
+  for (const observation of proposal.explicit_facts.block_observations) {
+    for (const id of observation.block.revision_template_ids) {
+      if (referencedTemplates.has(id)) {
+        invalidPlan(
+          "ambiguous_revision_template",
+          `revision template is bound to multiple card blocks: ${id}`,
+        );
+      }
+      referencedTemplates.set(id, {
+        card_id: observation.card_id,
+        trigger: observation.block.trigger,
+      });
+    }
+  }
+  if (templates.length === 0) {
+    if (referencedTemplates.size > 0) {
+      invalidPlan("unknown_revision_template", "card block names an unknown revision template");
+    }
+    return [];
+  }
+  if (!Number.isInteger(proposal.explicit_facts.limits.max_revisions) ||
+      proposal.explicit_facts.limits.max_revisions < 1) {
+    invalidPlan("invalid_revision_limit", "revision templates require a positive revision limit");
+  }
+  const validatedTemplates = [];
+  const ids = new Set();
+  for (let template of templates) {
+    if (!isRecord(template) || template.schema !== "flow.plan-revision-template/v1" ||
+        typeof template.id !== "string" || !template.id || ids.has(template.id) ||
+        Object.keys(template).length < 5 || Object.keys(template).length > 6 ||
+        !Object.hasOwn(template, "trigger") ||
+        !Object.hasOwn(template, "limits") ||
+        !Object.hasOwn(template, "changes") ||
+        Object.keys(template).some((field) =>
+          !["schema", "id", "trigger", "limits", "changes", "repair"]
+            .includes(field))) {
+      invalidPlan("invalid_revision_template", "plan revision template is invalid");
+    }
+    if (!isRecord(template.limits) ||
+        Object.keys(template.limits).length !== 1 ||
+        !Number.isInteger(template.limits.max_applications) ||
+        template.limits.max_applications < 1) {
+      invalidPlan(
+        "invalid_revision_template_limit",
+        "revision template application limit is invalid",
+      );
+    }
+    ids.add(template.id);
+    const binding = referencedTemplates.get(template.id);
+    if (binding === undefined ||
+        digest(template.trigger) !== digest(binding.trigger)) {
+      invalidPlan("invalid_revision_trigger", `revision trigger is not declared: ${template.id}`);
+    }
+    if (template.repair !== undefined) {
+      const repairValidation = validateFeatureRepairContract({
+        repair: template.repair,
+        template,
+        existingCards: proposal.graph.cards,
+        existingResultBindings: proposal.graph.result_bindings ?? null,
+        brief: proposal.graph.cards.find(({ id }) => id === binding.card_id)
+          ?.inputs?.brief,
+        limits: proposal.explicit_facts.limits,
+        boundCardId: binding.card_id,
+        fail: invalidPlan,
+      });
+      if (repairValidation?.template !== undefined) {
+        template = repairValidation.template;
+      }
+    }
+    validateRevisionChanges(proposal, template, registeredOperations, {
+      allowUnboundResourceSelections,
+    });
+    validatedTemplates.push(template);
+  }
+  for (const id of referencedTemplates.keys()) {
+    if (!ids.has(id)) {
+      invalidPlan(
+        "unknown_revision_template",
+        `card block names an unknown revision template: ${id}`,
+      );
+    }
+  }
+  return validatedTemplates;
+}
+
+function validateRevisionChanges(
+  proposal,
+  template,
+  registeredOperations,
+  { allowUnboundResourceSelections = false } = {},
+) {
+  const changes = template.changes;
+  const fields = [
+    "add_cards",
+    "add_edges",
+    "supersede_cards",
+    "capability_additions",
+    "resource_additions",
+    "limit_changes",
+  ];
+  if (Object.hasOwn(proposal.graph, "result_bindings")) {
+    fields.push("result_binding_changes");
+  }
+  if (!isRecord(changes) || Object.keys(changes).length !== fields.length ||
+      !fields.every((field) => Object.hasOwn(changes, field)) ||
+      !fields.filter((field) =>
+        !["limit_changes", "result_binding_changes"].includes(field),
+      ).every((field) => Array.isArray(changes[field])) ||
+      !isRecord(changes.limit_changes) ||
+      (Object.hasOwn(proposal.graph, "result_bindings") &&
+        !isRecord(changes.result_binding_changes))) {
+    invalidPlan("invalid_revision_changes", `revision changes are incomplete: ${template.id}`);
+  }
+  const existingIds = new Set(proposal.graph.cards.map(({ id }) => id));
+  const addedIds = new Set();
+  for (const card of changes.add_cards) {
+    if (!isRecord(card) || typeof card.id !== "string" ||
+        existingIds.has(card.id) || addedIds.has(card.id)) {
+      invalidPlan("revision_card_conflict", `revision card identity conflicts: ${template.id}`);
+    }
+    if (!Array.isArray(card.dependencies)) {
+      invalidPlan(
+        "incomplete_revision_card",
+        `revision card dependencies are incomplete: ${card.id}`,
+      );
+    }
+    addedIds.add(card.id);
+  }
+  if (!changes.supersede_cards.every((id) => existingIds.has(id)) ||
+      new Set(changes.supersede_cards).size !== changes.supersede_cards.length) {
+    invalidPlan(
+      "invalid_revision_supersession",
+      `revision supersession is invalid: ${template.id}`,
+    );
+  }
+  const managedBindingCardIds = new Set(proposal.graph.cards
+    .filter((card) => card.executor?.kind === "delegate" &&
+      isRecord(card.inputs?.managed_agent))
+    .map(({ id }) => id));
+  if (changes.supersede_cards.some((id) => managedBindingCardIds.has(id)) &&
+      template.repair === undefined) {
+    invalidPlan(
+      "managed_agent_binding_revision",
+      `revision cannot supersede an immutable managed-agent binding: ${template.id}`,
+    );
+  }
+  const pendingClosure = new Set(
+    proposal.explicit_facts.block_observations
+      .filter(({ block }) => block.revision_template_ids.includes(template.id))
+      .map(({ card_id: cardId }) => cardId),
+  );
+  let closureChanged = true;
+  while (closureChanged) {
+    closureChanged = false;
+    for (const card of proposal.graph.cards) {
+      if (!pendingClosure.has(card.id) && card.dependencies.some((dependency) =>
+        pendingClosure.has(dependency))) {
+        pendingClosure.add(card.id);
+        closureChanged = true;
+      }
+    }
+  }
+  const superseded = new Set(changes.supersede_cards);
+  if (pendingClosure.size !== superseded.size ||
+      [...pendingClosure].some((id) => !superseded.has(id))) {
+    invalidPlan(
+      "invalid_revision_supersession",
+      "revision supersession must be the blocked card and its pending dependent closure",
+    );
+  }
+  const allIds = new Set([
+    ...proposal.graph.cards.map(({ id }) => id),
+    ...changes.add_cards.map(({ id }) => id),
+  ]);
+  const edgeIds = new Set();
+  for (const edge of changes.add_edges) {
+    const edgeId = `${edge?.from}\0${edge?.to}`;
+    if (!isRecord(edge) || Object.keys(edge).length !== 2 ||
+        typeof edge.from !== "string" || typeof edge.to !== "string" ||
+        !allIds.has(edge.from) || !addedIds.has(edge.to) || edge.from === edge.to ||
+        edgeIds.has(edgeId)) {
+      invalidPlan("invalid_revision_edge", `revision edge is invalid: ${template.id}`);
+    }
+    edgeIds.add(edgeId);
+  }
+  let revisedGraph;
+  try {
+    revisedGraph = applyRevisionGraphChanges(proposal.graph, changes);
+  } catch (error) {
+    if (Object.hasOwn(proposal.graph, "result_bindings")) {
+      invalidPlan(
+        "invalid_result_binding_delta",
+        error?.message ?? "result binding declaration delta is invalid",
+      );
+    }
+    throw error;
+  }
+  const revisedCards = revisedGraph.cards;
+  if (hasActiveDependencyOnSuperseded(revisedCards, superseded)) {
+    invalidPlan(
+      "active_card_depends_on_superseded_work",
+      "active revision card cannot depend on superseded work",
+    );
+  }
+  if (!changes.capability_additions.every((binding) =>
+    isRecord(binding) && Object.keys(binding).length === 2 &&
+    typeof binding.capability === "string" && binding.capability &&
+    proposal.explicit_facts.capability_envelopes.includes(binding.capability) &&
+    Array.isArray(binding.card_ids) && binding.card_ids.length > 0 &&
+    binding.card_ids.every((id) => allIds.has(id)))) {
+    invalidPlan(
+      "capability_outside_envelope",
+      `revision capability is outside its envelope: ${template.id}`,
+    );
+  }
+  if (!changes.resource_additions.every(isRecord)) {
+    invalidPlan("invalid_revision_resource", `revision resource is invalid: ${template.id}`);
+  }
+  if (!Object.entries(changes.limit_changes).every(([name, value]) =>
+    Object.hasOwn(proposal.explicit_facts.limits, name) &&
+    Number.isInteger(value) && value >= (name === "max_cards" ? 1 : 0))) {
+    invalidPlan("invalid_revision_limit", `revision limit change is invalid: ${template.id}`);
+  }
+  const limits = { ...proposal.explicit_facts.limits, ...changes.limit_changes };
+  if (limits.max_revisions < 1) {
+    invalidPlan(
+      "invalid_revision_limit",
+      `revision limit cannot exclude its own admission: ${template.id}`,
+    );
+  }
+  if (changes.add_cards.length > limits.max_cards_per_revision) {
+    invalidPlan("revision_card_limit", "revision card limit exceeded");
+  }
+  const capabilityCount = declaredRecoveryCapabilities(proposal).size;
+  if (capabilityCount > limits.max_capabilities) {
+    invalidPlan("revision_capability_limit", "revision capability limit exceeded");
+  }
+  if (uniqueCanonical([
+    ...proposal.explicit_facts.resource_claims,
+    ...changes.resource_additions,
+    ...changes.add_cards.flatMap(({ resource_claims: claims }) => claims ?? []),
+  ]).length > limits.max_resources) {
+    invalidPlan("revision_resource_limit", "revision resource limit exceeded");
+  }
+  if (proposal.explicit_facts.elapsed_seconds > limits.max_elapsed_seconds) {
+    invalidPlan("revision_elapsed_limit", "revision elapsed limit exceeded");
+  }
+  const revisedResourceClaims = uniqueCanonical([
+    ...proposal.explicit_facts.resource_claims,
+    ...changes.resource_additions,
+  ]);
+  validateDynamicPlan({
+    ...proposal,
+    graph: revisedGraph,
+    explicit_facts: {
+      ...proposal.explicit_facts,
+      resource_claims: revisedResourceClaims,
+      limits,
+    },
+  }, {
+    registeredOperations,
+    skipRevisionTemplates: true,
+    supersededCardIds: changes.supersede_cards,
+    allowUnboundResourceSelections,
+    replacementBindings: new Map(changes.add_cards.map((card) => [
+      card.replaces_card_id ?? card.inputs?.replaces_card_id,
+      card.id,
+    ]).filter(([from]) => from !== undefined)),
+  });
+}
+
+function validateCheckpointCard(card, facts) {
+  if (card.executor.contract !== CHECKPOINT_CONTRACT) {
+    invalidPlan(
+      "unsupported_checkpoint_contract",
+      `unsupported checkpoint contract: ${card.executor.contract}`,
+    );
+  }
+  if (card.validators.length !== 1 ||
+      card.validators[0] !== CHECKPOINT_VALIDATOR ||
+      !facts.validator_contracts.includes(CHECKPOINT_VALIDATOR)) {
+    invalidPlan(
+      "unsupported_checkpoint_validator",
+      `unsupported checkpoint validator contract: ${card.id}`,
+    );
+  }
+}
+
+function validateDelegateCard(
+  card,
+  proposal,
+  { allowUnboundResourceSelections = false } = {},
+) {
+  const { explicit_facts: facts } = proposal;
+  if ([
+        "execution_authority",
+        "authority_materialized_evidence",
+        "predecessor_evidence",
+        "instructions",
+      ].some((field) => Object.hasOwn(card.inputs ?? {}, field)) ||
+      (Array.isArray(card.inputs?.resource_references) &&
+        card.inputs.resource_references.some((reference) =>
+          isPlainRecord(reference) &&
+          Object.hasOwn(reference, "authority_binding")))) {
+    invalidPlan(
+      "caller_delegate_input_forbidden",
+      `delegate input contains caller-selected authority material: ${card.id}`,
+    );
+  }
+  validateDelegateInputSelections(card, facts, {
+    requireCardClaimSubset: allowUnboundResourceSelections,
+  });
+  const declaredEvidence = card.inputs?.delegate_evidence_card_ids ??
+    card.inputs?.finding_lens_card_ids;
+  if (declaredEvidence !== undefined &&
+      (!Array.isArray(declaredEvidence) ||
+       new Set(declaredEvidence).size !== declaredEvidence.length ||
+       declaredEvidence.some((cardId) =>
+         typeof cardId !== "string" || cardId.length === 0))) {
+    invalidPlan(
+      "authority_evidence_declaration_invalid",
+      `delegate evidence declaration is invalid: ${card.id}`,
+    );
+  }
+  if (card.inputs?.delegate_evidence_card_ids !== undefined &&
+      card.inputs?.finding_lens_card_ids !== undefined) {
+    invalidPlan(
+      "authority_evidence_declaration_invalid",
+      `delegate evidence declaration is ambiguous: ${card.id}`,
+    );
+  }
+  for (const evidenceCardId of declaredEvidence ?? []) {
+    const evidenceCard = proposal.graph.cards.find(({ id }) =>
+      id === evidenceCardId);
+    if (!card.dependencies.includes(evidenceCardId) ||
+        evidenceCard?.executor?.kind !== "delegate") {
+      invalidPlan(
+        "delegate_evidence_dependency_invalid",
+        `delegate evidence must name a direct delegate dependency: ${card.id}`,
+      );
+    }
+  }
+  const description = card.inputs.description;
+  if (card.executor.contract !== DELEGATE_CONTRACT ||
+      !["delegate_execute", "terminal_disposition"].every((command) =>
+        proposal.requested_authority.commands.includes(command))) {
+    invalidPlan("incomplete_delegate_authority",
+      `delegate authority is incomplete: ${card.id}`);
+  }
+  if ((!isDirectDescription(description) && description?.schema !== "drovr.delegated-agent-description/v1") ||
+      !isDigest(description.description_digest) ||
+      !isDigest(description.comparison_keys?.launch) ||
+      !isDigest(description.comparison_keys?.effective_authority) ||
+      !isDigest(description.watermark?.content_sha256) ||
+      typeof card.inputs.prompt !== "string" || !card.inputs.prompt ||
+      !Number.isSafeInteger(card.inputs.wait_timeout_ms) ||
+      card.inputs.wait_timeout_ms <= 0) {
+    invalidPlan("invalid_delegate_binding",
+      `delegate launch binding is incomplete: ${card.id}`);
+  }
+  try {
+    validateDelegateInputInstructions(card.inputs.prompt);
+  } catch (error) {
+    invalidPlan(
+      error?.reason === "unsafe_delegate_input"
+        ? "unsafe_delegate_input"
+        : "invalid_delegate_binding",
+      `delegate instructions are not transferable: ${card.id}`,
+    );
+  }
+  if (card.route?.description_digest !== description.description_digest ||
+      card.route?.launch_comparison_key !== description.comparison_keys.launch ||
+      card.route?.configuration_watermark !==
+        description.watermark.content_sha256 ||
+      typeof card.route?.agent_id !== "string" || !card.route.agent_id) {
+    invalidPlan("invalid_delegate_route",
+      `delegate route does not bind the exact description: ${card.id}`);
+  }
+  if (isDirectDescription(description) && (directDescriptionIssue(description) || card.inputs.fallback || (card.inputs.steering ?? []).length > 0)) {
+    invalidPlan("unsupported_direct_execution", "direct execution cannot steer, reuse sessions or fail over");
+  }
+  validateDelegateCapability(card, proposal);
+  validateDelegateFallback(card, description);
+  validateDelegateSteering(card);
+  if (!Number.isInteger(card.limits.max_attempts) ||
+      card.limits.max_attempts < 1 ||
+      card.recovery !== "discover_then_dispatch_exact") {
+    invalidPlan("invalid_delegate_recovery",
+      `delegate recovery contract is invalid: ${card.id}`);
+  }
+  validateActiveExecutionLimit(card, "delegate");
+  if (card.validators.length < 1 || !card.validators.every((validator) =>
+    facts.validator_contracts.includes(validator))) {
+    invalidPlan("unsupported_delegate_validator",
+      `delegate validators are not declared: ${card.id}`);
+  }
+  try {
+    validateDelegateOutputSchemas(card.outputs);
+  } catch {
+    invalidPlan(
+      "invalid_delegate_outputs",
+      `delegate output schemas are not exact: ${card.id}`,
+    );
+  }
+}
+
+function validateDelegateCapability(card, proposal) {
+  const capability = card.inputs?.description?.launch?.capability;
+  // Older registered descriptions may intentionally omit launch posture in
+  // preparation-only fixtures. Runtime authority derivation remains strict;
+  // when a posture is advertised, its Flow grant mapping is mandatory here.
+  if (capability === undefined) return;
+  const grantIds = flowGrantIdsForDrovrCapability(capability);
+  if (grantIds === null) {
+    invalidPlan(
+      "unsupported_delegate_capability",
+      `delegate capability has no Flow grant mapping: ${card.id}`,
+    );
+  }
+  const facts = proposal.explicit_facts;
+  const authorityCapabilities = proposal.requested_authority.capabilities;
+  const revisionCapabilities = (proposal.revision_templates ?? [])
+    .flatMap(({ changes }) => changes.capability_additions ?? [])
+    .filter((binding) => binding?.card_ids?.includes(card.id));
+  if (!grantIds.every((grantId) =>
+      facts.capability_envelopes.includes(grantId) &&
+      (authorityCapabilities.includes(grantId) ||
+       revisionCapabilities.some(({ capability }) => capability === grantId)))) {
+    invalidPlan(
+      "delegate_capability_unavailable",
+      `delegate capability is not accepted for its Flow card: ${card.id}`,
+    );
+  }
+}
+
+function validateDelegateInputSelections(
+  card,
+  facts,
+  { requireCardClaimSubset = false } = {},
+) {
+  const taskInputs = card.inputs?.task_inputs;
+  if (taskInputs !== undefined) {
+    try {
+      validateDelegateTaskInputs(taskInputs);
+    } catch {
+      invalidPlan(
+        "invalid_delegate_task_inputs",
+        `delegate task inputs are not transferable: ${card.id}`,
+      );
+    }
+  }
+  const outputRequirements = card.inputs?.output_requirements;
+  if (outputRequirements !== undefined) {
+    let normalizedRequirements;
+    try {
+      normalizedRequirements = validateDelegateOutputRequirements(
+        outputRequirements,
+      );
+    } catch {
+      invalidPlan(
+        "invalid_delegate_output_requirements",
+        `delegate output requirements are not exact: ${card.id}`,
+      );
+    }
+    const canonicalRequirements = {
+      schema: DELEGATE_OUTPUT_REQUIREMENTS_SCHEMA,
+      format: "canonical-json",
+      schemas: [...card.outputs],
+      validator_contracts: [...card.validators],
+    };
+    if (!sameCanonicalValue(normalizedRequirements, canonicalRequirements)) {
+      invalidPlan(
+        "delegate_output_requirements_mismatch",
+        `delegate output requirements must equal card outputs and validators: ${card.id}`,
+      );
+    }
+  }
+  const references = card.inputs?.resource_references;
+  if (references === undefined) return;
+  if (!Array.isArray(references)) {
+    invalidPlan(
+      "invalid_delegate_resource_selection",
+      `delegate resource selections are not an array: ${card.id}`,
+    );
+  }
+  const seen = new Set();
+  for (const reference of references) {
+    if (!isPlainRecord(reference) ||
+        !hasExactKeys(reference, [
+          "schema",
+          "kind",
+          "authority",
+          "contract",
+          "subject_id",
+          "generation",
+          "mutation_epoch",
+          "fingerprint",
+          "access",
+          "operation",
+          "authority_binding_id",
+        ]) ||
+        reference.schema !== DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA ||
+        !["workspace", "artifact"].includes(reference.kind) ||
+        typeof reference.authority !== "string" || !reference.authority ||
+        typeof reference.contract !== "string" || !reference.contract ||
+        typeof reference.subject_id !== "string" || !reference.subject_id ||
+        !isDigest(reference.fingerprint) ||
+        !["read_only", "mutation"].includes(reference.access) ||
+        typeof reference.authority_binding_id !== "string" ||
+        !reference.authority_binding_id ||
+        (reference.generation !== undefined &&
+          (!Number.isSafeInteger(reference.generation) || reference.generation < 1)) ||
+        (reference.mutation_epoch !== undefined &&
+          (!Number.isSafeInteger(reference.mutation_epoch) ||
+            reference.mutation_epoch < 0)) ||
+        (reference.operation !== undefined &&
+          (typeof reference.operation !== "string" || !reference.operation))) {
+      invalidPlan(
+        "invalid_delegate_resource_selection",
+        `delegate resource selection is incomplete: ${card.id}`,
+      );
+    }
+    const expectedAuthority = {
+      workspace: "WorkspaceAuthority",
+      artifact: "ArtifactAuthority",
+    }[reference.kind];
+    if (expectedAuthority !== undefined &&
+        reference.authority !== expectedAuthority) {
+      invalidPlan(
+        "resource_authority_mismatch",
+        `delegate resource selection names the wrong owner: ${card.id}`,
+      );
+    }
+    if (reference.contract !== DELEGATE_RESOURCE_CONTRACTS[reference.kind]) {
+      invalidPlan(
+        "resource_contract_mismatch",
+        `delegate resource selection names the wrong contract: ${card.id}`,
+      );
+    }
+    if (reference.access === "mutation" && reference.operation !== card.id) {
+      invalidPlan(
+        "resource_operation_mismatch",
+        `mutation resource selection must bind its owning card: ${card.id}`,
+      );
+    }
+    if (reference.operation !== undefined && reference.operation !== card.id) {
+      invalidPlan(
+        "resource_operation_mismatch",
+        `delegate resource selection operation is not card-scoped: ${card.id}`,
+      );
+    }
+    const identity = digest({
+      kind: reference.kind,
+      subject_id: reference.subject_id,
+      generation: reference.generation ?? null,
+      mutation_epoch: reference.mutation_epoch ?? null,
+      fingerprint: reference.fingerprint,
+      authority_binding_id: reference.authority_binding_id,
+    });
+    if (seen.has(identity)) {
+      invalidPlan(
+        "duplicate_delegate_resource_selection",
+        `delegate resource selections must be unique: ${card.id}`,
+      );
+    }
+    seen.add(identity);
+    if (!facts.resource_claims.some((claim) =>
+      isPlainRecord(claim) &&
+      claim.kind === reference.kind &&
+      claim.id === reference.subject_id &&
+      claim.generation === reference.generation &&
+      claim.mutation_epoch === reference.mutation_epoch &&
+      claim.fingerprint === reference.fingerprint)) {
+      invalidPlan(
+        "undeclared_delegate_resource_selection",
+        `delegate resource selection is outside prepared facts: ${card.id}`,
+      );
+    }
+    if (requireCardClaimSubset && !card.resource_claims.some((claim) =>
+        isPlainRecord(claim) &&
+        claim.kind === reference.kind &&
+        claim.id === reference.subject_id &&
+        claim.generation === reference.generation &&
+        claim.mutation_epoch === reference.mutation_epoch &&
+        claim.fingerprint === reference.fingerprint &&
+        (claim.access === undefined || claim.access === reference.access) &&
+        (claim.operation === undefined || claim.operation === reference.operation))) {
+      invalidPlan(
+        "card_resource_selection_outside_claims",
+        `delegate resource selection is outside its card claims: ${card.id}`,
+      );
+    }
+  }
+}
+
+function hasExactKeys(value, keys) {
+  const allowed = new Set(keys);
+  const actual = Reflect.ownKeys(value);
+  return actual.length === Object.keys(value).length &&
+    actual.every((key) => typeof key === "string" && allowed.has(key));
+}
+
+function validateDelegateSteering(card) {
+  const steering = card.inputs.steering ?? [];
+  if (!Array.isArray(steering) || steering.some((input) =>
+    !isRecord(input) ||
+    Object.keys(input).sort().join(",") !== "caller_id,prompt,schema" ||
+    input.schema !== "flow.delegate-steering-input/v1" ||
+    typeof input.caller_id !== "string" || !input.caller_id ||
+    typeof input.prompt !== "string" || !input.prompt) ||
+    new Set(steering.map(({ caller_id: callerId }) => callerId)).size !==
+      steering.length) {
+    invalidPlan("invalid_delegate_steering",
+      `delegate steering identities must be unique and complete: ${card.id}`);
+  }
+}
+
+function validateDelegateFallback(card, primaryDescription) {
+  const fallback = card.inputs.fallback;
+  if (fallback === undefined) return;
+  const description = fallback?.description;
+  const route = fallback?.route;
+  if (fallback?.schema !== "flow.delegate-route-fallback/v1" ||
+      Object.keys(fallback).sort().join(",") !==
+        "activate_for_attempt,description,independent_from,route,schema" ||
+      Object.keys(fallback.independent_from ?? {}).sort().join(",") !==
+        "description_digest,relation" ||
+      fallback.activate_for_attempt !== card.limits.max_attempts ||
+      fallback.activate_for_attempt < 2 ||
+      (!isDirectDescription(description) && description?.schema !== "drovr.delegated-agent-description/v1") ||
+      !isDigest(description.description_digest) ||
+      !isDigest(description.comparison_keys?.launch) ||
+      !isDigest(description.comparison_keys?.effective_authority) ||
+      !isDigest(description.watermark?.content_sha256) ||
+      route?.description_digest !== description.description_digest ||
+      route?.launch_comparison_key !== description.comparison_keys?.launch ||
+      route?.configuration_watermark !== description.watermark?.content_sha256 ||
+      typeof route?.agent_id !== "string" || !route.agent_id) {
+    invalidPlan("invalid_delegate_fallback",
+      `delegate fallback is not bound to one exact attempt: ${card.id}`);
+  }
+  if (fallback.independent_from?.relation !== "different_harness" ||
+      fallback.independent_from.description_digest !==
+        primaryDescription.description_digest ||
+      description.launch?.harness === primaryDescription.launch?.harness ||
+      route.agent_id === card.route.agent_id) {
+    invalidPlan("fallback_not_independent",
+      `delegate fallback is not independent of its primary route: ${card.id}`);
+  }
+  if (description.comparison_keys?.effective_authority !==
+      primaryDescription.comparison_keys?.effective_authority) {
+    invalidPlan("fallback_capability_widening",
+      `delegate fallback widens the accepted authority: ${card.id}`);
+  }
+}
+
+function validateOperationCard(card, proposal, registeredOperations) {
+  const { explicit_facts: facts } = proposal;
+  const registration = registeredOperation(registeredOperations,
+    card.executor.contract);
+  const policy = effectClassPolicy(card.executor.effect_classification);
+  const registrationIssue = registeredOperations === null
+    ? null
+    : operationRegistrationIssue(
+        registration,
+        card.executor.effect_classification,
+        card.inputs.provider_receipt_validator,
+      );
+  if (registrationIssue === "unregistered_operation_contract") {
+    invalidPlan(
+      "unregistered_operation_contract",
+      `operation contract is not registered: ${card.executor.contract}`,
+    );
+  }
+  if (registrationIssue === "incomplete_operation_registration") {
+    invalidPlan(
+      "incomplete_operation_registration",
+      `operation adapter registration is incomplete: ${card.executor.contract}`,
+    );
+  }
+  if (registrationIssue === "incomplete_provider_receipt_validator") {
+    invalidPlan(
+      "incomplete_provider_receipt_validator",
+      `provider receipt validator registration is incomplete: ${card.id}`,
+    );
+  }
+  if (card.inputs.provider_receipt_validator !== undefined &&
+      (typeof card.inputs.provider_receipt_validator !== "string" ||
+       !facts.validator_contracts.includes(card.inputs.provider_receipt_validator))) {
+    invalidPlan(
+      "unsupported_provider_receipt_validator",
+      `unsupported provider receipt validator contract: ${card.id}`,
+    );
+  }
+  if (!facts.operation_contracts.includes(card.executor.contract) ||
+      !proposal.requested_authority.mutations.includes(card.executor.contract)) {
+    invalidPlan(
+      "incomplete_operation_authority",
+      `operation authority is incomplete: ${card.id}`,
+    );
+  }
+  if (!card.resource_claims.every((claim) => facts.resource_claims.some(
+    (declared) => digest(declared) === digest(claim),
+  ))) {
+    invalidPlan(
+      "undeclared_operation_resource_claim",
+      `operation resource claim is outside the prepared facts: ${card.id}`,
+    );
+  }
+  if (!policy || registrationIssue === "invalid_effect_classification") {
+    invalidPlan(
+      "invalid_effect_classification",
+      `operation effect classification is invalid: ${card.id}`,
+    );
+  }
+  if (card.validators.length !== 1 ||
+      card.validators[0] !== OPERATION_RECEIPT_VALIDATOR ||
+      !facts.validator_contracts.includes(OPERATION_RECEIPT_VALIDATOR)) {
+    invalidPlan(
+      "unsupported_operation_validator",
+      `unsupported operation validator contract: ${card.id}`,
+    );
+  }
+  if (card.recovery !== card.executor.effect_classification) {
+    invalidPlan(
+      "invalid_operation_recovery",
+      `operation recovery does not match its effect class: ${card.id}`,
+    );
+  }
+  if (!Number.isSafeInteger(card.limits.max_attempts) ||
+      card.limits.max_attempts < 1) {
+    invalidPlan(
+      "invalid_operation_attempt_limit",
+      `operation attempt limit is invalid: ${card.id}`,
+    );
+  }
+  validateActiveExecutionLimit(card, "operation");
+  if (isTrackerProgressContract(card.executor.contract)) {
+    try {
+      validateTrackerProgressBinding(proposal);
+    } catch (error) {
+      invalidPlan(
+        "invalid_operation_input",
+        error?.message ?? `operation input is invalid: ${card.id}`,
+      );
+    }
+  }
+  const validateCard = registration?.validateCard;
+  if (typeof validateCard === "function") {
+    try {
+      validateCard(card, proposal);
+    } catch (error) {
+      invalidPlan(
+        "invalid_operation_input",
+        error?.message ?? `operation input is invalid: ${card.id}`,
+      );
+    }
+  }
+  if (card.executor.effect_classification === "one_shot_uncertain" &&
+      card.inputs?.publication !== undefined) {
+    invalidPlan(
+      "unsafe_publication_effect_class",
+      `one-shot operation cannot publish a resource handoff: ${card.id}`,
+    );
+  }
+  const checkpoints = proposal.graph.cards.filter((checkpoint) =>
+    card.dependencies.includes(checkpoint.id) &&
+    checkpoint.executor?.kind === "checkpoint" &&
+    checkpoint.executor.contract === CHECKPOINT_CONTRACT &&
+    checkpoint.inputs?.operation_card_id === card.id);
+  if (policy.requires_fresh_checkpoint &&
+      (checkpoints.length !== 1 || card.dependencies.length !== 1)) {
+    invalidPlan(
+      "missing_operation_checkpoint",
+      `one-shot operation requires one exact operation-bound checkpoint: ${card.id}`,
+    );
+  }
+  if (checkpoints.length === 1 && card.dependencies.length !== 1) {
+    invalidPlan(
+      "ambiguous_operation_checkpoint",
+      `checkpoint-bound operation requires one exact dependency: ${card.id}`,
+    );
+  }
+  // A registered operation may either be bound to its exact human
+  // checkpoint or be part of an explicitly-authorized serialized operation
+  // chain.  The latter keeps ordering in the immutable graph while every
+  // mutation still crosses RunAuthority's operation_execute fence.
+  if (checkpoints.length === 0 &&
+      !proposal.requested_authority.commands.includes("operation_execute")) {
+    invalidPlan(
+      "incomplete_operation_execution_authority",
+      `direct operation execution authority is incomplete: ${card.id}`,
+    );
+  }
+}
+
+export function canonicalizeRevisionTemplates(templates) {
+  return templates
+    .map((template) => ({
+      ...template,
+      changes: {
+        ...template.changes,
+        add_cards: canonicalizeDynamicGraph({
+          schema: "flow.run-plan/v1",
+          cards: template.changes.add_cards,
+        }).cards,
+        add_edges: [...template.changes.add_edges].sort((left, right) => {
+          const leftId = `${left.from}\0${left.to}`;
+          const rightId = `${right.from}\0${right.to}`;
+          return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+        }),
+        supersede_cards: [...new Set(template.changes.supersede_cards)].sort(),
+        capability_additions: [
+          ...template.changes.capability_additions,
+        ].map((binding) => ({
+          ...binding,
+          card_ids: [...new Set(binding.card_ids)].sort(),
+        })).sort((left, right) => {
+          const leftDigest = digest(left);
+          const rightDigest = digest(right);
+          return leftDigest < rightDigest ? -1 : leftDigest > rightDigest ? 1 : 0;
+        }),
+        resource_additions: [...template.changes.resource_additions]
+          .sort((left, right) => digest(left) < digest(right) ? -1 : 1),
+        ...(Object.hasOwn(template.changes, "result_binding_changes") ? {
+          result_binding_changes: normalizeResultBindingDelta(
+            template.changes.result_binding_changes,
+          ),
+        } : {}),
+      },
+    }))
+    .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+}
+
+export function canonicalizeDynamicGraph(graph) {
+  return freezeCanonical({
+    ...graph,
+    cards: graph.cards
+      .map((card) => ({
+        ...card,
+        dependencies: [...new Set(card.dependencies)].sort(),
+      }))
+      .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+    ...(Object.hasOwn(graph, "result_bindings") ? {
+      result_bindings: [...graph.result_bindings].sort((left, right) => {
+        const leftKey = resultBindingKey(left);
+        const rightKey = resultBindingKey(right);
+        return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+      }),
+    } : {}),
+  });
+}
+
+function resultBindingKey(binding) {
+  return [
+    binding.consumer_card_id,
+    binding.producer_card_id,
+    binding.output_contract,
+    binding.expected_schema,
+  ].join("\0");
+}
+
+function assertAcyclic(cards) {
+  if (hasDependencyCycle(cards)) {
+    invalidPlan("cyclic_graph", "dynamic plan graph must be acyclic");
+  }
+}
+
+export function canonicalizeExplicitFacts(facts) {
+  return {
+    ...facts,
+    route_snapshot: {
+      ...facts.route_snapshot,
+      bindings: [...facts.route_snapshot.bindings]
+        .sort(compareCanonicalValues),
+    },
+    capability_envelopes: [...facts.capability_envelopes].sort(),
+    operation_contracts: [...facts.operation_contracts].sort(),
+    validator_contracts: [...facts.validator_contracts].sort(),
+    resource_claims: [...facts.resource_claims].sort(compareCanonicalValues),
+    block_observations: [...facts.block_observations]
+      .sort((left, right) => {
+        const leftId = `${left.card_id}\0${left.block.id}`;
+        const rightId = `${right.card_id}\0${right.block.id}`;
+        return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+      }),
+    time_facts: canonicalizeTimeFacts(facts.time_facts),
+    subject_generations: canonicalizeSubjectGenerations(
+      facts.subject_generations,
+    ),
+  };
+}
+
+function compareCanonicalValues(left, right) {
+  const leftDigest = digest(left);
+  const rightDigest = digest(right);
+  return leftDigest < rightDigest ? -1 : leftDigest > rightDigest ? 1 : 0;
+}
+
+function sameCanonicalValue(left, right) {
+  try {
+    return digest(left) === digest(right);
+  } catch {
+    return false;
+  }
+}
+
+function validateActiveExecutionLimit(card, executorKind) {
+  if (!Object.hasOwn(card.limits, "max_active_seconds") ||
+      Number.isSafeInteger(card.limits.max_active_seconds) &&
+      card.limits.max_active_seconds >= 0) {
+    return;
+  }
+  invalidPlan(
+    "invalid_active_execution_limit",
+    `${executorKind} active execution limit is invalid: ${card.id}`,
+  );
+}
+
+function invalidPlan(reason, message) {
+  throw new DynamicPlanValidationError(reason, message);
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isDigest(value) {
+  return /^sha256:[0-9a-f]{64}$/.test(value ?? "");
+}

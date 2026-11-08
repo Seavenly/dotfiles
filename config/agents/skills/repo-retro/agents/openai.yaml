@@ -1,0 +1,5 @@
+interface:
+  display_name: "Repo Retro"
+  short_description: "Propose repo environment fixes from a coding session."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,1437 @@
+import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
+import {
+  effectClassPolicy,
+  hasAffirmativeProviderObservation,
+  normalizeEffectObservation,
+  sanitizeHistoricalEffectReceiptEnvelope,
+  sanitizeEffectReceiptEnvelope,
+  sanitizeProviderEvidence,
+} from "./operation-effects.mjs";
+import { sanitizeProviderReceiptValue } from "./provider-receipt-sanitizers.mjs";
+import {
+  elapsedTimeBounds,
+  validateTimeFacts,
+} from "./reboot-facts.mjs";
+import {
+  admitPlanRevision,
+  revisionAdmissionStatus,
+} from "./plan-revision.mjs";
+import { deriveChildRunId } from "./subrun-effects.mjs";
+import { isTrackerProgressContract } from "./tracker-progress.mjs";
+import { foldRetryStates } from "./retry-state.mjs";
+import {
+  DELEGATE_FAILURE_OBSERVATION_SCHEMA,
+} from "./provider-receipt-policies/delegate-drovr.mjs";
+import {
+  buildRunViews,
+  publicEffectProjection,
+} from "./projection-builder.mjs";
+import { normalizeResultBindingRecord } from "./result-bindings.mjs";
+
+// An unresolved invocation is a continuation, not another physical attempt.
+// Durable admission separately requires a new owner on the same boot.
+export function unobservedCallerIdempotentInvocation(intent, events) {
+  if (intent.classification !== "caller_idempotent") return null;
+  let latest = null;
+  for (const event of events) {
+    if (event.effect_id !== intent.effect_id) continue;
+    if (["effect_invocation_started", "effect_invocation_resumed"].includes(
+      event.type,
+    )) latest = event;
+    else if (["effect_observation_recorded", "effect_receipt_recorded"].includes(
+      event.type,
+    )) latest = null;
+  }
+  return latest !== null && validateTimeFacts(latest.time_facts) &&
+      latest.time_facts.length > 0 ? latest : null;
+}
+
+export function foldRun(run, { watermark = runWatermark(run) } = {}) {
+  const launchEvent = run.events.find(({ type }) => type === "run_launched");
+  const launchOwnership = launchEvent?.run_ownership;
+  if (launchOwnership === undefined &&
+      run.prepared.explicit_facts.tracker_binding !== undefined) {
+    throw new TypeError("tracker-bound run is missing authority-owned scope");
+  }
+  const runOwnership = launchOwnership ?? {
+    schema: "flow.run-ownership/v1",
+    scope: "top_level",
+    parent_run_id: null,
+  };
+  const checkpointDecisions = new Map(
+    run.events
+      .filter(({ type }) => type === "checkpoint_decided")
+      .map(({ checkpoint_id: checkpointId, decision }) => [checkpointId, decision]),
+  );
+  const approvedCheckpoints = new Set(
+    [...checkpointDecisions]
+      .filter(([, decision]) => decision === "approve")
+      .map(([checkpointId]) => checkpointId),
+  );
+  const observedBlocks = new Map(
+    run.events
+      .filter(({ type }) => type === "card_blocked")
+      .map(({ card_id: cardId, block }) => [cardId, block]),
+  );
+  const effectIntents = new Map();
+  const effectReceipts = new Map();
+  const effectReceiptIndexes = new Map();
+  const effectInvocationIndexes = new Map();
+  const effectInvocationCounts = new Map();
+  const effectObservations = new Map();
+  const resultBindings = [];
+  let cancellationEvent = null;
+  let cancellationIndex = -1;
+  for (const [eventIndex, event] of run.events.entries()) {
+    if (["effect_intent_recorded", "effect_intent_adopted"].includes(
+      event.type,
+    )) {
+      effectIntents.set(event.intent.effect_id, event.intent);
+    } else if (event.type === "effect_receipt_recorded") {
+      effectReceipts.set(event.effect_id, event.receipt ?? null);
+      effectReceiptIndexes.set(event.effect_id, eventIndex);
+    } else if (event.type === "effect_observation_recorded") {
+      effectObservations.set(event.effect_id, event.observation);
+    } else if (event.type === "effect_invocation_started" ||
+        event.type === "effect_invocation_resumed") {
+      effectInvocationIndexes.set(event.effect_id, eventIndex);
+      if (event.type === "effect_invocation_started") {
+        effectInvocationCounts.set(
+          event.effect_id,
+          (effectInvocationCounts.get(event.effect_id) ?? 0) + 1,
+        );
+      }
+    } else if (event.type === "result_binding_recorded") {
+      resultBindings.push(normalizeResultBindingRecord(event.binding));
+    } else if (event.type === "run_cancelled") {
+      cancellationEvent = event;
+      cancellationIndex = eventIndex;
+    }
+  }
+  const unsafeReceiptEffects = new Set();
+  for (const [effectId, receipt] of effectReceipts) {
+    const intent = effectIntents.get(effectId);
+    const sanitized = sanitizeHistoricalEffectReceiptEnvelope(receipt, intent);
+    if (sanitized === null) {
+      effectReceipts.delete(effectId);
+      unsafeReceiptEffects.add(effectId);
+    } else {
+      effectReceipts.set(effectId, sanitized);
+    }
+  }
+  for (const [effectId, observation] of effectObservations) {
+    const intent = effectIntents.get(effectId);
+    if (!intent) {
+      effectObservations.delete(effectId);
+      continue;
+    }
+    effectObservations.set(
+      effectId,
+      sanitizeHistoricalEffectObservation(observation, intent),
+    );
+  }
+  for (const effectId of unsafeReceiptEffects) {
+    if (effectObservations.has(effectId)) continue;
+    const intent = effectIntents.get(effectId);
+    effectObservations.set(effectId, {
+      schema: "flow.effect-observation/v1",
+      effect_id: intent.effect_id,
+      idempotency_key: intent.idempotency_key,
+      presence: "indeterminate",
+      causation: null,
+      provider_observation: {
+        schema: "flow.provider-observation/v1",
+        status: "invalid_output",
+        code: "invalid_effect_receipt",
+        reason: "invalid_effect_receipt",
+      },
+    });
+  }
+  const effectRetryStates = foldRetryStates(run.events);
+  const completedOperations = new Set(run.events
+    .filter(({ type }) => type === "operation_completed")
+    .map(({ card_id: cardId }) => cardId));
+  const handoffs = run.events
+    .filter(({ type }) => type === "resource_handoff_published")
+    .map(({ handoff_id: handoffId, handoff_watermark: handoffWatermark }) => ({
+      handoff_id: handoffId,
+      handoff_watermark: handoffWatermark,
+    }));
+  const reviewCandidateEvent = run.events
+    .filter(({ type }) => type === "review_candidate_referenced")
+    .at(-1);
+  const reviewCandidateReference = reviewCandidateEvent === undefined
+    ? null
+    : {
+      candidate_id: reviewCandidateEvent.candidate_id,
+      candidate_fingerprint: reviewCandidateEvent.candidate_fingerprint,
+      review_authority_watermark:
+        reviewCandidateEvent.review_authority_watermark,
+    };
+  const resourceHandoffBindings = run.events
+    .filter(({ type }) => type === "resource_handoff_bound")
+    .map(({
+      handoff_id: handoffId,
+      handoff_digest: handoffDigest,
+      binding_digest: bindingDigest,
+      operations,
+    }) => ({
+      handoff_id: handoffId,
+      handoff_digest: handoffDigest,
+      binding_digest: bindingDigest,
+      operations,
+    }));
+  const completedDelegates = new Set(run.events
+    .filter(({ type }) => type === "delegate_completed")
+    .map(({ card_id: cardId }) => cardId));
+  const quarantinedDelegateOutputs = run.events
+    .filter(({ type }) => type === "delegate_output_quarantined")
+    .map(({ type: _type, ...output }) =>
+      sanitizeProviderReceiptValue(output, { root: false }));
+  const unresolvedEffectIds = new Set([...effectIntents.keys()].filter(
+    (effectId) => !effectReceipts.has(effectId),
+  ));
+  const failedSubruns = new Set(run.events
+    .filter(({ type }) => type === "subrun_failed")
+    .map(({ card_id: cardId }) => cardId));
+  const subrunAdmissions = new Map(run.events
+    .filter(({ type }) => type === "subrun_admitted")
+    .map((event) => [event.card_id, event]));
+  const grantEvents = run.events.filter(({ type }) => type === "capability_granted");
+  const grants = grantEvents.map(({ type: _type, ...grant }) => grant);
+  const revisionEvents = run.events.filter(({ type }) => type === "plan_revised");
+  const revisionDeclineEvents = run.events
+    .map((event, eventIndex) => ({ event, eventIndex }))
+    .filter(({ event }) => event.type === "plan_revision_declined");
+  const gatedRevisionEvents = revisionEvents.filter((revision) =>
+    revision.repair?.checkpoint_id !== undefined &&
+    revision.repair.checkpoint_id !== null &&
+    checkpointDecisions.get(revision.repair.checkpoint_id) !== "approve");
+  const reservedRevisionEvents = gatedRevisionEvents.filter((revision) =>
+    checkpointDecisions.get(revision.repair.checkpoint_id) !== "decline");
+  const admissionRevisionEvents = revisionEvents.filter((revision) =>
+    revision.repair?.checkpoint_id === undefined ||
+    revision.repair.checkpoint_id === null ||
+    checkpointDecisions.get(revision.repair.checkpoint_id) !== "decline");
+  const effectiveRevisionEvents = revisionEvents.filter((revision) =>
+    revision.repair?.checkpoint_id === undefined ||
+    revision.repair.checkpoint_id === null ||
+    checkpointDecisions.get(revision.repair.checkpoint_id) === "approve");
+  const latestRevision = revisionEvents.at(-1);
+  const activePlan = latestRevision?.active_plan ?? run.prepared.graph;
+  const supersededCards = [...new Set(
+    revisionEvents.flatMap(({ changes }) => changes.supersede_cards),
+  )].sort();
+  const capabilityBindings = uniqueCanonical([
+    ...run.prepared.requested_authority.capabilities.map((capability) => ({
+      capability,
+      card_ids: ["*"],
+    })),
+    ...grantEvents.flatMap(({ capabilities: values, card_ids: cardIds }) =>
+      values.map((capability) => ({ capability, card_ids: cardIds }))),
+    ...effectiveRevisionEvents.flatMap(({ changes }) =>
+      changes.capability_additions),
+  ]);
+  const capabilities = [...new Set(
+    capabilityBindings.map(({ capability }) => capability),
+  )].sort();
+  const resourceClaims = uniqueCanonical([
+    ...run.prepared.explicit_facts.resource_claims,
+    ...effectiveRevisionEvents.flatMap(({ changes }) =>
+      [
+        ...changes.resource_additions,
+        ...changes.add_cards.flatMap(({ resource_claims: claims }) =>
+          claims ?? []),
+      ]),
+  ]);
+  const limits = effectiveRevisionEvents.reduce(
+    (current, { changes }) => ({ ...current, ...changes.limit_changes }),
+    run.prepared.explicit_facts.limits,
+  );
+  // Accepted gated revisions reserve their declared capability and resource
+  // additions immediately.  The authority withholds those additions from
+  // effective execution until the bound checkpoint is approved, but later
+  // admissions must still count them against the same caps.
+  const admissionCapabilityBindings = uniqueCanonical([
+    ...run.prepared.requested_authority.capabilities.map((capability) => ({
+      capability,
+      card_ids: ["*"],
+    })),
+    ...grantEvents.flatMap(({ capabilities: values, card_ids: cardIds }) =>
+      values.map((capability) => ({ capability, card_ids: cardIds }))),
+    ...admissionRevisionEvents.flatMap(({ changes }) => changes.capability_additions),
+  ]);
+  const admissionResourceClaims = uniqueCanonical([
+    ...run.prepared.explicit_facts.resource_claims,
+    ...admissionRevisionEvents.flatMap(({ changes }) => [
+      ...changes.resource_additions,
+      ...changes.add_cards.flatMap(({ resource_claims: claims }) => claims ?? []),
+    ]),
+  ]);
+  const revisionReservations = {
+    capability_additions: reservedRevisionEvents.flatMap(({ changes }) =>
+      changes.capability_additions),
+    resource_additions: reservedRevisionEvents.flatMap(({ changes }) => [
+      ...changes.resource_additions,
+      ...changes.add_cards.flatMap(({ resource_claims: claims }) => claims ?? []),
+    ]),
+    limit_changes: reservedRevisionEvents.reduce(
+      (current, { changes }) => ({ ...current, ...changes.limit_changes }),
+      {},
+    ),
+  };
+  // Pending gated limit changes are not effective admission capacity.  Keep
+  // their reservation visible separately, while later admissions use only
+  // approved/effective revisions (and their own proposed limit changes).
+  const admissionLimits = effectiveRevisionEvents.reduce(
+    (current, { changes }) => ({ ...current, ...changes.limit_changes }),
+    run.prepared.explicit_facts.limits,
+  );
+  const phase = run.events.some(({ type }) => type === "run_cancelled")
+    ? "cancelled"
+    : run.events.some(({ type }) => type === "run_declined")
+      ? "declined"
+      : run.events.some(({ type }) => type === "run_succeeded")
+        ? "succeeded"
+        : "active";
+  const resourceDispositions = cancellationEvent?.resource_dispositions?.map(entry => ({ ...entry })) ??
+    resourceClaims.map((claim) => ({
+      claim,
+      disposition: phase === "active" ? "held" : "released",
+    }));
+  for (const event of run.events.filter(event => ["cancelled_workspace_settled", "cancelled_capture_settled"].includes(event.type))) {
+    const item = resourceDispositions.find(item => digest(item.claim) === digest(event.resource_claim));
+    if (item) item.disposition = "released";
+  }
+  const declinedGatedRevisions = revisionEvents.filter((revision) =>
+    revision.repair?.checkpoint_id !== undefined &&
+    revision.repair.checkpoint_id !== null &&
+    checkpointDecisions.get(revision.repair.checkpoint_id) === "decline");
+  const voidedCardIds = new Set(declinedGatedRevisions.flatMap(({ changes }) =>
+    changes.add_cards
+      .filter(({ executor }) => executor?.kind !== "checkpoint")
+      .map(({ id }) => id)));
+  const activeObservedBlocks = new Map();
+  const cards = activePlan.cards.map((card) => {
+    let status = "pending";
+    if (voidedCardIds.has(card.id)) {
+      status = "voided";
+    } else if (supersededCards.includes(card.id)) {
+      status = "superseded";
+    } else if (failedSubruns.has(card.id)) {
+      status = "declined";
+    } else if (completedOperations.has(card.id) ||
+        completedDelegates.has(card.id)) {
+      status = "completed";
+    } else if (checkpointDecisions.get(card.id) === "decline") {
+      status = "declined";
+    } else if (approvedCheckpoints.has(card.id)) {
+      status = "completed";
+    } else if (phase === "cancelled") {
+      status = "abandoned";
+    } else if ([...effectIntents.values()].some(
+      ({ card_id: cardId, effect_id: effectId }) =>
+        cardId === card.id && unresolvedEffectIds.has(effectId),
+    )) {
+      status = "executing";
+    } else if (quarantinedDelegateOutputs.some(
+      ({ card_id: cardId }) => cardId === card.id,
+    )) {
+      status = "blocked";
+    } else if (phase === "active" && card.dependencies.every((dependency) =>
+      approvedCheckpoints.has(dependency) ||
+      completedOperations.has(dependency) ||
+      completedDelegates.has(dependency))) {
+      const block = observedBlocks.get(card.id);
+      const capabilityBlocked = block?.type === "capability_required" &&
+        !block.required_capabilities.every((capability) =>
+          capabilityApplies(capabilityBindings, capability, card.id));
+      const revisionBlocked = block?.type === "plan_revision_required";
+      if (capabilityBlocked || revisionBlocked) {
+        activeObservedBlocks.set(card.id, block);
+      }
+      status = capabilityBlocked || revisionBlocked
+        ? "blocked"
+        : card.executor.kind === "checkpoint" ? "waiting_checkpoint" : "ready";
+    }
+    return {
+      id: card.id,
+      executor_kind: card.executor.kind,
+      status,
+    };
+  });
+  const planFingerprint = latestRevision?.plan_fingerprint ??
+    run.prepared.plan_fingerprint;
+  const blocks = cards
+    .filter(({ status }) => status === "blocked")
+    .map(({ id }) => {
+      const observed = activeObservedBlocks.get(id);
+      if (observed) return { card_id: id, ...observed };
+      const quarantined = quarantinedDelegateOutputs.filter(
+        ({ card_id: cardId }) => cardId === id,
+      ).at(-1);
+      return {
+        schema: "flow.delegate-card-block/v1",
+        id: `${quarantined.attempt_id}:quarantined-output`,
+        type: "delegate_output_quarantined",
+        card_id: id,
+        attempt_id: quarantined.attempt_id,
+        quarantine_reason: quarantined.quarantine_record.quarantine_reason,
+      };
+    });
+  const revisions = revisionEvents.map((revision) => ({
+    ordinal: revision.ordinal,
+    template_id: revision.template_id,
+    base_plan_fingerprint: revision.base_plan_fingerprint,
+    plan_fingerprint: revision.plan_fingerprint,
+    trigger: revision.trigger,
+    changes: revision.changes,
+    ...(revision.repair === undefined ? {} : { repair: revision.repair }),
+    ...(revision.repair?.checkpoint_id === undefined ||
+      revision.repair.checkpoint_id === null ? {} : {
+        effect_state: revisionEffectState(revision, checkpointDecisions),
+      }),
+  }));
+  const currentRevision = latestRevision
+    ? {
+      ordinal: latestRevision.ordinal,
+      base_plan_fingerprint: latestRevision.base_plan_fingerprint,
+      plan_fingerprint: latestRevision.plan_fingerprint,
+      trigger: latestRevision.trigger,
+      ...(latestRevision.repair === undefined ? {} : {
+        repair: latestRevision.repair,
+      }),
+      ...(latestRevision.repair?.checkpoint_id === undefined ||
+        latestRevision.repair.checkpoint_id === null ? {} : {
+          effect_state: revisionEffectState(latestRevision, checkpointDecisions),
+        }),
+    }
+    : { ordinal: 0, plan_fingerprint: run.prepared.plan_fingerprint };
+  const revisionState = {
+    current_revision: currentRevision,
+    revisions,
+    cards,
+    active_plan: activePlan,
+    superseded_cards: supersededCards,
+    limits,
+    capability_envelopes: run.prepared.explicit_facts.capability_envelopes,
+    capability_bindings: capabilityBindings,
+    resource_claims: resourceClaims,
+    admission_capability_bindings: admissionCapabilityBindings,
+    revision_reservations: revisionReservations,
+    admission_limits: admissionLimits,
+    admission_resource_claims: admissionResourceClaims,
+    elapsed_seconds: run.prepared.explicit_facts.elapsed_seconds,
+  };
+  const retryAccounting = new Map([...effectIntents.values()]
+    .map((intent) => [
+      intent.effect_id,
+      operationRetryAccounting(
+        intent,
+        effectInvocationCounts,
+        effectRetryStates,
+      ),
+    ]));
+  const checkpointActions = cards
+    .filter(({ executor_kind: kind, status }) =>
+      kind === "checkpoint" && status === "waiting_checkpoint")
+    .flatMap(({ id }) => ["approve", "decline"].map((decision) => ({
+      schema: "flow.command/v1",
+      type: "checkpoint_decision",
+      run_id: run.run_id,
+      checkpoint_id: id,
+      decision,
+      expected_watermark: watermark,
+    })));
+  const capabilityActions = blocks
+    .filter(({ type }) => type === "capability_required")
+    .filter((block) => {
+      const nextCapabilities = new Set([
+        ...capabilities,
+        ...block.required_capabilities,
+      ]);
+      return block.required_capabilities.length > 0 &&
+        nextCapabilities.size <= limits.max_capabilities;
+    })
+    .map((block) => ({
+      schema: "flow.command/v1",
+      type: "capability_grant",
+      run_id: run.run_id,
+      grant_id: `${block.id}:grant`,
+      capabilities: block.required_capabilities,
+      card_ids: [block.card_id],
+      base_plan_fingerprint: planFingerprint,
+      trigger: block.trigger,
+      expected_watermark: watermark,
+    }));
+  const revisionActions = blocks
+    .filter(({ type }) => type === "plan_revision_required")
+    .flatMap((block) =>
+    block.revision_template_ids.flatMap((templateId) => {
+      const template = run.prepared.revision_templates.find(
+        ({ id }) => id === templateId,
+      );
+      const admission = admitPlanRevision(revisionState, template);
+      const action = {
+        schema: "flow.command/v1",
+        type: "revision_decision",
+        run_id: run.run_id,
+        template_id: template.id,
+        base_plan_fingerprint: planFingerprint,
+        trigger: block.trigger,
+        changes: template.changes,
+        expected_watermark: watermark,
+        ...(admission.code === undefined ? {} : {
+          admission: {
+            accepted: false,
+            code: admission.code,
+          },
+        }),
+        ...(template.repair === undefined ? {} : { repair: template.repair }),
+      };
+      const decline = { ...action, decision: "decline" };
+      if (admission.code) return [decline];
+      return [{ ...action, decision: "accept" }, decline];
+    }),
+  );
+  const operationActions = cards
+    .filter(({ executor_kind: kind, status }) =>
+      kind === "operation" && status === "ready")
+    .filter(({ id }) => trackerProgressActionIsCurrent({
+      activePlan,
+      cards,
+      operationId: id,
+    }))
+    .filter(({ id }) => !effectClassPolicy(activePlan.cards.find(
+      (card) => card.id === id,
+    ).executor.effect_classification).requires_fresh_checkpoint)
+    .map(({ id }) => ({
+      schema: "flow.command/v1",
+      type: "operation_execute",
+      run_id: run.run_id,
+      card_id: id,
+      expected_watermark: watermark,
+    }));
+  const delegateActions = cards
+    .filter(({ id, executor_kind: kind, status }) =>
+      kind === "delegate" && (status === "ready" ||
+        status === "blocked" && !activeObservedBlocks.has(id) &&
+        quarantinedDelegateOutputs.some(
+          ({ card_id: cardId }) => cardId === id,
+        )))
+    .filter(({ id }) => {
+      const attempts = [...effectIntents.values()].filter(
+        ({ card_id: cardId, effect_kind: kind }) =>
+          cardId === id && kind === "delegate",
+      ).length;
+      const card = activePlan.cards.find(({ id: cardId }) => cardId === id);
+      return attempts < card.limits.max_attempts;
+    })
+    .map(({ id }) => ({
+      schema: "flow.command/v1",
+      type: "delegate_execute",
+      run_id: run.run_id,
+      card_id: id,
+      expected_watermark: watermark,
+    }));
+  const delegateDispositionActions = cards
+    .filter(({ executor_kind: kind, status }) =>
+      kind === "delegate" && status === "blocked")
+    .filter(({ id }) => !activeObservedBlocks.has(id) &&
+      quarantinedDelegateOutputs.some(
+        ({ card_id: cardId }) => cardId === id,
+      ))
+    .filter(({ id }) => {
+      const attempts = [...effectIntents.values()].filter(
+        ({ card_id: cardId, effect_kind: kind }) =>
+          cardId === id && kind === "delegate",
+      ).length;
+      const card = activePlan.cards.find(({ id: cardId }) => cardId === id);
+      return attempts >= card.limits.max_attempts;
+    })
+    .map(({ id }) => {
+      const quarantine = quarantinedDelegateOutputs.filter(
+        ({ card_id: cardId }) => cardId === id,
+      ).at(-1);
+      return {
+        schema: "flow.command/v1",
+        type: "terminal_disposition",
+        run_id: run.run_id,
+        card_id: id,
+        attempt_id: quarantine.attempt_id,
+        disposition: "decline",
+        reason: "delegate_attempts_exhausted",
+        expected_watermark: watermark,
+      };
+    });
+  const subrunActions = cards
+    .filter(({ executor_kind: kind, status }) =>
+      kind === "subrun" && status === "ready")
+    .map(({ id }) => ({
+      schema: "flow.command/v1",
+      type: "subrun_execute",
+      run_id: run.run_id,
+      card_id: id,
+      expected_watermark: watermark,
+    }));
+  const hasCancellationReceiptFor = (delegateEffectId) =>
+    [...effectIntents.values()].some((intent) =>
+      intent.effect_kind === "delegate_cancellation" &&
+      intent.delegate_effect_id === delegateEffectId &&
+      effectReceipts.has(intent.effect_id));
+  const recoveryActions = [...effectIntents.values()]
+    .filter((intent) => !effectReceipts.has(intent.effect_id))
+    .filter((intent) => {
+      const retry = retryAccounting.get(intent.effect_id);
+      const observationOnly = effectClassPolicy(intent.classification)
+        ?.requires_observation === true;
+      return retry === null || observationOnly ||
+        (retry.status !== "blocked" && retry.status !== "exhausted") ||
+        retry.reason === "retry_time_unavailable";
+    })
+    .filter((intent) => phase !== "cancelled" ||
+      intent.effect_kind === "delegate_cancellation" ||
+      ((intent.effect_kind !== "delegate" ||
+        hasCancellationReceiptFor(intent.effect_id)) &&
+       (intent.effect_kind === "delegate" ||
+        effectClassPolicy(intent.classification).requires_observation) &&
+      effectInvocationIndexes.has(intent.effect_id) &&
+      effectInvocationIndexes.get(intent.effect_id) < cancellationIndex))
+    .map((intent) => ({
+      schema: "flow.command/v1",
+      type: "recovery",
+      run_id: run.run_id,
+      effect_id: intent.effect_id,
+      recovery: phase === "cancelled"
+        ? "settle_cancelled"
+        : effectClassPolicy(intent.classification).recovery,
+      expected_watermark: watermark,
+    }));
+  const cancellationActions = run.prepared.requested_authority.commands.includes(
+    "cancel",
+  ) ? [{
+      schema: "flow.command/v1",
+      type: "cancel",
+      run_id: run.run_id,
+      expected_watermark: watermark,
+    }] : [];
+  const hasUnresolvedEffects = effectIntents.size > effectReceipts.size;
+  const legalActions = phase === "cancelled"
+    ? recoveryActions
+    : phase === "active"
+    ? hasUnresolvedEffects
+      ? [
+          ...capabilityActions,
+          ...recoveryActions,
+          ...cancellationActions,
+        ]
+      : [
+        ...checkpointActions,
+        ...capabilityActions,
+        ...revisionActions,
+        ...operationActions,
+        ...delegateActions,
+        ...delegateDispositionActions,
+        ...subrunActions,
+        ...recoveryActions,
+        ...cancellationActions,
+      ]
+      : [];
+  const recordedRevisionOutcomes = revisionDeclineEvents
+    .filter(({ event }) => event.repair !== undefined)
+    .map(({ event, eventIndex }) => ({
+      eventIndex,
+      outcome: {
+      schema: "flow.feature-repair-outcome/v1",
+      status: revisionAdmissionStatus(event.code) === "cap_exhausted"
+        ? "cap_exhausted"
+        : event.code && event.code !== "revision_declined"
+          ? "structurally_rejected"
+          : "declined",
+      template_id: event.template_id,
+      base_plan_fingerprint: event.base_plan_fingerprint,
+      trigger: event.trigger,
+      changes: event.changes ?? null,
+      reason: event.reason ?? "operator_declined",
+      code: event.code ?? "revision_declined",
+      repair: event.repair,
+      authority_watermark: watermark,
+      legal_next_actions: legalActions.filter((action) =>
+        action.type === "revision_decision" &&
+        action.template_id === event.template_id),
+      },
+    }));
+  const declinedGatedOutcomes = declinedGatedRevisions.map((revision) => {
+    const checkpointIndex = run.events.findIndex((event) =>
+      event.type === "checkpoint_decided" &&
+      event.checkpoint_id === revision.repair.checkpoint_id &&
+      event.decision === "decline");
+    return {
+      eventIndex: checkpointIndex < 0 ? run.events.length : checkpointIndex,
+      outcome: {
+        schema: "flow.feature-repair-outcome/v1",
+        status: "expansion_declined",
+        template_id: revision.template_id,
+        base_plan_fingerprint: revision.base_plan_fingerprint,
+        trigger: revision.trigger,
+        changes: revision.changes,
+        reason: "checkpoint_declined",
+        code: "expansion_declined",
+        repair: revision.repair,
+        effect_state: revisionEffectState(revision, checkpointDecisions),
+        authority_watermark: watermark,
+        legal_next_actions: [],
+      },
+    };
+  });
+  const projectedAdmissionOutcomes = revisionActions
+    .filter((action) => action.admission !== undefined &&
+      action.repair !== undefined)
+    .map((action) => ({
+      eventIndex: run.events.length,
+      outcome: {
+      schema: "flow.feature-repair-outcome/v1",
+      status: revisionAdmissionStatus(action.admission.code),
+      template_id: action.template_id,
+      base_plan_fingerprint: action.base_plan_fingerprint,
+      trigger: action.trigger,
+      changes: action.changes,
+      reason: "revision_admission_rejected",
+      code: action.admission.code,
+      ...(action.repair === undefined ? {} : { repair: action.repair }),
+      authority_watermark: watermark,
+      legal_next_actions: [action],
+      },
+    }));
+  const outcomeIdentities = new Set();
+  const revisionOutcomes = [];
+  for (const { outcome } of [
+    ...recordedRevisionOutcomes,
+    ...declinedGatedOutcomes,
+  ].sort((left, right) => left.eventIndex - right.eventIndex)) {
+    const identity = revisionOutcomeIdentity(outcome);
+    if (outcomeIdentities.has(identity)) continue;
+    outcomeIdentities.add(identity);
+    revisionOutcomes.push(outcome);
+  }
+  for (const { outcome } of projectedAdmissionOutcomes) {
+    const identity = revisionOutcomeIdentity(outcome);
+    if (outcomeIdentities.has(identity)) continue;
+    outcomeIdentities.add(identity);
+    revisionOutcomes.push(outcome);
+  }
+  const progress = phase !== "active"
+    ? "complete"
+    : blocks.length > 0 ? "blocked"
+      : hasUnresolvedEffects ? "executing" : "waiting";
+  const isCancellationEffect = (effectId) =>
+    effectIntents.get(effectId)?.effect_kind === "delegate_cancellation";
+  const hasLateReceipt = (effectId) => cancellationIndex >= 0 &&
+    !isCancellationEffect(effectId) &&
+    effectReceipts.has(effectId) &&
+    effectReceiptIndexes.get(effectId) > cancellationIndex;
+  const isQuarantinedAfterCancellation = (effectId) =>
+    cancellationIndex >= 0 &&
+    !isCancellationEffect(effectId) &&
+    (!effectReceipts.has(effectId) || hasLateReceipt(effectId));
+  const effects = [...effectIntents.values()].map((intent) => ({
+    ...(intent.run_id === undefined ? {} : { run_id: intent.run_id }),
+    effect_id: intent.effect_id,
+    card_id: intent.card_id ?? null,
+    attempt_id: intent.attempt_id,
+    classification: intent.classification,
+    operation_contract: intent.operation_contract,
+    ...(intent.operation_input === undefined ? {} : {
+      operation_input: intent.operation_input,
+    }),
+    ...(intent.source_authority_watermark === undefined ? {} : {
+      source_authority_watermark: intent.source_authority_watermark,
+    }),
+    ...(retryAccounting.get(intent.effect_id) === null ? {} : {
+      retry: retryAccounting.get(intent.effect_id),
+    }),
+    effect_kind: intent.effect_kind ?? "operation",
+    idempotency_key: intent.idempotency_key,
+    route_binding: intent.route_binding,
+    invocation_started: effectInvocationIndexes.has(intent.effect_id),
+    status: effectReceipts.get(intent.effect_id)?.outcome === "not_created"
+      ? "not_created"
+      : effectReceipts.has(intent.effect_id)
+      ? hasLateReceipt(intent.effect_id)
+        ? effectReceipts.get(intent.effect_id)?.outcome === "quarantined"
+          ? "late_quarantined"
+          : "late_succeeded"
+        : effectReceipts.get(intent.effect_id)?.outcome === "quarantined"
+          ? "quarantined"
+          : "succeeded"
+      : cancellationIndex >= 0 &&
+          !isCancellationEffect(intent.effect_id) &&
+          (!effectInvocationIndexes.has(intent.effect_id) ||
+           effectInvocationIndexes.get(intent.effect_id) > cancellationIndex)
+        ? "abandoned"
+      : effectObservations.has(intent.effect_id)
+        ? effectObservations.get(intent.effect_id).provider_observation
+            ?.schema === "flow.registered-operation-execution-observation/v1" &&
+          effectObservations.get(intent.effect_id).provider_observation
+            ?.provider_observation_present !== true
+          ? effectObservations.get(intent.effect_id).provider_observation
+              ?.status === "uncertain_external_outcome"
+            ? effectClassPolicy(intent.classification).observed_unresolved_status
+            : "unresolved"
+          : ["delegate", "delegate_cancellation"].includes(intent.effect_kind) &&
+            effectObservations.get(intent.effect_id).presence === "indeterminate"
+          ? "reconciling"
+          : effectClassPolicy(intent.classification).observed_unresolved_status
+        : "unresolved",
+    disposition: isQuarantinedAfterCancellation(intent.effect_id)
+      ? "quarantined"
+      : "accepted",
+    last_observation: effectObservations.get(intent.effect_id) ?? null,
+    receipt: effectReceipts.get(intent.effect_id) ?? null,
+  })).sort((left, right) => left.effect_id < right.effect_id ? -1 : 1);
+  const attempts = [...effectIntents.values()].map((intent) => ({
+    attempt_id: intent.attempt_id,
+    card_id: intent.card_id ?? null,
+    effect_id: intent.effect_id,
+    ...(retryAccounting.get(intent.effect_id) === null ? {} : {
+      retry: retryAccounting.get(intent.effect_id),
+    }),
+    status: isQuarantinedAfterCancellation(intent.effect_id)
+      ? "abandoned"
+      : effectReceipts.has(intent.effect_id) ? "completed" : "active",
+  })).sort((left, right) => left.attempt_id < right.attempt_id ? -1 : 1);
+  const trackerProgress = buildTrackerProgressProjection({
+    activePlan,
+    effects,
+    foldWatermark: watermark,
+    legalActions,
+    prepared: run.prepared,
+    runOwnership,
+    runId: run.run_id,
+    cards,
+  });
+  const delegateAttempts = [...effectIntents.values()]
+    .filter(({ effect_kind: kind }) => kind === "delegate")
+    .map((intent) => {
+      const receipt = effectReceipts.get(intent.effect_id);
+      const observation = effectObservations.get(intent.effect_id);
+      const hasTypedMaterializationFailure =
+        observation?.provider_observation?.schema ===
+        DELEGATE_FAILURE_OBSERVATION_SCHEMA;
+      return {
+        attempt_id: intent.attempt_id,
+        card_id: intent.card_id,
+        effect_id: intent.effect_id,
+        caller_key: intent.attempt_id,
+        route_binding: intent.route_binding,
+        // A typed materialization failure is durable operator-facing truth;
+        // ordinary unresolved provider observations retain the historical
+        // reserved state until recovery proves what Drovr did.
+        status: isQuarantinedAfterCancellation(intent.effect_id)
+          ? "abandoned"
+          : receipt
+          ? receipt.outcome === "quarantined" ? "quarantined" : "accepted"
+          : hasTypedMaterializationFailure
+          ? "reconciling"
+          : "reserved",
+        validated_output: receipt?.outcome === "succeeded"
+          ? receipt.provider_receipt.validated_output
+          : null,
+        evidence: receipt?.outcome === "succeeded"
+          ? receipt.provider_receipt
+          : null,
+      };
+    });
+  const subruns = [...effectIntents.values()]
+    .filter(({ operation_contract: contract }) =>
+      contract === "flow.subrun/create-and-observe/v1")
+    .map((intent) => {
+      const effectReceipt = effectReceipts.get(intent.effect_id);
+      const receipt = effectReceipt?.provider_receipt;
+      const admission = subrunAdmissions.get(intent.card_id);
+      const notCreated = effectReceipt?.outcome === "not_created" ||
+        cancellationIndex >= 0 && !effectInvocationIndexes.has(intent.effect_id);
+      return {
+        parent_run_id: run.run_id,
+        card_id: intent.card_id,
+        card_identity: intent.card_identity,
+        revision_ordinal: intent.revision_ordinal,
+        child_run_id: receipt?.child_run_id ?? deriveChildRunId({
+          parent_run_id: run.run_id,
+          card_identity: intent.card_identity,
+          revision_ordinal: intent.revision_ordinal,
+        }),
+        status: notCreated
+          ? "not_created"
+          : receipt?.child_phase ?? (admission ? "active" : "admission_pending"),
+        result_disposition: notCreated
+          ? "not_created"
+          : cancellationIndex >= 0 ||
+            receipt && receipt.child_phase !== "succeeded"
+          ? "quarantined"
+          : receipt ? "claimed" : "pending",
+        cancellation_disposition: cancellationIndex < 0
+          ? "not_requested"
+          : receipt || notCreated ? "reconciled" : "requested",
+        output_disposition: notCreated
+          ? "none"
+          : cancellationIndex >= 0 && receipt
+          ? "late_unclaimed"
+          : receipt?.child_phase !== undefined &&
+              receipt.child_phase !== "succeeded"
+            ? "terminal_unclaimed"
+            : receipt ? "claimed" : "pending",
+        child_watermark: receipt?.child_watermark ??
+          admission?.child_watermark ?? null,
+      };
+    });
+
+  return freezeCanonical({
+    schema: "flow.run-fold/v1",
+    ...(run.prepared.trust_posture?.execution_contract === "flow.supervised-native-cli/v1" &&
+      run.prepared.trust_posture.verification_scope?.schema === "flow.supervised-verification-scope/v1"
+      ? { trust_posture: run.prepared.trust_posture } : {}),
+    run_id: run.run_id,
+    ...(run.lineage === undefined ? {} : { parent: run.lineage }),
+    run_ownership: runOwnership,
+    watermark,
+    sequence: run.events.length,
+    phase,
+    progress,
+    bundle_digest: run.prepared.bundle_digest,
+    plan_fingerprint: planFingerprint,
+    current_revision: currentRevision,
+    revisions,
+    active_plan: activePlan,
+    superseded_cards: supersededCards,
+    cards,
+    blocks,
+    grants,
+    capabilities,
+    capability_bindings: capabilityBindings,
+    admission_capability_bindings: admissionCapabilityBindings,
+    revision_reservations: revisionReservations,
+    admission_limits: admissionLimits,
+    capability_envelopes: run.prepared.explicit_facts.capability_envelopes,
+    resource_claims: resourceClaims,
+    admission_resource_claims: admissionResourceClaims,
+    resource_dispositions: resourceDispositions,
+    limits,
+    elapsed_seconds: run.prepared.explicit_facts.elapsed_seconds,
+    time_facts: launchEvent?.admission_time_facts ??
+      run.prepared.explicit_facts.time_facts,
+    attempts,
+    subruns,
+    effects,
+    ...(trackerProgress === null ? {} : { tracker_progress: trackerProgress }),
+    handoffs,
+    ...(reviewCandidateReference === null ? {} : {
+      review_candidate_reference: reviewCandidateReference,
+    }),
+    resource_handoff_bindings: resourceHandoffBindings,
+    result_bindings: resultBindings,
+    delegate_attempts: delegateAttempts,
+    quarantined_delegate_outputs: quarantinedDelegateOutputs,
+    revision_outcomes: revisionOutcomes,
+    revision_templates: run.prepared.revision_templates,
+    effect_intents: [...effectIntents.values()],
+    legal_actions: legalActions,
+  });
+}
+
+function sanitizeHistoricalEffectObservation(observation, intent) {
+  if (observation === null || typeof observation !== "object" ||
+      Array.isArray(observation)) {
+    return {
+      schema: "flow.effect-observation/v1",
+      effect_id: intent.effect_id,
+      idempotency_key: intent.idempotency_key,
+      presence: "indeterminate",
+      causation: null,
+      provider_observation: {
+        schema: "flow.provider-observation/v1",
+        status: "invalid_output",
+        code: "invalid_effect_observation",
+        reason: "invalid_effect_observation",
+      },
+    };
+  }
+  return normalizeEffectObservation({
+    ...observation,
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+      provider_observation: sanitizeProviderEvidence(
+        observation.provider_observation,
+        intent,
+      ),
+  }, intent);
+}
+
+export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
+  if (fold?.schema !== "flow.run-fold/v1") {
+    throw new Error("run projection requires an authoritative fold");
+  }
+  const views = buildRunViews({ authorityEventStreamDigest, events, fold });
+  const reviewCandidateReference = fold.review_candidate_reference === undefined
+    ? null
+    : freezeCanonical({
+      schema: "flow.review-candidate-reference/v1",
+      candidate_id: fold.review_candidate_reference.candidate_id,
+      candidate_fingerprint: fold.review_candidate_reference.candidate_fingerprint,
+      review_authority_watermark:
+        fold.review_candidate_reference.review_authority_watermark,
+      authority_watermark: fold.watermark,
+      legal_actions: [],
+    });
+  return freezeCanonical({
+    schema: "flow.run-projection/v1",
+    run_id: fold.run_id,
+    ...(fold.parent === undefined ? {} : { parent: fold.parent }),
+    run_ownership: fold.run_ownership,
+    watermark: fold.watermark,
+    sequence: fold.sequence,
+    phase: fold.phase,
+    progress: fold.progress,
+    ...(fold.authority_epoch === undefined ? {} : {
+      admission: fold.admission,
+      authority_epoch: fold.authority_epoch,
+      authority_boot_id: fold.authority_boot_id,
+      stream_generation: fold.stream_generation,
+    }),
+    ...(fold.reboot_revalidation === undefined ? {} : {
+      reboot_revalidation: fold.reboot_revalidation,
+    }),
+    bundle_digest: fold.bundle_digest,
+    plan_fingerprint: fold.plan_fingerprint,
+    current_revision: fold.current_revision,
+    revisions: fold.revisions,
+    revision_outcomes: fold.revision_outcomes,
+    active_plan: fold.active_plan,
+    cards: fold.cards,
+    checkpoints: views.operator.checkpoints,
+    blocks: fold.blocks,
+    grants: fold.grants,
+    capabilities: fold.capabilities,
+    capability_bindings: fold.capability_bindings,
+    admission_capability_bindings: fold.admission_capability_bindings,
+    revision_reservations: fold.revision_reservations,
+    admission_limits: fold.admission_limits,
+    capability_envelopes: fold.capability_envelopes,
+    resource_claims: fold.resource_claims,
+    admission_resource_claims: fold.admission_resource_claims,
+    resource_dispositions: fold.resource_dispositions,
+    limits: fold.limits,
+    ...(fold.execution_time === undefined ? {} : {
+      execution_time: fold.execution_time,
+    }),
+    attempts: fold.attempts,
+    subruns: fold.subruns,
+    effects: fold.effects.map(publicEffectProjection),
+    ...(fold.tracker_progress === undefined ? {} : {
+      tracker_progress: fold.tracker_progress,
+    }),
+    ...(reviewCandidateReference === null ? {} : {
+      review_candidate_reference: reviewCandidateReference,
+    }),
+    handoffs: fold.handoffs,
+    resource_handoff_bindings: fold.resource_handoff_bindings,
+    result_bindings: fold.result_bindings,
+    delegate_attempts: fold.delegate_attempts,
+    quarantined_delegate_outputs: fold.quarantined_delegate_outputs,
+    legal_actions: fold.legal_actions,
+    views,
+  });
+}
+
+function operationRetryAccounting(intent, invocationCounts, retryStates) {
+  if (intent.effect_kind !== undefined && intent.effect_kind !== "operation") {
+    return null;
+  }
+  const maxAttempts = Number.isSafeInteger(intent.max_attempts) &&
+      intent.max_attempts >= 1
+    ? intent.max_attempts
+    : null;
+  if (maxAttempts === null) return null;
+  const consumedAttempts = invocationCounts.get(intent.effect_id) ?? 0;
+  const state = retryStates.get(intent.effect_id);
+  const status = consumedAttempts >= maxAttempts
+    ? "exhausted"
+    : state?.status ?? "ready";
+  return {
+    schema: "flow.operation-retry-projection/v1",
+    max_attempts: maxAttempts,
+    consumed_attempts: consumedAttempts,
+    remaining_attempts: Math.max(0, maxAttempts - consumedAttempts),
+    status,
+    ...(state?.not_before === undefined ? { not_before: null } : {
+      not_before: state.not_before,
+    }),
+    ...(state?.retry_after_ms === undefined ? {} : {
+      retry_after_ms: state.retry_after_ms,
+    }),
+    ...(state?.reason === undefined ? {} : { reason: state.reason }),
+  };
+}
+
+export function applyExecutionTimeObservation(
+  fold,
+  legalActions,
+  observation,
+  events = [],
+) {
+  const projected = projectExecutionTime(fold, observation, events);
+  const executionTime = projected.executionTime;
+  const deadlineBlocksAdmission = ["exhausted", "uncertain", "unobserved"].includes(
+    executionTime.status,
+  );
+  const filteredActions = deadlineBlocksAdmission
+    ? legalActions.filter((action) => {
+      if (["operation_execute", "delegate_execute", "subrun_execute"].includes(
+        action.type,
+      )) return false;
+      if (action.type === "checkpoint_decision" &&
+          action.decision === "approve") return false;
+      if (action.type !== "recovery") return true;
+      const effect = fold.effects.find(({ effect_id: effectId }) =>
+        effectId === action.effect_id);
+      return effect?.effect_kind === "delegate_cancellation" ||
+        effectClassPolicy(effect?.classification)?.requires_observation === true;
+    })
+    : legalActions;
+  return {
+    executionTime,
+    legalActions: filteredActions,
+    admission: projected.admission,
+  };
+}
+
+function projectExecutionTime(fold, observation, events) {
+  const baselineFacts = fold.time_facts;
+  const base = {
+    schema: "flow.execution-time-projection/v1",
+    max_elapsed_seconds: fold.limits.max_elapsed_seconds,
+    wall_elapsed_seconds: null,
+    active_elapsed_seconds: null,
+  };
+  if (!validateTimeFacts(baselineFacts) || baselineFacts.length === 0) {
+    return {
+      executionTime: { ...base, status: "unobserved", reason: "baseline_unavailable" },
+      admission: {
+        wall: { status: "unobserved", reason: "baseline_unavailable" },
+        active: { status: "unobserved", reason: "baseline_unavailable" },
+        uncertain_active_effect_ids: [],
+      },
+    };
+  }
+  const currentFacts = observation?.facts;
+  if (!validateTimeFacts(currentFacts) || currentFacts.length === 0) {
+    return {
+      executionTime: { ...base, status: "uncertain", reason: "observation_unavailable" },
+      admission: {
+        wall: { status: "uncertain", reason: "observation_unavailable" },
+        active: { status: "uncertain", reason: "observation_unavailable" },
+        uncertain_active_effect_ids: [],
+      },
+    };
+  }
+  const wallBounds = elapsedTimeBounds(
+    baselineFacts,
+    currentFacts,
+    fold.elapsed_seconds,
+  );
+  if (wallBounds === null) {
+    return {
+      executionTime: { ...base, status: "uncertain", reason: "time_fact_mismatch" },
+      admission: {
+        wall: { status: "uncertain", reason: "time_fact_mismatch" },
+        active: { status: "uncertain", reason: "time_fact_mismatch" },
+        uncertain_active_effect_ids: [],
+      },
+    };
+  }
+  const active = activeElapsedBounds(events, currentFacts);
+  const wallElapsed = publicElapsedBounds(wallBounds);
+  const activeElapsed = active.bounds === null
+    ? null
+    : publicElapsedBounds(active.bounds);
+  const limit = BigInt(fold.limits.max_elapsed_seconds) * wallBounds.unit;
+  const crossesLimit = wallBounds.upper > limit;
+  const exhausted = wallBounds.lower > limit;
+  const activeDeadline = [...fold.effect_intents]
+    .filter(({ max_active_seconds: max }) => Number.isSafeInteger(max) && max >= 0)
+    .reduce((state, intent) => {
+      const bounds = active.byEffect.get(intent.effect_id);
+      // An absent interval is accounted for by active.uncertain and its
+      // effect-id set. Do not also classify it as an attempt-deadline
+      // uncertainty: the special exact-absence recovery waiver may clear
+      // only that unknown-attempt accounting, never a known deadline.
+      if (!bounds) return state;
+      const activeLimit = BigInt(intent.max_active_seconds) * bounds.unit;
+      if (bounds.lower > activeLimit) state.exhausted = true;
+      else if (bounds.upper > activeLimit) state.uncertain = true;
+      return state;
+    }, { exhausted: false, uncertain: false });
+  const wallDecision = exhausted
+    ? { status: "exhausted", reason: "wall_deadline_exhausted" }
+    : crossesLimit
+      ? { status: "uncertain", reason: "wall_deadline_uncertain" }
+      : { status: "within" };
+  const activeDecision = activeDeadline.exhausted
+    ? { status: "exhausted", reason: "attempt_deadline_exhausted" }
+    : activeDeadline.uncertain
+      ? { status: "uncertain", reason: "attempt_deadline_uncertain" }
+      : active.uncertain
+        ? { status: "uncertain", reason: "active_time_uncertain" }
+        : { status: "within" };
+  const executionTimeDecision = activeDecision.status !== "within"
+    ? activeDecision
+    : wallDecision;
+  return {
+    executionTime: {
+      ...base,
+      ...executionTimeDecision,
+      wall_elapsed_seconds: wallElapsed,
+      active_elapsed_seconds: activeElapsed,
+    },
+    admission: {
+      wall: wallDecision,
+      active: activeDecision,
+      uncertain_active_effect_ids: [...active.uncertainEffects],
+    },
+  };
+}
+
+function activeElapsedBounds(events, currentFacts) {
+  let lower = 0n;
+  let upper = 0n;
+  let uncertain = false;
+  const uncertainEffects = new Set();
+  const byEffect = new Map();
+  for (const [index, event] of events.entries()) {
+    if (![
+      "effect_invocation_started",
+      "effect_invocation_resumed",
+    ].includes(event.type)) continue;
+    // A takeover resumes the same interval. Keep its original start so
+    // elapsed time is neither reset nor counted again over the overlap.
+    if (event.type === "effect_invocation_resumed") {
+      const previousIndex = events.slice(0, index).findLastIndex(candidate =>
+        candidate.effect_id === event.effect_id &&
+        ["effect_invocation_started", "effect_invocation_resumed"].includes(candidate.type));
+      const previous = events[previousIndex];
+      if (validateTimeFacts(event.time_facts) && event.time_facts.length > 0 &&
+          previous !== undefined && validateTimeFacts(previous.time_facts) && previous.time_facts.length > 0 &&
+          !events.slice(previousIndex + 1, index).some(candidate => candidate.type === "run_cancelled" ||
+            candidate.effect_id === event.effect_id && ["effect_observation_recorded", "effect_receipt_recorded"].includes(candidate.type))) continue;
+    }
+    const settled = events.slice(index + 1).find((candidate) =>
+      candidate.type === "run_cancelled" ||
+      candidate.effect_id === event.effect_id && [
+        "effect_receipt_recorded",
+        "effect_observation_recorded",
+      ].includes(candidate.type));
+    if (!validateTimeFacts(event.time_facts) || event.time_facts.length === 0) {
+      if (event.type === "effect_invocation_started" &&
+          events.slice(index + 1).some((candidate, offset) =>
+            candidate.type === "effect_invocation_resumed" &&
+            candidate.effect_id === event.effect_id &&
+            validExactAbsenceBefore(events, index + 1 + offset, event.effect_id))) {
+        continue;
+      }
+      uncertain = true;
+      uncertainEffects.add(event.effect_id);
+      continue;
+    }
+    const endFacts = settled === undefined ? currentFacts : settled.time_facts;
+    if (!validateTimeFacts(endFacts) || endFacts.length === 0) {
+      uncertain = true;
+      uncertainEffects.add(event.effect_id);
+      continue;
+    }
+    const interval = elapsedTimeBounds(event.time_facts, endFacts, 0);
+    if (interval === null) {
+      uncertain = true;
+      uncertainEffects.add(event.effect_id);
+      continue;
+    }
+    const multiplier = interval.unit === 1_000n ? 1_000_000n : 1n;
+    lower += interval.lower * multiplier;
+    upper += interval.upper * multiplier;
+    const previous = byEffect.get(event.effect_id) ?? {
+      lower: 0n,
+      upper: 0n,
+      unit: 1_000_000_000n,
+    };
+    byEffect.set(event.effect_id, {
+      lower: previous.lower + interval.lower * multiplier,
+      upper: previous.upper + interval.upper * multiplier,
+      unit: 1_000_000_000n,
+    });
+  }
+  return {
+    bounds: { lower, upper, unit: 1_000_000_000n },
+    byEffect,
+    uncertain,
+    uncertainEffects,
+  };
+}
+
+function validExactAbsenceBefore(events, index, effectId) {
+  const observation = events.slice(0, index).reverse().find((candidate) =>
+    candidate.type === "effect_observation_recorded" &&
+    candidate.effect_id === effectId)?.observation;
+  return observation?.presence === "absent" &&
+    observation.causation === null &&
+    hasAffirmativeProviderObservation(
+      observation.provider_observation,
+      "absent",
+    );
+}
+
+function publicElapsedBounds(bounds) {
+  const maximum = BigInt(Number.MAX_SAFE_INTEGER);
+  if (bounds.lower > maximum * bounds.unit ||
+      bounds.upper > maximum * bounds.unit) return null;
+  return {
+    lower: Number(bounds.lower) / Number(bounds.unit),
+    upper: Number(bounds.upper) / Number(bounds.unit),
+  };
+}
+
+function trackerProgressActionIsCurrent({ activePlan, cards, operationId }) {
+  const operation = activePlan.cards.find(({ id }) => id === operationId);
+  if (!isTrackerProgressContract(operation.executor.contract)) return true;
+  return !activePlan.cards.some((candidate) =>
+    isTrackerProgressContract(candidate.executor.contract) &&
+    candidate.inputs.sequence < operation.inputs.sequence &&
+    !["completed", "superseded"].includes(
+      cards.find(({ id }) => id === candidate.id)?.status,
+    ));
+}
+
+function revisionEffectState(revision, checkpointDecisions) {
+  const changes = revision.changes;
+  const checkpointId = revision.repair?.checkpoint_id;
+  const decision = checkpointDecisions.get(checkpointId);
+  const gated = {
+    card_ids: changes.add_cards.map(({ id }) => id),
+    superseded_card_ids: [],
+    edge_ids: changes.add_edges.map(({ from, to }) => `${from}->${to}`),
+    capabilities: changes.capability_additions,
+    resources: [
+      ...changes.resource_additions,
+      ...changes.add_cards.flatMap(({ resource_claims: claims }) => claims ?? []),
+    ],
+    limits: changes.limit_changes,
+  };
+  const appliedSupersession = {
+    superseded_card_ids: changes.supersede_cards,
+  };
+  if (decision === "approve") {
+    return {
+      status: "applied",
+      applied: {
+        ...emptyRevisionEffects(),
+        ...gated,
+        ...appliedSupersession,
+      },
+      gated: emptyRevisionEffects(),
+      voided: emptyRevisionEffects(),
+    };
+  }
+  if (decision === "decline") {
+    return {
+      status: "voided",
+      applied: { ...emptyRevisionEffects(), ...appliedSupersession },
+      gated: emptyRevisionEffects(),
+      voided: gated,
+    };
+  }
+  return {
+    status: "gated",
+    applied: { ...emptyRevisionEffects(), ...appliedSupersession },
+    gated,
+    voided: emptyRevisionEffects(),
+  };
+}
+
+function revisionOutcomeIdentity(outcome) {
+  return digest(JSON.stringify({
+    status: outcome.status,
+    template_id: outcome.template_id,
+    base_plan_fingerprint: outcome.base_plan_fingerprint ?? null,
+    trigger: outcome.trigger ?? null,
+    changes: outcome.changes ?? null,
+    reason: outcome.reason ?? null,
+    code: outcome.code ?? null,
+    repair: outcome.repair ?? null,
+    effect_state: outcome.effect_state ?? null,
+  }));
+}
+
+function emptyRevisionEffects() {
+  return {
+    card_ids: [],
+    superseded_card_ids: [],
+    edge_ids: [],
+    capabilities: [],
+    resources: [],
+    limits: {},
+  };
+}
+
+function buildTrackerProgressProjection({
+  activePlan,
+  cards,
+  effects,
+  foldWatermark,
+  legalActions,
+  prepared,
+  runOwnership,
+  runId,
+}) {
+  const activeProgressCards = activePlan.cards
+    .filter(({ executor }) => isTrackerProgressContract(executor.contract))
+    .filter((card) => cards.find(({ id }) => id === card.id)?.status !==
+      "superseded")
+    .sort((left, right) => left.inputs.sequence - right.inputs.sequence);
+  if (activeProgressCards.length === 0) return null;
+  const current = activeProgressCards.find((card) =>
+    cards.find(({ id }) => id === card.id)?.status !== "completed") ??
+    activeProgressCards.at(-1);
+  const cardState = cards.find(({ id }) => id === current.id);
+  const effect = effects.find(({ card_id: cardId }) => cardId === current.id);
+  const relevantActions = legalActions.filter((action) =>
+    action.card_id === current.id || action.effect_id === effect?.effect_id);
+  const status = cardState.status === "completed" && effect?.receipt
+    ? "projected"
+    : effect?.status ?? cardState.status;
+  return freezeCanonical({
+    schema: "flow.tracker-progress-projection/v1",
+    owner_run_id: runId,
+    operation_card_id: current.id,
+    ownership: runOwnership,
+    binding: prepared.explicit_facts.tracker_binding,
+    tracker: prepared.explicit_facts.tracker_binding.tracker,
+    sequence: current.inputs.sequence,
+    desired: current.inputs,
+    status,
+    authority_watermark: foldWatermark,
+    projected_watermark:
+      effect?.receipt?.provider_receipt?.authority_watermark ?? null,
+    legal_next_actions: relevantActions,
+  });
+}
+
+export function runWatermark(run) {
+  return digest({
+    schema: "flow.run-authority-stream/v1",
+    run_id: run.run_id,
+    events: run.events,
+  });
+}
+
+function capabilityApplies(bindings, capability, cardId) {
+  return bindings.some((binding) => binding.capability === capability &&
+    (binding.card_ids.includes("*") || binding.card_ids.includes(cardId)));
+}

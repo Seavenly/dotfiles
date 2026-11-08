@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.authority-schema-transition-boundary.v1.schema.json",
+  "title": "flow.authority-schema-transition-boundary/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "phase",
+    "from_version",
+    "to_version",
+    "from_watermark",
+    "transition_release",
+    "authority_schema"
+  ],
+  "properties": {
+    "schema": { "const": "flow.authority-schema-transition-boundary/v1" },
+    "phase": { "enum": ["before_commit", "after_commit"] },
+    "from_version": { "type": "integer", "minimum": 0 },
+    "to_version": { "type": "integer", "minimum": 1 },
+    "from_watermark": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "transition_release": { "$ref": "#/$defs/release" },
+    "authority_schema": { "$ref": "#/$defs/compatibility" }
+  },
+  "$defs": {
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "catalog_version"],
+      "properties": {
+        "schema": { "const": "flow.runtime-release/v1" },
+        "id": { "type": "string", "minLength": 1 },
+        "catalog_version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "status",
+        "store_contract",
+        "version",
+        "transition_release",
+        "transition_sequence",
+        "watermark"
+      ],
+      "properties": {
+        "schema": { "const": "flow.authority-schema-compatibility/v1" },
+        "status": {
+          "enum": [
+            "uninitialized",
+            "transition_required",
+            "compatible",
+            "incompatible"
+          ]
+        },
+        "store_contract": { "type": ["string", "null"] },
+        "version": { "type": ["integer", "null"], "minimum": 0 },
+        "transition_release": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/release" }
+          ]
+        },
+        "transition_sequence": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "watermark": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

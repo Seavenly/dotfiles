@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.stack-state.v1.schema.json",
+  "title": "agent-flow.stack-state/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "generation", "plan_fingerprint", "status", "created_layers", "final_head_sha", "final_tree_sha", "prs", "rollback_actions", "error"],
+  "properties": {
+    "schema": { "const": "agent-flow.stack-state/v1" },
+    "run_id": { "$ref": "#/$defs/id" },
+    "generation": { "type": "integer", "minimum": 1 },
+    "active_generation": { "type": "integer", "minimum": 1 },
+    "reviewed_source_sha": { "$ref": "#/$defs/nullableSha" },
+    "plan_fingerprint": { "$ref": "#/$defs/sha256" },
+    "status": { "enum": ["building", "built", "failed", "published", "publish_failed"] },
+    "created_layers": { "type": "array", "items": { "$ref": "#/$defs/layer" } },
+    "final_head_sha": { "$ref": "#/$defs/nullableSha" },
+    "final_tree_sha": { "$ref": "#/$defs/nullableSha" },
+    "prs": { "type": "array", "items": { "$ref": "#/$defs/pr" } },
+    "restacks": { "type": "array", "items": { "$ref": "#/$defs/restack" } },
+    "restack_approval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["actor", "approved_at", "changed_head_sha", "changed_layer_index", "fingerprint", "new_generation", "status"],
+      "properties": {
+        "actor": { "type": "string", "minLength": 1 },
+        "approved_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T" },
+        "changed_head_sha": { "$ref": "#/$defs/sha" },
+        "changed_layer_index": { "type": "integer", "minimum": 0 },
+        "fingerprint": { "$ref": "#/$defs/sha256" },
+        "new_generation": { "type": "integer", "minimum": 2 },
+        "status": { "enum": ["approved", "consumed"] }
+      }
+    },
+    "rollback_actions": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+    "error": { "anyOf": [{ "type": "null" }, { "type": "string" }] }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,127}$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nullableSha": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/sha" }] },
+    "action": {
+      "type": "object", "additionalProperties": false, "required": ["argv"],
+      "properties": { "argv": { "type": "array", "minItems": 1, "items": { "type": "string" } } }
+    },
+    "layer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "branch", "parent_sha", "head_sha"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" }, "branch": { "type": "string", "minLength": 1 },
+        "parent_sha": { "$ref": "#/$defs/sha" }, "head_sha": { "$ref": "#/$defs/sha" },
+        "replayed_from": { "$ref": "#/$defs/sha" },
+        "review_manifest": { "type": "string", "pattern": "^/", "minLength": 2 },
+        "review_manifest_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "pr": {
+      "type": "object", "additionalProperties": false,
+      "required": ["layer_id", "branch", "base", "id", "url", "status"],
+      "properties": {
+        "layer_id": { "$ref": "#/$defs/id" }, "branch": { "type": "string", "minLength": 1 },
+        "base": { "type": "string", "minLength": 1 }, "id": { "anyOf": [{ "type": "string" }, { "type": "integer" }] },
+        "url": { "type": "string", "minLength": 1 }, "status": { "const": "created" }
+      }
+    },
+    "restack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["generation", "changed_layer", "prefix", "owning_layer", "suffix"],
+      "properties": {
+        "generation": { "type": "integer", "minimum": 2 }, "changed_layer": { "$ref": "#/$defs/id" },
+        "prefix": { "type": "array", "items": { "$ref": "#/$defs/layer" } },
+        "owning_layer": { "$ref": "#/$defs/layer" },
+        "suffix": { "type": "array", "items": { "$ref": "#/$defs/layer" } },
+        "final_head_sha": { "$ref": "#/$defs/sha" }, "final_tree_sha": { "$ref": "#/$defs/sha" },
+        "error": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

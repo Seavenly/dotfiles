@@ -1,0 +1,23 @@
+# shellcheck shell=bash
+run() {
+  local label="$1"
+  shift
+
+  local output_file
+  output_file="$(mktemp "${TMPDIR:-/tmp}/dotfiles-check.XXXXXX")"
+  if "$@" >"$output_file" 2>&1; then
+    rm -f "$output_file"
+    printf 'check: %-24s%s\n' "$label" "ok"
+    return 0
+  fi
+
+  printf 'check: %-24s%s\n' "$label" "FAILED"
+  if [[ -s "$output_file" ]]; then
+    printf 'check: %s output:\n' "$label" >&2
+    cat "$output_file" >&2
+  fi
+  rm -f "$output_file"
+  if declare -p failures >/dev/null 2>&1; then
+    failures=$((failures + 1))
+  fi
+}

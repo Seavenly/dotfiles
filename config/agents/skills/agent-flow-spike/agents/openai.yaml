@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Flow Spike"
+  short_description: "Run bounded research and prototype spikes"
+  default_prompt: "Use $agent-flow-spike to investigate this question and preserve the evidence."

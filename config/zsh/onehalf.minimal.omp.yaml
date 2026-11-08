@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/JanDeDobbeleer/oh-my-posh/main/themes/schema.json
+
+palette:
+  background: "#282c34"
+  black: "#282c34"
+  blue: "#61afef"
+  cyan: "#56b6c2"
+  foreground: "#dcdfe4"
+  green: "#98c379"
+  magenta: "#c678dd"
+  red: "#e06c75"
+  white: "#dcdfe4"
+  yellow: "#e5c07b"
+transient_prompt:
+  background: transparent
+  foreground: "#ffffff"
+  template: "{{ if gt .Code 0 }}<p:red>({{ .Code }}) </>{{ else }}<p:green>({{ .Code }}) </>{{ end }}> "
+terminal_background: p:background
+# console_title_template: "{{ .UserName }}@{{ .HostName }}"
+upgrade:
+  source: cdn
+  interval: 168h
+  auto: false
+  notice: false
+blocks:
+- type: prompt
+  alignment: left
+  segments:
+  # - template: "{{ .UserName }}@{{ .HostName }} "
+  #   foreground: p:yellow
+  #   type: session
+  #   style: plain
+  - properties:
+      style: full
+    template: "{{ .Path }} "
+    foreground: p:blue
+    type: path
+    style: plain
+  - properties:
+      branch_icon: ""
+      fetch_stash_count: true
+      fetch_status: true
+      fetch_worktree_count: true
+    template: <p:yellow>git</>:({{ if or (.Working.Changed) (.Staging.Changed) (gt .StashCount 0) }}<p:magenta>{{ .HEAD }}</>{{ else }}<p:green>{{ .HEAD }}</>{{ end }}{{ if (gt .Ahead 0)}}<p:cyan>{{ .BranchStatus }}</>{{ end }}{{ if (gt .Behind 0)}}<p:cyan>{{ .BranchStatus }}</>{{ end }}{{ if .Staging.Changed }} <p:green>{{ .Staging.String }}</>{{ end }}{{ if .Working.Changed }} <p:red>{{ .Working.String }}</>{{ end }})
+    type: git
+    style: plain
+  newline: true
+- type: prompt
+  alignment: left
+  segments:
+  - properties:
+      always_enabled: true
+    template: "{{ if gt .Code 0 }}<p:red>({{ .Code }}) </>{{ else }}<p:green>({{ .Code }}) </>{{ end }}> "
+    foreground: p:foreground
+    type: status
+    style: plain
+  newline: true
+version: 3

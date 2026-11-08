@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.legacy-compatibility-inventory.v1.schema.json",
+  "title": "flow.legacy-compatibility-inventory/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "watermark", "inventory", "legal_next_actions"],
+  "properties": {
+    "schema": { "const": "flow.legacy-compatibility-inventory/v1" },
+    "watermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority", "contract", "content_sha256"],
+      "properties": {
+        "authority": { "const": "retained-legacy-authority" },
+        "contract": { "const": "flow.legacy-compatibility-inventory/v1" },
+        "content_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "active_ownership",
+        "artifacts",
+        "evidence_summary",
+        "reviews",
+        "runs",
+        "sources",
+        "stacks",
+        "transcript_pointers",
+        "unresolved_effects"
+      ],
+      "properties": {
+        "active_ownership": { "$ref": "#/$defs/evidenceArray" },
+        "artifacts": { "$ref": "#/$defs/evidenceArray" },
+        "evidence_summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["missing", "uncertain", "unreadable", "verified"],
+          "properties": {
+            "missing": { "type": "integer", "minimum": 0 },
+            "uncertain": { "type": "integer", "minimum": 0 },
+            "unreadable": { "type": "integer", "minimum": 0 },
+            "verified": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "reviews": { "$ref": "#/$defs/evidenceArray" },
+        "runs": { "$ref": "#/$defs/evidenceArray" },
+        "sources": { "$ref": "#/$defs/evidenceArray" },
+        "stacks": { "$ref": "#/$defs/evidenceArray" },
+        "transcript_pointers": { "$ref": "#/$defs/evidenceArray" },
+        "unresolved_effects": { "$ref": "#/$defs/evidenceArray" }
+      }
+    },
+    "legal_next_actions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "inspect_legacy_evidence",
+          "record_digest_in_transition_ledger",
+          "reinventory"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "evidenceArray": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["evidence_status"],
+        "properties": {
+          "evidence_status": {
+            "enum": ["missing", "unreadable", "uncertain", "verified"]
+          }
+        }
+      }
+    }
+  }
+}

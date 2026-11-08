@@ -1,0 +1,9 @@
+schema = "drovr.capability/v1"
+
+[codex]
+sandbox = "danger-full-access"
+approval = "never"
+search = false
+
+[claude]
+permission_mode = "bypassPermissions"

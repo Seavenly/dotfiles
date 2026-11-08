@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.delivery.v1.schema.json",
+  "title": "agent-flow.delivery/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "run_id", "generation", "repo", "stack_plan", "stack_plan_sha256", "stack_state", "stack_state_sha256",
+    "source_ref", "source_sha", "target", "delivery_branch", "external_ref", "verification",
+    "repository_policy", "layer_reviews"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.delivery/v1" },
+    "run_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "generation": { "type": "integer", "minimum": 1 },
+    "repo": { "$ref": "#/$defs/path" },
+    "stack_plan": { "$ref": "#/$defs/path" },
+    "stack_plan_sha256": { "$ref": "#/$defs/sha256" },
+    "stack_state": { "$ref": "#/$defs/path" },
+    "stack_state_sha256": { "$ref": "#/$defs/sha256" },
+    "source_ref": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "source_sha": { "$ref": "#/$defs/sha" },
+    "target": {
+      "type": "object", "additionalProperties": false, "required": ["ref", "sha"],
+      "properties": { "ref": { "type": "string", "minLength": 1, "maxLength": 256 }, "sha": { "$ref": "#/$defs/sha" } }
+    },
+    "delivery_branch": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "external_ref": { "type": "string", "pattern": "^(github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*|jira:[A-Za-z][A-Za-z0-9_]*-[1-9][0-9]*)$" },
+    "verification": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/command" } },
+    "repository_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["require_current_base", "required_checks", "allow_explicit_checkpoint"],
+      "properties": {
+        "require_current_base": { "const": true },
+        "required_checks": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256 } },
+        "allow_explicit_checkpoint": { "type": "boolean" }
+      }
+    },
+    "layer_reviews": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["layer_id", "head_sha", "path", "sha256"],
+        "properties": {
+          "layer_id": { "type": "string", "minLength": 1 },
+          "head_sha": { "$ref": "#/$defs/sha" },
+          "path": { "$ref": "#/$defs/path" },
+          "sha256": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "path": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "command": {
+      "type": "object", "additionalProperties": false, "required": ["argv"],
+      "properties": { "argv": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "type": "string", "minLength": 1, "maxLength": 4096 } } }
+    }
+  }
+}

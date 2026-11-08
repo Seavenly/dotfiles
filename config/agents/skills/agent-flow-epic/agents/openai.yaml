@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Flow Epic"
+  short_description: "Coordinate dependent features into a verified source branch"
+  default_prompt: "Use $agent-flow-epic to coordinate this epic without completing the external issue early."

@@ -1,0 +1,7 @@
+name: dotfiles-analyst
+version: 1.0.0
+description: Read-oriented evidence and planning lane for repository agent flows
+hermes_requires: ">=0.18.2"
+distribution_owned:
+  - SOUL.md
+  - distribution.yaml

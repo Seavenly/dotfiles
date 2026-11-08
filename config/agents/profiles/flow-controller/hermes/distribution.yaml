@@ -1,0 +1,7 @@
+name: dotfiles-flow-controller
+version: 1.0.0
+description: Hermes Kanban control lane for repository agent flows
+hermes_requires: ">=0.18.2"
+distribution_owned:
+  - SOUL.md
+  - distribution.yaml

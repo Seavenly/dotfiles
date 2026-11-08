@@ -1,0 +1,6 @@
+schema = "drovr.role/v1"
+
+[defaults]
+harness = "codex"
+effort = "high"
+capability = "read-only"

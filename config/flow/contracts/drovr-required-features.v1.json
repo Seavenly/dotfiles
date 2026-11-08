@@ -1,0 +1,132 @@
+{
+  "schema": "flow.drovr-required-features/v1",
+  "features": [
+    {
+      "id": "exact_launch_description",
+      "contract": "drovr.feature/exact-launch-description/v1",
+      "authority": "configuration_catalog",
+      "guarantees": [
+        "resolves_complete_launch_binding",
+        "does_not_create_or_mutate_delegated_resources",
+        "binds_configuration_watermark"
+      ]
+    },
+    {
+      "id": "caller_idempotent_dispatch",
+      "contract": "drovr.feature/caller-idempotent-dispatch/v1",
+      "authority": "delegated_runtime",
+      "guarantees": [
+        "same_caller_key_and_payload_adopts_one_logical_turn",
+        "caller_key_payload_conflict_fails_closed"
+      ]
+    },
+    {
+      "id": "caller_idempotent_discovery",
+      "contract": "drovr.feature/caller-idempotent-discovery/v1",
+      "authority": "delegated_runtime",
+      "guarantees": [
+        "discovers_exact_caller_owned_resource_before_dispatch",
+        "unproven_absence_does_not_authorize_replacement"
+      ]
+    },
+    {
+      "id": "caller_keyed_ordered_input",
+      "contract": "drovr.feature/caller-keyed-ordered-input/v1",
+      "authority": "delegated_runtime",
+      "guarantees": [
+        "each_input_has_stable_caller_identity",
+        "settlement_requires_all_inputs_in_order"
+      ]
+    },
+    {
+      "id": "bounded_observation",
+      "contract": "drovr.feature/bounded-observation/v1",
+      "authority": "delegated_runtime",
+      "guarantees": [
+        "observation_is_read_only",
+        "observation_returns_after_a_declared_bound"
+      ]
+    },
+    {
+      "id": "bounded_wait",
+      "contract": "drovr.feature/bounded-wait/v1",
+      "authority": "delegated_runtime",
+      "guarantees": [
+        "timeout_is_non_destructive",
+        "timeout_preserves_logical_turn_identity"
+      ]
+    },
+    {
+      "id": "transcript_correlation",
+      "contract": "drovr.feature/transcript-correlation/v1",
+      "authority": "delegated_runtime",
+      "guarantees": [
+        "result_follows_every_recorded_input",
+        "unrecorded_input_is_a_correlation_boundary"
+      ]
+    },
+    {
+      "id": "cancellation",
+      "contract": "drovr.feature/cancellation/v1",
+      "authority": "delegated_runtime",
+      "guarantees": [
+        "cancellation_requires_observed_settlement",
+        "uncertain_cancellation_never_claims_success"
+      ]
+    },
+    {
+      "id": "reconciliation",
+      "contract": "drovr.feature/reconciliation/v1",
+      "authority": "delegated_runtime",
+      "guarantees": [
+        "recovery_uses_persisted_launch_binding",
+        "missing_receipt_does_not_prove_absence"
+      ]
+    },
+    {
+      "id": "terminal_proof_classification",
+      "contract": "drovr.feature/terminal-proof-classification/v1",
+      "authority": "delegated_runtime",
+      "guarantees": [
+        "terminal_result_names_its_proof_class",
+        "uncertain_is_distinct_from_completed"
+      ]
+    },
+    {
+      "id": "late_result_correlation",
+      "contract": "drovr.feature/late-result-correlation/v1",
+      "authority": "delegated_runtime",
+      "guarantees": [
+        "late_output_retains_original_turn_identity",
+        "late_output_does_not_replace_accepted_result"
+      ]
+    },
+    {
+      "id": "launch_binding_settlement_proof",
+      "contract": "drovr.feature/launch-binding-settlement-proof/v1",
+      "authority": "delegated_runtime",
+      "guarantees": [
+        "settlement_binds_exact_launch_comparison_key",
+        "catalog_drift_cannot_refresh_active_binding"
+      ]
+    },
+    {
+      "id": "opaque_caller_ownership_metadata",
+      "contract": "drovr.feature/opaque-caller-ownership-metadata/v1",
+      "authority": "delegated_runtime",
+      "guarantees": [
+        "metadata_round_trips_without_interpretation",
+        "metadata_is_bound_by_description_identity"
+      ]
+    },
+    {
+      "id": "feature_advertisement",
+      "contract": "drovr.feature/feature-advertisement/v1",
+      "authority": "configuration_catalog",
+      "guarantees": [
+        "advertisement_is_complete_and_versioned",
+        "advertisement_is_bound_by_configuration_watermark"
+      ]
+    }
+  ]
+}

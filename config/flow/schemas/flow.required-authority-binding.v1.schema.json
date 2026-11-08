@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.required-authority-binding.v1.schema.json",
+  "title": "flow.required-authority-binding/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "contract", "provider_identity", "observation_input", "observation"],
+  "properties": {
+    "schema": { "const": "flow.required-authority-binding/v1" },
+    "id": { "type": "string", "minLength": 1 },
+    "contract": { "type": "string", "minLength": 1 },
+    "provider_identity": { "$ref": "#/$defs/provider_identity" },
+    "observation_input": { "type": "object" },
+    "observation": { "$ref": "flow.authority-observation.v1.schema.json" }
+  },
+  "$defs": {
+    "provider_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "version"],
+      "properties": {
+        "schema": { "const": "flow.registered-authority/v1" },
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

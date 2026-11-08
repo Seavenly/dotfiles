@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.authority-schema-compatibility.v1.schema.json",
+  "title": "flow.authority-schema-compatibility/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "store_contract",
+    "version",
+    "transition_release",
+    "transition_sequence",
+    "watermark"
+  ],
+  "properties": {
+    "schema": { "const": "flow.authority-schema-compatibility/v1" },
+    "status": {
+      "enum": [
+        "uninitialized",
+        "transition_required",
+        "compatible",
+        "incompatible"
+      ]
+    },
+    "store_contract": {
+      "type": ["string", "null"]
+    },
+    "version": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "transition_release": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/release" }
+      ]
+    },
+    "transition_sequence": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "watermark": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "$defs": {
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "catalog_version"],
+      "properties": {
+        "schema": { "const": "flow.runtime-release/v1" },
+        "id": { "type": "string", "minLength": 1 },
+        "catalog_version": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

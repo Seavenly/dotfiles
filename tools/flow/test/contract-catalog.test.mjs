@@ -1,0 +1,1558 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+import {
+  authorizeLegacyImport,
+  loadContractCatalog,
+} from "../src/contract-catalog.mjs";
+import { EVIDENCE_SAFETY_CATALOG_ID } from "../src/evidence-safety.mjs";
+const catalogPath = fileURLToPath(
+  new URL("../../../config/flow/contracts/catalog.v1.json", import.meta.url),
+);
+const featureContractPath = fileURLToPath(new URL(
+  "../../../config/flow/contracts/drovr-required-features.v1.json",
+  import.meta.url,
+));
+const subjectBytes = Buffer.from("artifact\n");
+const subjectDigest =
+  "sha256:5b3513f580c8397212ff2c8f459c199efc0c90e4354a5f3533adf0a3fff3a530";
+
+test("the public catalog exposes the settled interface and forbids legacy import", async () => {
+  const catalog = await loadContractCatalog({ catalogPath });
+
+  assert.deepEqual(catalog.flow_runtime.operations, [
+    "prepare",
+    "launch",
+    "command",
+    "query",
+    "watch",
+  ]);
+  assert.equal(catalog.catalog_version, 39);
+  for (const contract of [
+    "flow.release-manifest/v1",
+    "flow.dark-opt-in/v1",
+    "flow.capability-manifest/v1",
+    "flow.launch-selection/v1",
+    "flow.launch-rejection/v1",
+    "flow.transition-qualification-evidence/v1",
+    "flow.production-route-conformance-evidence/v1",
+    "flow.release-content/v1",
+  ]) {
+    assert.equal(catalog.contracts.includes(contract), true, contract);
+  }
+  assert.equal(
+    EVIDENCE_SAFETY_CATALOG_ID,
+    `flow.contract-catalog/v1@${catalog.catalog_version}`,
+  );
+  assert.equal(
+    catalog.flow_runtime.evidence_safety.catalog_id,
+    EVIDENCE_SAFETY_CATALOG_ID,
+  );
+  assert.deepEqual(catalog.flow_runtime.transport, {
+    interface: "flow.runtime/v1",
+    request: "flow.transport-request/v1",
+    response: "flow.transport-response/v1",
+    error: "flow.transport-error/v1",
+    framing: "newline_delimited_utf8_json",
+    max_frame_bytes: 4194304,
+    one_request_per_connection: true,
+    correlation: ["request_id", "operation"],
+    watch: "streamed_watermarked_responses",
+  });
+  assert.deepEqual(catalog.flow_runtime.owner, {
+    endpoint: "flow.owner-endpoint/v1",
+    status: "flow.owner-status/v1",
+    authority: "RunAuthority",
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: "flow.production.run-authority",
+      version: "1",
+    },
+    identity: ["owner_token", "pid", "process_start_identity"],
+    state_directory_mode: "0700",
+    endpoint_mode: "0600",
+    socket_mode: "0600",
+    stop: "identity_checked_before_each_signal",
+    clients: "disposable_transport_only",
+  });
+  assert.deepEqual(catalog.flow_runtime.runner, {
+    status: "flow.runtime-runner-status/v1",
+    authority: "RunAuthority",
+    driver: "authority_projected_commands_only",
+    delegate_capacity: "separate",
+    operation_capacity: "separate",
+    subrun_capacity: "does_not_consume_operation_capacity",
+    defaults: {
+      delegate_capacity: 1,
+      operation_capacity: 1,
+    },
+    configuration: {
+      explicit_options: ["delegateCapacity", "operationCapacity"],
+      environment: [
+        "FLOW_RUNNER_DELEGATE_CAPACITY",
+        "FLOW_RUNNER_OPERATION_CAPACITY",
+      ],
+      maximum: 64,
+      validation: "positive_safe_integer",
+    },
+    error_reporting: {
+      status: "bounded_sanitized_summary",
+      detached_sink: "private_owner_error_log",
+    },
+    explicit_stops: [
+      "checkpoint",
+      "capability_expansion",
+      "uncertain_effect",
+      "terminal_disposition",
+    ],
+  });
+  assert.deepEqual(catalog.flow_runtime.feature_preparation, {
+    request: "flow.feature-preparation-request/v1",
+    brief: "flow.feature-brief/v1",
+    definition: "flow.definition/feature/v1",
+    selection: "flow.predefined-flow-selection/v1",
+    modes: ["verify", "test"],
+    facts: "starting_clean_git_and_workspace_only",
+    future_identity: "forbidden",
+    callbacks: "forbidden",
+    patch_bytes: "forbidden",
+    test: {
+      selection: "check_id_only",
+      configuration: "trusted_owner_constructor_only",
+      operation: "flow.operation/feature-test/v1",
+      receipt: "work.feature-test-receipt/v1",
+      runner: "fixed_node_health_and_acceptance_with_os_confinement",
+      health: "positive_probe_before_behavioral_red",
+      acceptance: "same_committed_check_green",
+      identity: "exact_check_and_runtime_fingerprint_before_claims",
+      generic_test_inputs: "rejected_before_effects",
+      native_qualification: "separate_required",
+    },
+    project_check: {
+      registration: "flow.production-project-check/v2",
+      selection: "check_id_only",
+      mode: "verify",
+      operation: "flow.operation/project-check/v2",
+      receipt: "work.project-check-receipt/v2",
+      meaning: "GREEN-only_command_exit_zero_test_count_unknown",
+      candidate: "exact_captured_committed_tree",
+      network: "disabled",
+      writes: "bounded_private_tmpfs_only",
+      recovery: "existing_reservation_only",
+      native_qualification: "not_claimed",
+    },
+  });
+  assert.deepEqual(catalog.predefined_flows["spike/v1"], {
+    definition: "flow.definition/spike/v1",
+    mode: "quick",
+    delegation_bindings: "flow.spike-delegation-bindings/v1",
+    question: "flow.spike-question/v1",
+    source: "flow.spike-source/v1",
+    citation: "flow.spike-citation/v1",
+    researcher: {
+      output: "flow.spike-research-evidence/v1",
+      validator: "flow.validator/spike-research-evidence/v1",
+    },
+    synthesizer: {
+      output: "flow.spike-report/v1",
+      validator: "flow.validator/spike-report/v1",
+    },
+    evidence: {
+      envelope: "flow.authority-materialized-evidence/v1",
+      input: "flow.delegate-input-envelope/v1",
+      authority: "RunAuthority",
+      transfer: "exact_digest_bound_materialized_research_evidence",
+    },
+    assurance: "lower",
+    publication: "explicit_resource_handoff_only_outside_quick_flow",
+    negative_outcome:
+      "no prototype, production implementation or candidate, review candidate or approval, publication, tracker completion, or mutation authority",
+  });
+  assert.deepEqual(catalog.flow_runtime.evidence_safety, {
+    authority: "non_authoritative",
+    validator: "flow.evidence-safety-request/v1",
+    receipt: "flow.evidence-safety-receipt/v1",
+    rejection: "flow.evidence-safety-rejection/v1",
+    binding: "flow.evidence-safety-binding/v1",
+    catalog_view: "flow.evidence-safety-catalog/v1",
+    policy_id: "flow.evidence-safety-policy/v1",
+    catalog_id: "flow.contract-catalog/v1@39",
+    allowed_uses: [
+      "delegate_transfer",
+      "artifact_acceptance",
+      "resource_handoff_publication",
+    ],
+    redaction: "no_rejected_input_bytes_or_fragments",
+    prohibited_inputs: [
+      "credential_material",
+      "capability_reference_or_envelope",
+      "ambient_filesystem_path",
+      "ambiguous_or_malformed_encoding",
+    ],
+    boundaries: {
+      delegate_transfer: "receipt_only_non_authoritative_binding",
+      artifact_acceptance: "receipt_only_non_authoritative_binding",
+      resource_handoff_publication: "receipt_only_non_authoritative_binding",
+    },
+  });
+  assert.deepEqual(catalog.flow_runtime.host_recovery, {
+    authority: "RunAuthority",
+    command_contract: "flow.command/v1",
+    commands: [
+      "backup_create",
+      "backup_reconcile",
+      "restore",
+      "restore_reconcile",
+      "restore_admit",
+    ],
+    queries: {
+      backup: {
+        request: "flow.query/v1",
+        projection: "flow.backup-projection/v1",
+        rejection: "flow.rejection/v1",
+      },
+      restore: {
+        request: "flow.query/v1",
+        projection: "flow.restore-barrier-projection/v1",
+        rejection: "flow.rejection/v1",
+      },
+    },
+    watch: {
+      request: "flow.watch/v1",
+      projection: "flow.run-index-projection/v1",
+      barrier: "flow.restore-barrier-projection/v1",
+      reconciliation: "flow.restore-reconciliation/v1",
+      watermark: "exact_host_authority",
+    },
+    schemas: {
+      manifest: "flow.backup-manifest/v1",
+      intent: "flow.backup-intent/v1",
+      backup_receipt: "flow.backup-receipt/v1",
+      backup_reconciliation_observation:
+        "flow.backup-reconciliation-observation/v1",
+      backup_provider_evidence: "flow.backup-provider-evidence/v1",
+      restore_intent: "flow.restore-intent/v1",
+      restore_receipt: "flow.restore-receipt/v1",
+      barrier: "flow.restore-barrier-projection/v1",
+      reconciliation: "flow.restore-reconciliation/v1",
+      failure: "flow.restore-failure/v1",
+      host_marker: "flow.host-reconciliation-marker/v1",
+      restore_admission_receipt: "flow.restore-admission-receipt/v1",
+      drovr_handoff_receipt: "flow.drovr-handoff-receipt/v1",
+    },
+    semantics: {
+      lifecycle_authority: "RunAuthority",
+      intent_before_effect: true,
+      reconciliation_source: "injected_adapter_only",
+      barrier_scope: "host_wide",
+      evidence_domains: [
+        "database_streams",
+        "artifact_state",
+        "git_state",
+        "filesystem_state",
+        "external_effects",
+        "drovr_obligations",
+      ],
+      admission: "fresh_exact_reconciliation",
+      unresolved_effects: "closed",
+      failure_boundary: "narrowest_provable",
+      backup_reconciliation: "identity_bound_absence_or_presence_observation",
+      drovr_disposition: "retire_receipt_or_named_durable_holder_handoff",
+    },
+  });
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.command.vocabulary.slice(-5), [
+    "backup_create",
+    "backup_reconcile",
+    "restore",
+    "restore_reconcile",
+    "restore_admit",
+  ]);
+  assert.equal(catalog.projections.includes("backup"), true);
+  assert.equal(catalog.projections.includes("restore"), true);
+  assert.equal(catalog.projections.includes("review"), true);
+  assert.deepEqual(catalog.authority_persistence, {
+    append_only_streams: true,
+    authority_epoch: {
+      boot_bound: true,
+      effect_recheck: true,
+      monotonic: true,
+    },
+    contract: "flow.sqlite-authority-store/v1",
+    foreign_keys: true,
+    journal_mode: "wal",
+    mutation_lock: "sqlite_os_advisory_lock",
+    synchronous: "full",
+    schema_transition: {
+      action_contract: "flow.command/v1",
+      boundary_contract: "flow.authority-schema-transition-boundary/v1",
+      compatibility_projection: "flow.authority-schema-compatibility/v1",
+      current_version: 2,
+      release: {
+        schema: "flow.runtime-release/v1",
+        id: "flow-runtime-authority-schema/v2",
+        catalog_version: 8,
+      },
+      transition_contract: "flow.authority-schema-transition/v1",
+    },
+    takeover: "operating_system_lock_release_only",
+    transactional_folds: true,
+  });
+  assert.deepEqual(catalog.flow_runtime.rejection_contract, {
+    contract: "flow.rejection/v1",
+    fields: [
+      "schema",
+      "operation",
+      "code",
+      "reason",
+      "command_type",
+      "run_id",
+      "bundle_digest",
+      "authority_watermark",
+      "authority_watermark_domain",
+      "legal_actions",
+    ],
+    optional_fields: ["authority_fact", "findings", "outcome"],
+    watermark_domains: {
+      host: "host_run_index_admission_and_authority_schema",
+      run: "run_lifecycle_stream_authority_epoch_and_authority_schema",
+    },
+  });
+  for (const contract of [
+    "flow.runtime/v1",
+    "flow.transport-request/v1",
+    "flow.transport-response/v1",
+    "flow.transport-error/v1",
+    "flow.owner-endpoint/v1",
+    "flow.owner-status/v1",
+    "flow.runtime-runner-status/v1",
+    "flow.feature-preparation-request/v1",
+    "flow.definition/feature/v1",
+    "flow.feature-candidate-archive/v1",
+    "flow.dynamic-plan-proposal/v1",
+    "flow.predefined-flow-selection/v1",
+    "flow.predefined-definition/v1",
+    "flow.predefined-flow-confirmation/v1",
+    "flow.predefined-flow-confirmation-decision/v1",
+    "flow.required-authority/v1",
+    "flow.authority-observation/v1",
+    "flow.required-authority-binding/v1",
+    "flow.required-authority-revalidation/v1",
+    "flow.registered-authority/v1",
+    "flow.dynamic-plan-confirmation/v1",
+    "flow.dynamic-plan-confirmation-decision/v1",
+    "flow.closed-fact-observation/v1",
+    "flow.prepared-run/v1",
+    "flow.launch-receipt/v1",
+    "flow.command-receipt/v1",
+    "flow.run-projection/v1",
+    "flow.run-index-projection/v1",
+    "flow.card-block/v1",
+    "flow.card-block-observation/v1",
+    "flow.adapter/card-block-observation/v1",
+    "flow.validator/card-block-observation/v1",
+    "flow.revision-trigger/v1",
+    "flow.plan-revision-template/v1",
+    "flow.registered-operation/v1",
+    "flow.validator/operation-receipt/v1",
+    "flow.evidence-safety-request/v1",
+    "flow.evidence-safety-receipt/v1",
+    "flow.evidence-safety-rejection/v1",
+    "flow.evidence-safety-binding/v1",
+    "flow.evidence-safety-catalog/v1",
+    "flow.evidence-safety-policy/v1",
+    "flow.operation/tracker-progress/v1",
+    "flow.operation/tracker-progress-github/v1",
+    "flow.run-ownership/v1",
+    "flow.tracker-binding/v1",
+    "flow.tracker-progress-update/v1",
+    "flow.tracker-progress-projection/v1",
+    "flow.delegate-evidence/v1",
+    "flow.delegate-failure-observation/v1",
+    "flow.child-run-identity/v1",
+    "flow.child-run-lineage/v1",
+    "flow.subrun/create-and-observe/v1",
+    "flow.validator/subrun-receipt/v1",
+    "flow.managed-agent-binding/v1",
+    "flow.delegate-route-fallback/v1",
+    "flow.delegate-steering-input/v1",
+    "flow.delegate-cancellation-identity/v1",
+    "flow.delegate-cancellation-receipt/v1",
+    "flow.authority-schema-compatibility/v1",
+    "flow.authority-schema-transition/v1",
+    "flow.authority-schema-transition-boundary/v1",
+    "flow.runtime-release/v1",
+  ]) {
+    assert.equal(catalog.contracts.includes(contract), true, contract);
+  }
+  assert.equal(
+    catalog.flow_runtime.operation_contracts.prepare.block_observations,
+    "flow.card-block-observation/v1",
+  );
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.prepare.input, [
+    "flow.dynamic-plan-proposal/v1",
+    "flow.predefined-flow-selection/v1",
+  ]);
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.prepare.predefined, {
+    selection: "flow.predefined-flow-selection/v1",
+    definition: "flow.predefined-definition/v1",
+    confirmation: "flow.predefined-flow-confirmation/v1",
+    decision: "flow.predefined-flow-confirmation-decision/v1",
+    preparation: "non_authoritative_registered_definition_snapshot",
+    launch_binding: "exact_bundle_and_confirmation_digest",
+  });
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.launch.confirmation, [
+    "flow.dynamic-plan-confirmation-decision/v1",
+    "flow.predefined-flow-confirmation-decision/v1",
+  ]);
+  assert.ok(catalog.mechanism_adapters.includes("card_block_observation"));
+  assert.deepEqual(catalog.flow_runtime.operation_execution, {
+    authority: "RunAuthority",
+    coordinator_authority: "mechanism_only",
+    registration: "flow.registered-operation/v1",
+    intent: "flow.effect-intent/v1",
+    observation: "flow.effect-observation/v1",
+    receipt: "flow.effect-receipt/v1",
+    receipt_validator: "flow.validator/operation-receipt/v1",
+    effect_classes: [
+      "read_only",
+      "caller_idempotent",
+      "reconcilable",
+      "one_shot_uncertain",
+    ],
+    execution_command: "operation_execute",
+    recovery_command: "recovery",
+    cancellation_command: "cancel",
+    cancelled_recovery: "settle_cancelled",
+    cancelled_attempt_disposition: "abandoned",
+    late_effect_disposition: "quarantined",
+    cancelled_resource_dispositions: ["released", "quarantined"],
+  });
+  assert.deepEqual(catalog.flow_runtime.tracker_progress, {
+    authority: "RunAuthority",
+    operation: "flow.operation/tracker-progress/v1",
+    compatibility_operations: ["flow.operation/tracker-progress-github/v1"],
+    providers: ["github", "jira"],
+    ownership: "flow.run-ownership/v1",
+    binding: "flow.tracker-binding/v1",
+    update: "flow.tracker-progress-update/v1",
+    projection: "flow.tracker-progress-projection/v1",
+    effect_class: "reconcilable",
+    mutation_scope: "confirmed_top_level_feature_or_epic",
+    child_mutation: "forbidden",
+    provider_state_authority: "none",
+    marker_cardinality: "at_most_one_update_in_place",
+  });
+  assert.deepEqual(catalog.flow_runtime.delegate_execution, {
+    authority: "RunAuthority",
+    adapter_authority: "mechanism_only",
+    port: "flow.delegated-agent-port/v1",
+    resource_port: "flow.delegated-agent-resource-port/v1",
+    intent: "flow.effect-intent/v1",
+    receipt: "flow.effect-receipt/v1",
+    evidence: "flow.delegate-evidence/v1",
+    failure_observation: "flow.delegate-failure-observation/v1",
+    quarantine_record: "flow.delegate-quarantine/v1",
+    block: "flow.delegate-card-block/v1",
+    disposition_policy: "flow.delegate-terminal-disposition-policy/v1",
+    execution_command: "delegate_execute",
+    recovery_command: "recovery",
+    attempt_identity: "run_card_reserved_attempt",
+    dispatch_order: "discover_before_dispatch",
+    managed_agent_binding: "flow.managed-agent-binding/v1",
+    managed_agent_reuse:
+      "declared_cards_only_under_one_immutable_launch_binding",
+    route_fallback: "flow.delegate-route-fallback/v1",
+    fallback_policy:
+      "exact_attempt_preapproved_relationally_independent_and_no_authority_widening",
+    steering_input: "flow.delegate-steering-input/v1",
+    cancellation_identity: "flow.delegate-cancellation-identity/v1",
+    cancellation_receipt: "flow.delegate-cancellation-receipt/v1",
+    settlement:
+      "exact_binding_ordered_caller_inputs_and_independent_validation",
+    ambiguous_dispatch: "reconciling_without_fallback_activation",
+    cancelled_settlement:
+      "recorded_exact_turn_cancellation_registry_handoff_or_managed_retirement_then_quarantined_delegate_retirement",
+    quarantine: "late_or_incompatible_correlated",
+    terminal_disposition:
+      "retire_receipt_or_named_durable_handoff_with_exact_working_turn_cancellation",
+    exhausted_action: "terminal_disposition",
+    input_envelope: {
+      schema: "flow.delegate-input-envelope/v1",
+      task_inputs: "flow.delegate-task-inputs/v1",
+      resource_selection: "flow.delegate-execution-resource-selection/v1",
+      resource_references: "flow.delegate-execution-resource-reference/v1",
+      execution_authority: "flow.delegate-execution-authority/v1",
+      predecessor_evidence: "flow.delegate-predecessor-evidence/v1",
+      output_requirements: "flow.delegate-output-requirements/v1",
+      serialization: "canonical_json_utf8_exact_bytes",
+      payload_digest: "sha256_exact_transmitted_bytes",
+      identity: "attempt_input_key_sequence_envelope_digest",
+      ordered_steering: "same_envelope_correlation_contract",
+    },
+  });
+  assert.deepEqual(catalog.flow_runtime.subrun_execution, {
+    authority: "RunAuthority",
+    adapter_authority: "mechanism_only",
+    contract: "flow.subrun/create-and-observe/v1",
+    receipt_validator: "flow.validator/subrun-receipt/v1",
+    execution_command: "subrun_execute",
+    identity_fields: ["parent_run_id", "card_identity", "revision_ordinal"],
+    child_authority: "independent_run_record",
+    replay: "adopt_exact_child",
+    cancellation: "reconciled_request",
+    late_unclaimed_output: "quarantined",
+  });
+  assert.deepEqual(catalog.flow_runtime.reboot_admission, {
+    authority: "RunAuthority",
+    command: "reboot_admission",
+    revalidation: "flow.reboot-revalidation/v1",
+    authority_bindings: "flow.required-authority-revalidation/v1",
+    effect_rechecks: "flow.reboot-effect-recheck/v1",
+    time_facts: [
+      "wall_clock",
+      "suspend_excluding_monotonic",
+      "boot",
+      "clock_source",
+    ],
+    subject_generations: "flow.subject-generation/v1",
+    stable_facts: [
+      "catalog_fingerprint",
+      "route_snapshot",
+      "capability_envelopes",
+      "operation_contracts",
+      "validator_contracts",
+      "resource_claims",
+      "limits",
+      "elapsed_seconds",
+      "subject_generations",
+    ],
+    unresolved_effect_policy: "exact_typed_recheck_required",
+    one_shot_recovery: "exact_present_adoption_only",
+    child_admission: "independent_run_authority",
+    uncertainty_policy: "straddle_accepted_elapsed_limit_blocks",
+  });
+  for (const contract of [
+    "flow.reboot-revalidation/v1",
+    "flow.reboot-effect-recheck/v1",
+    "flow.time-fact/v1",
+    "flow.subject-generation/v1",
+  ]) {
+    assert.equal(catalog.contracts.includes(contract), true, contract);
+  }
+  assert.deepEqual(catalog.flow_runtime.execution_time_accounting, {
+    confirmation: "flow.execution-time-accounting/v1",
+    projection: "flow.execution-time-projection/v1",
+    time_fact: "flow.time-fact/v1",
+    wall_elapsed: {
+      includes: [
+        "accepted_baseline_to_current_observation",
+        "human_checkpoint_wait",
+        "passive_retained_wait",
+      ],
+      same_boot_source: "suspend_excluding_monotonic",
+      cross_boot_source: "wall_clock",
+    },
+    active_execution: {
+      definition: "sum_of_admitted_invocation_intervals",
+      excludes: ["human_checkpoint_wait", "passive_retained_wait"],
+    },
+    fresh_observation_boundaries: [
+      "admission",
+      "before_dispatch",
+      "receipt_or_failure",
+      "cancellation_or_settlement",
+      "timer_evaluation",
+    ],
+    uncertainty: {
+      representation: "lower_upper_bounds",
+      straddling_decision: "block_new_admission",
+      missing_or_invalid_fact: "block_new_admission",
+    },
+    authority: {
+      limits: "exact_confirmed_run_and_attempt_bounds",
+      expansion: "exact_human_checkpoint_or_revision_authority",
+      timer_ownership_transfer: "forbidden",
+    },
+  });
+  assert.ok(catalog.flow_runtime.operation_contracts.command.vocabulary.includes(
+    "subrun_execute",
+  ));
+  assert.ok(catalog.mechanism_adapters.includes("subrun"));
+  assert.deepEqual(catalog.flow_runtime.projection_builder, {
+    authority: "non_authoritative",
+    source: "RunAuthority",
+    watermark: "exact_run_authority",
+    retention: "disposable",
+    lifecycle_mutation: "forbidden",
+    forms: {
+      kanban: "flow.kanban-projection/v1",
+      graph: "flow.graph-projection/v1",
+      timeline: "flow.timeline-projection/v1",
+      trust: "flow.trust-projection/v1",
+      operator: "flow.operator-projection/v1",
+    },
+  });
+  assert.ok(catalog.projections.includes("authority_schema_compatibility"));
+  assert.deepEqual(catalog.work_domain_interfaces.handoff.atomic_finalization, [
+    "workspace_promotion",
+    "artifact_pin_transfer",
+    "workspace_disposition",
+    "handoff_activation",
+    "producer_run_finalization",
+  ]);
+  assert.equal(
+    catalog.work_domain_interfaces.handoff.consumer_operation_authority,
+    "explicit_read_only_or_mutation_per_allowed_operation",
+  );
+  assert.deepEqual(catalog.work_domain_interfaces.resource_safety, {
+    writer_fence: "exact_generation_fingerprint_and_exclusive_claim",
+    taint_persistence: "durable_until_evidence_backed_disposition",
+    cleanup: "exact_preview_refuses_active_dirty_uncertain_or_retained",
+    collection_guards: ["pins", "claims", "retention", "cleanup_obligations"],
+    forbidden_selection: "latest",
+    exact_human_authority: ["destructive_reset", "risk_acceptance"],
+  });
+  for (const contract of [
+    "work.workspace-authority/v1",
+    "work.workspace-register-command/v1",
+    "work.workspace-observation-command/v1",
+    "work.workspace-claim-command/v1",
+    "work.workspace-claim-release-command/v1",
+    "work.workspace-taint-command/v1",
+    "work.workspace-taint-disposition-command/v1",
+    "work.workspace-risk-acceptance-command/v1",
+    "work.workspace-cleanup-preview/v1",
+    "work.artifact-collection-preview/v1",
+    "flow.resource-handoff-cleanup-preview/v1",
+    "flow.resource-handoff-disposition-command/v1",
+    "flow.resource-handoff-disposition-evidence/v1",
+    "flow.resource-handoff-disposition-validation/v1",
+    "flow.operation/resource-cleanup/v1",
+    "flow.resource-cleanup-request/v1",
+    "flow.resource-cleanup-receipt/v1",
+    "work.human-authority/v1",
+    "work.human-authority-validation/v1",
+    "work.taint-disposition-evidence/v1",
+    "work.taint-disposition-validation/v1",
+    "work.legal-next-action/v1",
+    "work.git-observation/v1",
+    "work.artifact-authority/v1",
+    "work.artifact-record-command/v1",
+    "work.review-authority/v1",
+    "work.review-candidate-seal-command/v1",
+    "work.review-candidate/v1",
+    "work.review-event/v1",
+    "work.review-candidate-projection/v1",
+    "work.review-record-command/v1",
+    "work.review-target-refresh-command/v1",
+    "work.review-human-command/v1",
+    "flow.review-operator-input/v1",
+    "flow.definition/review/v1",
+    "flow.operation/review-record/v1",
+    "flow.review-request/v1",
+    "flow.review-local-candidate/v1",
+    "flow.review-delegation-bindings/v1",
+    "flow.review-result/v1",
+    "flow.validator/review-result/v1",
+    "flow.review-record/v1",
+    "flow.review-finding/v1",
+    "flow.review-summary/v1",
+    "flow.review-target-invalidation/v1",
+    "flow.review-target-refresh/v1",
+    "flow.review-target-observation/v1",
+    "flow.review-coverage/v1",
+    "flow.review-orientation/v1",
+    "flow.review-diagram/v1",
+    "flow.review-terminal-disposition/v1",
+    "flow.review-automated-evidence/v1",
+    "flow.review-provenance/v1",
+    "flow.review-preparation-selection/v1",
+    "flow.review-preparation-facts/v1",
+    "flow.review-artifacts/v1",
+    "flow.review-artifact-json/v1",
+    "flow.review-artifact-markdown/v1",
+    "flow.review-artifact-html/v1",
+    "flow.review-receipt/v1",
+    "flow.review-authority-watermark/v1",
+    "flow.review-trust-posture/v1",
+    "flow.review-candidate-reference/v1",
+    "flow.authority-materialized-evidence/v1",
+    "flow.authority-materialized-delegate-evidence/v1",
+    "flow.definition/spike/v1",
+    "flow.spike-delegation-bindings/v1",
+    "flow.spike-question/v1",
+    "flow.spike-source/v1",
+    "flow.spike-citation/v1",
+    "flow.spike-research-evidence/v1",
+    "flow.spike-report/v1",
+    "flow.delegate-input-envelope/v1",
+    "flow.delegate-task-inputs/v1",
+    "flow.delegate-execution-resource-selection/v1",
+    "flow.delegate-execution-resource-reference/v1",
+    "flow.delegate-execution-authority/v1",
+    "flow.delegate-predecessor-evidence/v1",
+    "flow.delegate-output-requirements/v1",
+    "flow.validator/spike-research-evidence/v1",
+    "flow.validator/spike-report/v1",
+    "flow.review-projection/v1",
+    "flow.feature-discriminating-evidence/v1",
+    "work.feature-verification-receipt/v1",
+    "work.feature-critique-receipt/v1",
+    "flow.feature-brief/v1",
+    "flow.feature-verification-request/v1",
+    "flow.feature-safe-baseline/v1",
+    "flow.feature-compensating-assertion/v1",
+    "flow.feature-finalization-binding/v1",
+    "flow.feature-workspace-binding/v1",
+    "flow.feature-delegation-bindings/v1",
+    "flow.feature-trust-posture/v1",
+    "flow.feature-slice/v1",
+    "flow.feature-test-request/v1",
+    "flow.feature-test-selection/v1",
+    "flow.feature-setup/v1",
+    "flow.feature-setup-receipt/v1",
+    "flow.feature-seal-receipt/v1",
+    "flow.feature-repair/v1",
+    "flow.feature-repair-outcome/v1",
+    "flow.operation/feature-setup/v1",
+    "flow.operation/feature-test/v1",
+    "flow.operation/feature-verify/v1",
+    "flow.operation/feature-seal/v1",
+    "work.feature-test-receipt/v1",
+    "flow.validator/feature-test-receipt/v1",
+    "flow.resource-handoff-authority/v1",
+    "work.command-receipt/v1",
+    "work.rejection/v1",
+    "work.workspace-projection/v1",
+    "work.artifact-projection/v1",
+    "flow.resource-handoff-publication/v1",
+    "flow.resource-handoff-projection/v1",
+    "flow.resource-handoff-consumer-binding/v1",
+    "flow.resource-handoff-mutation-authorization/v1",
+    "flow.git-retention-receipt/v1",
+    "flow.git-retention-observation/v1",
+    "work.idempotency-receipt/v1",
+  ]) {
+    assert.ok(catalog.contracts.includes(contract), contract);
+  }
+  assert.deepEqual(catalog.work_domain_interfaces.review, {
+    authority: "ReviewAuthority",
+    provider_identity: {
+      schema: "flow.registered-authority/v1",
+      id: "flow.production.review-authority",
+      version: "1",
+    },
+    interface: "work.review-authority/v1",
+    contract: "work.review/v1",
+    candidate: "work.review-candidate/v1",
+    projection: "work.review-candidate-projection/v1",
+    review_projection: "flow.review-projection/v1",
+    event: "work.review-event/v1",
+    commands: [
+      "work.review-candidate-seal-command/v1",
+      "work.review-record-command/v1",
+      "work.review-target-invalidation-command/v1",
+      "work.review-target-refresh-command/v1",
+      "work.review-human-command/v1",
+    ],
+    human_event: "flow.review-human-event/v1",
+    operator_input: "flow.review-operator-input/v1",
+    session: "flow.review-session/v1",
+    comment: "flow.review-comment/v1",
+    disposition: "flow.review-disposition/v1",
+    approval: "flow.review-approval/v1",
+    supersession: "flow.review-supersession/v1",
+    integration: "flow.review-integration/v1",
+    integration_evidence: "flow.review-integration-evidence/v1",
+    inbox_query: "work.review-inbox/v1",
+    inbox_projection: "flow.review-inbox-projection/v1",
+    inbox_item: "flow.review-inbox-item/v1",
+    inbox_watermark: "flow.review-inbox-watermark/v1",
+    human_dispositions: ["accept", "request_changes", "dismiss", "defer"],
+    operation: "flow.operation/review-record/v1",
+    operation_registration_policy: "review_authority_owned_builtin_reserved",
+    request: "flow.review-request/v1",
+    target: "flow.review-local-candidate/v1",
+    delegation_bindings: "flow.review-delegation-bindings/v1",
+    definition: "flow.definition/review/v1",
+    result: "flow.review-result/v1",
+    result_validator: "flow.validator/review-result/v1",
+    record: "flow.review-record/v1",
+    finding: "flow.review-finding/v1",
+    summary: "flow.review-summary/v1",
+    automated_evidence: "flow.review-automated-evidence/v1",
+    provenance: "flow.review-provenance/v1",
+    preparation_selection: "flow.review-preparation-selection/v1",
+    preparation_facts: "flow.review-preparation-facts/v1",
+    artifacts: "flow.review-artifacts/v1",
+    artifact_formats: [
+      "flow.review-artifact-json/v1",
+      "flow.review-artifact-markdown/v1",
+      "flow.review-artifact-html/v1",
+    ],
+    receipt: "flow.review-receipt/v1",
+    watermark: "flow.review-authority-watermark/v1",
+    trust_posture: "flow.review-trust-posture/v1",
+    candidate_reference: "flow.review-candidate-reference/v1",
+    materialized_evidence: "flow.authority-materialized-evidence/v1",
+    materialized_delegate_evidence:
+      "flow.authority-materialized-delegate-evidence/v1",
+    target_invalidation: "flow.review-target-invalidation/v1",
+    target_refresh: "flow.review-target-refresh/v1",
+    target_observation: "flow.review-target-observation/v1",
+    coverage: "flow.review-coverage/v1",
+    orientation: "flow.review-orientation/v1",
+    diagram: "flow.review-diagram/v1",
+    terminal_disposition: "flow.review-terminal-disposition/v1",
+    completion_authority: "automated_not_approval",
+    candidate_authority_watermark: "candidate_seal_watermark",
+    statuses: ["sealed", "superseded", "abandoned"],
+    candidate_lifecycle_status: "sealed|superseded|abandoned when present",
+    candidate_currency_statuses: ["sealed", "stale", "blocked"],
+    candidate_currency_blocking_reasons: [
+      "workspace_authority_unavailable",
+      "workspace_mutation_epoch_moved",
+      "workspace_dirty",
+      "unresolved_effect",
+      "workspace_tainted",
+      "artifact_uncertain",
+      "artifact_unavailable",
+      "git_retention_unavailable",
+      "git_retention_mismatch",
+      "artifact_handoff_pin_missing",
+      "artifact_handoff_pin_mismatch",
+      "handoff_unavailable",
+      "handoff_inactive",
+      "handoff_uncertain",
+      "handoff_not_current",
+      "handoff_workspace_mismatch",
+      "handoff_artifact_mismatch",
+      "handoff_git_retention_mismatch",
+      "candidate_lifecycle_superseded",
+      "candidate_lifecycle_abandoned",
+    ],
+    candidate_currency_watermarks: {
+      candidate: "authority_watermark",
+      workspace: "workspace_authority_watermark",
+      artifacts: "artifact_authority_watermarks",
+      git_retention_observation: "git_retention_observation_watermark",
+      handoff_authority: "handoff_authority_watermark",
+      handoff_observation: "handoff_observation_watermark",
+    },
+    review_statuses: ["automated_completed", "stale"],
+    review_current: "boolean",
+    evidence_currency: ["current", "stale"],
+    review_legal_actions: "refresh_when_stale",
+    identity: "candidate_fingerprint",
+    legal_actions: "closed_after_seal",
+    github: {
+      target: "flow.review-github-pull-request/v1",
+      snapshot: "flow.github-pull-request-snapshot/v1",
+      pending_operation: "flow.operation/github-review-pending/v1",
+      pending_request: "flow.github-pending-review-request/v1",
+      pending_draft: "flow.github-pending-review-draft/v1",
+      receipt_validator: "flow.validator/github-review-receipt/v1",
+      receipt: "flow.github-review-receipt/v1",
+      observation_request: "flow.github-pull-request-observation-request/v1",
+      observation: "flow.github-review-observation/v1",
+      record_command: "work.github-review-record-command/v1",
+      record: "flow.github-review-record/v1",
+      projection: "flow.review-projection/v1",
+      invalidation: "flow.github-review-invalidation/v1",
+      effect_classification: "one_shot_uncertain",
+      completion_authority: "pending_only_no_submission",
+      allowed_remote_mutation: "create_one_unsubmitted_pending_review",
+      forbidden_remote_mutations: [
+        "submit",
+        "approve",
+        "request_changes",
+        "delete",
+        "repost",
+      ],
+    },
+  });
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.query.registered, {
+    autonomous_runner_status: {
+      projection: "flow.runtime-runner-status/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
+    delegated_agent_description: {
+      projection: "flow.delegated-agent-description-projection/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
+    legacy_compatibility_inventory: {
+      projection: "flow.legacy-compatibility-inventory/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
+    backup: {
+      projection: "flow.backup-projection/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
+    restore: {
+      projection: "flow.restore-barrier-projection/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
+    review: {
+      inbox: {
+        authority: "ReviewAuthority",
+        projection: "flow.review-inbox-projection/v1",
+        query: "review_inbox",
+        watermark: "flow.review-inbox-watermark/v1",
+      },
+      projection: "flow.review-projection/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
+    review_inbox: {
+      projection: "flow.review-inbox-projection/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
+    review_preparation_facts: {
+      projection: "flow.review-preparation-facts/v1",
+      rejection: "flow.rejection/v1",
+      request: "flow.query/v1",
+    },
+  });
+  assert.deepEqual(catalog.flow_runtime.operation_contracts.watch.review, {
+    inbox: "flow.review-inbox-projection/v1",
+    request: "flow.watch/v1",
+    projection: "flow.review-projection/v1",
+    watermark: "exact_review_authority",
+    inbox_watermark: "flow.review-inbox-watermark/v1",
+  });
+  assert.ok(catalog.contracts.includes("flow.query/v1"));
+  assert.ok(catalog.contracts.includes("flow.legacy-compatibility-inventory/v1"));
+  assert.ok(catalog.projections.includes("autonomous_runner_status"));
+  assert.ok(catalog.projections.includes("legacy_compatibility_inventory"));
+  assert.ok(catalog.projections.includes("review_preparation_facts"));
+  assert.deepEqual(catalog.delegated_agent_port, {
+    contract: "flow.delegated-agent-port/v1",
+    authority: "non_authoritative",
+    adapter: "drovr/v1",
+    description_request: "flow.delegated-agent-description-request/v1",
+    description_projection: "flow.delegated-agent-description-projection/v1",
+    lifecycle_projection: "flow.delegated-agent-lifecycle-projection/v1",
+    operations: {
+      dispatch: "flow.delegated-agent-dispatch-request/v1",
+      discover: "flow.delegated-agent-discover-request/v1",
+      send: "flow.delegated-agent-send-request/v1",
+      observe: "flow.delegated-agent-observe-request/v1",
+      wait: "flow.delegated-agent-wait-request/v1",
+      cancel: "flow.delegated-agent-cancel-request/v1",
+      reconcile: "flow.delegated-agent-reconcile-request/v1",
+      retire: "flow.delegated-agent-retire-request/v1",
+    },
+    drovr_description: "drovr.delegated-agent-description/v1",
+    required_features: {
+      contract: "flow.drovr-required-features/v1",
+      content_sha256:
+        "sha256:837aca5ff5debd64e355dbc6ea0e19504a53fe85cc411adecbe0e643585b0896",
+    },
+  });
+  assert.deepEqual(catalog.delegated_agent_resource_port, {
+    contract: "flow.delegated-agent-resource-port/v1",
+    authority: "non_authoritative",
+    adapter: "drovr/v1",
+    workspace_authority: "WorkspaceAuthority",
+    ensure_request: "flow.delegated-agent-resource-ensure-request/v1",
+    retire_request: "flow.delegated-agent-resource-retire-request/v1",
+    projection: "flow.delegated-agent-resource-projection/v1",
+    operations: {
+      ensure: "ensure",
+      retire: "retire",
+    },
+    identity: "run_card_or_managed_binding_workspace_claim_launch_binding",
+    key: "deterministic_run_scoped_resource_key",
+    provisioning: "public_drovr_open_task_start_agent_with_registry_lock",
+    recovery: "exact_owned_resource_only_no_ambient_reuse",
+    uncertainty: "typed_block_no_identity_free_reconciling",
+  });
+  assert.deepEqual(catalog.authority_roots, {
+    legacy_claude: { base: "home", path: ".agent-teams" },
+    legacy_agent_flow: { base: "state", path: "agent-flow" },
+    replacement: { base: "state", path: "flow" },
+  });
+  assert.deepEqual(catalog.legacy_import.adapters, []);
+  assert.deepEqual(catalog.legacy_import.required_validations, [
+    "digest",
+    "schema",
+    "provenance",
+    "redaction",
+    "classification",
+    "retention",
+    "allowed_use",
+  ]);
+  assert.deepEqual(catalog.legacy_import.allowed_subjects, ["artifact_bytes"]);
+
+  assert.throws(
+    () => authorizeLegacyImport(catalog, { adapter: "implicit" }),
+    /no legacy import adapter is registered/,
+  );
+});
+
+test("the public catalog publishes immutable result and capture contracts", async () => {
+  const catalog = await loadContractCatalog({ catalogPath });
+
+  assert.deepEqual(catalog.flow_runtime.result_bindings, {
+    authority: "RunAuthority",
+    declaration: "flow.result-binding/v1",
+    record: "flow.result-binding-record/v1",
+    provenance: "flow.result-provenance/v1",
+    identity: "flow.result-identity/v1",
+    revision_delta: "flow.result-binding-delta/v1",
+    plan_field: "result_bindings",
+    declaration_shape: "exact_producer_card_output_contract_expected_schema",
+    dependency_transfer: "declarations_only_no_data_transfer",
+    settlement: "accepted_active_successful_settlement_only",
+    storage: "append_only_authority_owned_result_history",
+    duplicate_settlement: "idempotent_exact_identity",
+    consumer_inputs: "exact_result_identity_and_content_digest_before_invocation",
+    replay: "adopt_exact_recorded_binding",
+    supersession: "stale_or_superseded_binding_fails_closed",
+  });
+  assert.deepEqual(catalog.flow_runtime.feature_capture, {
+    authority: "RunAuthority",
+    operation: "flow.operation/feature-capture/v1",
+    policy: "flow.feature-capture-policy/v1",
+    receipt: "work.feature-capture-receipt/v1",
+    validator: "flow.validator/feature-capture-receipt/v1",
+    criterion_evidence: "flow.feature-criterion-evidence/v1",
+    candidate_view: "flow.feature-candidate-view/v1",
+    finalization: "flow.feature-finalization-binding/v1",
+    publication: "flow.resource-handoff-publication/v1",
+    sequence: ["mutation", "capture", "verification", "critique", "seal"],
+    observation: "provider_exact_post_mutation_workspace_git_and_artifact_fence",
+    preparation: "starting_workspace_policy_and_contract_references_only",
+    candidate_identity: [
+      "commit_sha",
+      "tree_sha",
+      "ref",
+      "clean",
+      "artifact_digest",
+      "artifact_size",
+    ],
+    artifact_storage: "authority_owned_artifact_bytes",
+    late_or_cancelled: "quarantined_evidence_never_usable",
+  });
+  assert.deepEqual(catalog.flow_runtime.feature_critique, {
+    authority: "RunAuthority",
+    envelope: "flow.delegate-evidence/v1",
+    output: "flow.feature-critique-output/v1",
+    input_binding: "flow.authority-critique-input-binding/v1",
+    validator: "flow.validator/delegate-output-conformance/v1",
+    candidate_reference: "exact_authority_materialized_candidate_digest",
+    predecessor_reference:
+      "exact_authority_materialized_predecessor_evidence_digest",
+    task_inputs_digest: "sha256_canonical_json_utf8",
+    criterion_evidence_digest:
+      "sha256_canonical_json_utf8_criterion_evidence_verdict",
+    finding_id:
+      "finding_sha256_canonical_json_utf8_classification_detail_summary",
+    criterion_order: "brief_acceptance_order",
+    finding_order: "strict_ascending_finding_id_unique",
+    blocking_policy: "blocking_or_failed_criterion_prevents_seal",
+    non_blocking_policy: "retain_exactly",
+    graph_shapes: ["legacy", "serialized"],
+  });
+  assert.deepEqual(catalog.flow_runtime.plan_revision_result_bindings, {
+    authority: "RunAuthority",
+    template_field: "result_binding_changes",
+    delta: "flow.result-binding-delta/v1",
+    application: "atomic_with_cards_edges_capabilities_resources_limits_supersession",
+    replacement: "explicit_producer_consumer_output_contract_and_schema_mapping",
+    unaffected: "preserve_unaffected_declarations",
+    history: "append_only_old_result_records",
+    superseded: "superseded_producers_and_bindings_are_unusable",
+    gated_or_declined: "active_declarations_unchanged",
+  });
+  for (const contract of [
+    "flow.result-binding/v1",
+    "flow.result-binding-record/v1",
+    "flow.result-provenance/v1",
+    "flow.result-identity/v1",
+    "flow.result-binding-delta/v1",
+    "flow.feature-capture-policy/v1",
+    "flow.feature-critique-output/v1",
+    "flow.authority-critique-input-binding/v1",
+    "flow.operation/feature-capture/v1",
+    "work.feature-capture-receipt/v1",
+    "flow.validator/feature-capture-receipt/v1",
+    "flow.feature-candidate-view/v1",
+  ]) {
+    assert.ok(catalog.contracts.includes(contract), contract);
+  }
+});
+
+test("the public catalog requires both prepare input contracts", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-prepare-input-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.flow_runtime.operation_contracts.prepare.input = [
+    "flow.dynamic-plan-proposal/v1",
+  ];
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /prepare inputs are incomplete/,
+  );
+
+  catalog.flow_runtime.operation_contracts.prepare.input = [
+    "flow.predefined-flow-selection/v1",
+  ];
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /prepare inputs are incomplete/,
+  );
+});
+
+test("the public catalog binds checkpoint contracts in its source and JSON", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-checkpoint-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  for (const contract of [
+    "flow.checkpoint/confirmation/v1",
+    "flow.validator/checkpoint-decision/v1",
+    "flow.checkpoint-binding/v1",
+  ]) {
+    assert.ok(catalog.contracts.includes(contract), contract);
+  }
+  catalog.contracts = catalog.contracts.filter(
+    (contract) => contract !== "flow.checkpoint-binding/v1",
+  );
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /checkpoint contracts are incomplete/,
+  );
+});
+
+test("the public catalog requires both launch confirmation contracts", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-launch-confirmation-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+
+  for (const confirmation of [
+    ["flow.dynamic-plan-confirmation-decision/v1"],
+    ["flow.predefined-flow-confirmation-decision/v1"],
+  ]) {
+    catalog.flow_runtime.operation_contracts.launch.confirmation = confirmation;
+    await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+    await assert.rejects(
+      loadContractCatalog({
+        catalogPath: incompleteCatalogPath,
+        featureContractPath,
+      }),
+      /launch confirmation contracts are incomplete/,
+    );
+  }
+});
+
+test("the public catalog rejects a weakened Drovr feature baseline", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-drovr-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const weakenedCatalogPath = join(scratch, "catalog.json");
+  const weakenedFeatureContractPath = join(
+    scratch,
+    "drovr-required-features.v1.json",
+  );
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  const weakenedFeatureContract = JSON.parse(
+    await readFile(featureContractPath, "utf8"),
+  );
+  weakenedFeatureContract.features[0].guarantees.pop();
+  const weakenedBytes = Buffer.from(
+    `${JSON.stringify(weakenedFeatureContract, null, 2)}\n`,
+  );
+  catalog.delegated_agent_port.required_features.content_sha256 =
+    `sha256:${createHash("sha256").update(weakenedBytes).digest("hex")}`;
+  await writeFile(weakenedCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+  await writeFile(weakenedFeatureContractPath, weakenedBytes);
+
+  await assert.rejects(
+    loadContractCatalog({ catalogPath: weakenedCatalogPath }),
+    /contract catalog Drovr feature baseline is incomplete or weakened/,
+  );
+});
+
+test("the public catalog rejects nested authority roots", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-roots-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const nestedCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.authority_roots.replacement = {
+    base: "state",
+    path: "agent-flow/flow",
+  };
+  await writeFile(nestedCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: nestedCatalogPath,
+      featureContractPath,
+    }),
+    /contract catalog authority roots must be disjoint/,
+  );
+});
+
+test("the public catalog requires the complete rejection contract", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-rejection-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.flow_runtime.rejection_contract = {
+    contract: "flow.rejection/v1",
+    fields: ["schema"],
+    watermark_domains: {
+      host: "host_run_index_admission_and_authority_schema",
+      run: "run_lifecycle_stream_authority_epoch_and_authority_schema",
+    },
+  };
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /contract catalog rejection contract is incomplete/,
+  );
+});
+
+test("the public catalog requires the durable authority contract", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-authority-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  delete catalog.authority_persistence.authority_epoch.effect_recheck;
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({ catalogPath: incompleteCatalogPath }),
+    /contract catalog authority persistence is incomplete/,
+  );
+});
+
+test("the public catalog requires complete registered operation contracts", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-operation-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  delete catalog.flow_runtime.operation_execution.receipt_validator;
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /registered operation contracts are incomplete/,
+  );
+});
+
+test("the public catalog requires the delegate quarantine block contract", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-delegate-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.contracts = catalog.contracts.filter(
+    (contract) => contract !== "flow.delegate-card-block/v1",
+  );
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /delegate execution contracts are incomplete/,
+  );
+});
+
+test("the public catalog binds registered queries to published contracts", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-query-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const invalidCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.contracts = catalog.contracts.filter((contract) => contract !== "flow.query/v1");
+  await writeFile(invalidCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: invalidCatalogPath,
+      featureContractPath,
+    }),
+    /registered query contracts must be published/,
+  );
+});
+
+test("the public catalog requires the complete legacy import policy", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-import-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.legacy_import.required_validations = ["digest"];
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /contract catalog legacy import policy is incomplete/,
+  );
+
+  catalog.legacy_import.required_validations = [
+    "digest",
+    "schema",
+    "provenance",
+    "redaction",
+    "classification",
+    "retention",
+    "allowed_use",
+  ];
+  catalog.legacy_import.forbidden_authority.pop();
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /contract catalog legacy import policy is incomplete/,
+  );
+
+  catalog.legacy_import.forbidden_authority.push("completion");
+  catalog.legacy_import.allowed_subjects = ["legacy_completion"];
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /contract catalog legacy import policy is incomplete/,
+  );
+
+  catalog.legacy_import.allowed_subjects = ["artifact_bytes"];
+  delete catalog.contracts;
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: incompleteCatalogPath,
+      featureContractPath,
+    }),
+    /contract catalog contracts must be an explicit array/,
+  );
+});
+
+test("the public catalog requires the exact evidence-safety identity", async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-catalog-evidence-safety-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const incompleteCatalogPath = join(scratch, "catalog.json");
+  const catalog = JSON.parse(await readFile(catalogPath, "utf8"));
+  catalog.flow_runtime.evidence_safety.catalog_id = "flow.contract-catalog/v1@20";
+  await writeFile(incompleteCatalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({ catalogPath: incompleteCatalogPath }),
+    /evidence safety contracts are incomplete/,
+  );
+
+  const wrongVersionPath = join(scratch, "catalog-version.json");
+  const wrongVersion = JSON.parse(await readFile(catalogPath, "utf8"));
+  wrongVersion.catalog_version = 999;
+  await writeFile(wrongVersionPath, `${JSON.stringify(wrongVersion, null, 2)}\n`);
+
+  await assert.rejects(
+    loadContractCatalog({
+      catalogPath: wrongVersionPath,
+      featureContractPath,
+    }),
+    /evidence safety contracts are incomplete/,
+  );
+});
+
+test("legacy import requires every catalog validation", async () => {
+  const catalogWithAdapter = await catalogWithLegacyImportAdapter();
+
+  assert.throws(
+    () => authorizeLegacyImport(catalogWithAdapter, {
+      adapter: "legacy-bytes/v1",
+      validationReceipt: {
+        contract: "legacy-bytes.validation/v1",
+        adapter_contract: "legacy-bytes/v1",
+        subject_digest: subjectDigest,
+        issued_at: "2026-07-31T01:00:00Z",
+        outcomes: { digest: "passed" },
+      },
+      subjects: [],
+      subjectBytes,
+    }),
+    /legacy import validation is not passing: schema/,
+  );
+});
+
+test("legacy import rejects an adapter that is not bound to a catalog contract", async () => {
+  const catalog = await loadContractCatalog({ catalogPath });
+  const catalogWithAdapter = structuredClone(catalog);
+  catalogWithAdapter.legacy_import.adapters.push("legacy-bytes/v1");
+  const validations = Object.fromEntries(
+    catalogWithAdapter.legacy_import.required_validations.map((name) => [name, true]),
+  );
+
+  assert.throws(
+    () => authorizeLegacyImport(catalogWithAdapter, {
+      adapter: "legacy-bytes/v1",
+      validations,
+      subjects: ["artifact_bytes"],
+    }),
+    /legacy import adapter must name a catalog contract/,
+  );
+});
+
+test("legacy import rejects untyped caller validation flags", async () => {
+  const catalogWithAdapter = await catalogWithLegacyImportAdapter();
+  const validations = Object.fromEntries(
+    catalogWithAdapter.legacy_import.required_validations.map((name) => [name, true]),
+  );
+
+  assert.throws(
+    () => authorizeLegacyImport(catalogWithAdapter, {
+      adapter: "legacy-bytes/v1",
+      validations,
+      subjects: ["artifact_bytes"],
+    }),
+    /legacy import validation receipt is invalid/,
+  );
+});
+
+test("legacy import rejects a validation receipt unrelated to the subject bytes", async () => {
+  const catalogWithAdapter = await catalogWithLegacyImportAdapter();
+  const validationReceipt = {
+    ...passingValidationReceipt(catalogWithAdapter),
+    subject_digest: `sha256:${"0".repeat(64)}`,
+    issued_at: "2026-07-31T01:00:00Z",
+  };
+
+  assert.throws(
+    () => authorizeLegacyImport(catalogWithAdapter, {
+      adapter: "legacy-bytes/v1",
+      validationReceipt,
+      subjects: ["artifact_bytes"],
+      subjectBytes,
+    }),
+    /legacy import validation receipt does not match the subject bytes/,
+  );
+});
+
+test("legacy import does not claim unauthenticated receipt provenance", async () => {
+  const catalogWithAdapter = await catalogWithLegacyImportAdapter();
+  const validationReceipt = passingValidationReceipt(catalogWithAdapter);
+
+  assert.equal(
+    authorizeLegacyImport(catalogWithAdapter, {
+      adapter: "legacy-bytes/v1",
+      validationReceipt,
+      subjects: ["artifact_bytes"],
+      subjectBytes,
+    }).authorized,
+    true,
+  );
+});
+
+test("legacy import permits validated bytes but never legacy authority", async () => {
+  const catalogWithAdapter = await catalogWithLegacyImportAdapter();
+  const validationReceipt = passingValidationReceipt(catalogWithAdapter);
+
+  assert.throws(
+    () => authorizeLegacyImport(catalogWithAdapter, {
+      adapter: "legacy-bytes/v1",
+      validationReceipt,
+      subjectBytes,
+    }),
+    /legacy import subjects must be explicit/,
+  );
+  assert.throws(
+    () => authorizeLegacyImport(catalogWithAdapter, {
+      adapter: "legacy-bytes/v1",
+      validationReceipt,
+      subjects: [],
+      subjectBytes,
+    }),
+    /legacy import subjects must be non-empty/,
+  );
+
+  assert.throws(
+    () => authorizeLegacyImport(catalogWithAdapter, {
+      adapter: "legacy-bytes/v1",
+      validationReceipt,
+      subjects: ["completion"],
+      subjectBytes,
+    }),
+    /legacy import subject is not allowed: completion/,
+  );
+  assert.deepEqual(
+    authorizeLegacyImport(catalogWithAdapter, {
+      adapter: "legacy-bytes/v1",
+      validationReceipt,
+      subjects: ["artifact_bytes"],
+      subjectBytes,
+    }),
+    {
+      adapter: "legacy-bytes/v1",
+      validation_contract: "legacy-bytes.validation/v1",
+      subject_digest: subjectDigest,
+      authorized: true,
+      subjects: ["artifact_bytes"],
+    },
+  );
+});
+
+async function catalogWithLegacyImportAdapter() {
+  const catalog = structuredClone(await loadContractCatalog({ catalogPath }));
+  catalog.contracts.push("legacy-bytes/v1", "legacy-bytes.validation/v1");
+  catalog.legacy_import.adapters.push({
+    contract: "legacy-bytes/v1",
+    validation_contract: "legacy-bytes.validation/v1",
+    allowed_subjects: ["artifact_bytes"],
+  });
+  return catalog;
+}
+
+function passingValidationReceipt(catalog) {
+  return {
+    contract: "legacy-bytes.validation/v1",
+    adapter_contract: "legacy-bytes/v1",
+    subject_digest: subjectDigest,
+    issued_at: "2026-07-31T01:00:00Z",
+    outcomes: Object.fromEntries(
+      catalog.legacy_import.required_validations.map((name) => [name, "passed"]),
+    ),
+  };
+}

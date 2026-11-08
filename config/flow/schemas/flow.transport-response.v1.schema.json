@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.transport-response.v1.schema.json",
+  "title": "flow.transport-response/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "interface",
+    "version",
+    "request_id",
+    "operation",
+    "ok",
+    "done"
+  ],
+  "properties": {
+    "schema": { "const": "flow.transport-response/v1" },
+    "interface": { "const": "flow.runtime/v1" },
+    "version": { "const": 1 },
+    "request_id": {
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 128 },
+        { "type": "null" }
+      ]
+    },
+    "operation": {
+      "oneOf": [
+        { "enum": ["prepare", "launch", "command", "query", "watch"] },
+        { "type": "null" }
+      ]
+    },
+    "ok": { "type": "boolean" },
+    "done": { "type": "boolean" },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "watermark": {},
+    "result": {},
+    "error": {
+      "$ref": "flow.transport-error.v1.schema.json"
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 },
+        "operation": {
+          "enum": ["prepare", "launch", "command", "query", "watch"]
+        },
+        "ok": { "const": true },
+        "error": false
+      }
+    },
+    {
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 },
+        "operation": {
+          "enum": ["prepare", "launch", "command", "query", "watch"]
+        },
+        "ok": { "const": false },
+        "result": false
+      },
+      "required": ["error"]
+    },
+    {
+      "properties": {
+        "request_id": { "type": "null" },
+        "operation": { "type": "null" },
+        "ok": { "const": false },
+        "result": false
+      },
+      "required": ["error"]
+    }
+  ]
+}

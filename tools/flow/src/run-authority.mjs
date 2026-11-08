@@ -1,0 +1,6460 @@
+import { isProjectCheckAbsenceReceipt, validateProjectCheckReceipt, PROJECT_CHECK_CONTRACT } from "./project-check.mjs";
+import { validateFeatureCaptureReceipt, FEATURE_CAPTURE_OPERATION_CONTRACT } from "./feature-capture.mjs";
+import { isDeepStrictEqual } from "node:util";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
+
+import {
+  acquireAuthorityLock,
+  assertAuthorityEpoch as assertAuthorityEpochFence,
+  assertMutationFence as assertMutationFenceState,
+  AuthorityFenceError,
+} from "./authority-fence.mjs";
+import {
+  CanonicalValueError,
+  canonicalize,
+  digest,
+  freezeCanonical,
+  isPlainRecord,
+} from "./canonical.mjs";
+import { decideLifecycle } from "./lifecycle-kernel.mjs";
+import {
+  MAX_RETRY_DELAY_MS,
+  RETRY_DELAY_OBSERVATION_SCHEMA,
+  effectClassPolicy,
+  hasAffirmativeProviderObservation,
+  normalizeEffectObservation,
+  sanitizeEffectReceiptEnvelope,
+  sanitizeProviderEvidence,
+  validateEffectObservation,
+} from "./operation-effects.mjs";
+import { createHostAuthorityIdentityAdapter } from "./host-authority-identity.mjs";
+import {
+  createFailClosedGitRetentionAdapter,
+  createFailClosedGitWorkspaceObservationAdapter,
+} from "./git-retention-adapter.mjs";
+import { validateLaunchRequest } from "./launch-validation.mjs";
+import {
+  createOneShotWatcher,
+  createProjectionWatcher,
+} from "./projection-watcher.mjs";
+import { createRejection } from "./rejection.mjs";
+import {
+  buildRebootRevalidation,
+  createFailClosedRebootObservationAdapter,
+} from "./reboot-revalidation.mjs";
+import { validateTimeFacts } from "./reboot-facts.mjs";
+import {
+  unobservedCallerIdempotentInvocation,
+  applyExecutionTimeObservation,
+  foldRun,
+  projectRun,
+  runWatermark,
+} from "./run-projection.mjs";
+import { foldRetryStates, retryStateIsDue } from "./retry-state.mjs";
+import { deriveChildRunId } from "./subrun-effects.mjs";
+import {
+  DELEGATE_FAILURE_OBSERVATION_SCHEMA,
+} from "./provider-receipt-policies/delegate-drovr.mjs";
+import {
+  AuthorityIntegrityError,
+  migrateReviewProjectionFolds,
+  readAuthorityStream,
+  replayAuthorityStream,
+  runEventsFromRecords,
+} from "./sqlite-authority-replay.mjs";
+import {
+  AUTHORITY_SCHEMA_RELEASE,
+  CURRENT_AUTHORITY_SCHEMA_VERSION,
+  initializeAuthoritySchema as initializeStoreSchema,
+  readAuthoritySchemaCompatibility,
+  transitionAuthoritySchema,
+  uninitializedAuthoritySchemaCompatibility,
+} from "./authority-schema.mjs";
+import {
+  attachRunEffectIntentReader,
+  attachWorkAuthorities,
+  buildArtifactCollectionPreview,
+  buildConsumerHandoffBinding,
+  buildConsumerMutationAuthorization,
+  buildHandoffCleanupPreview,
+  buildHandoffPublication,
+  buildHumanAuthorityBinding,
+  buildWorkspaceCleanupPreview,
+  decideWorkCommand,
+  validateHandoffPublicationAuthority,
+  withHandoffObservations,
+  withArtifactAvailability,
+  workRejection,
+  workStreamIdentity,
+  workspaceEffectAuthorityIssue,
+} from "./work-authority.mjs";
+import {
+  isReviewTargetInvalidationCommand,
+  isReviewTargetRefreshCommand,
+  isReviewHumanCommand,
+  GITHUB_REVIEW_RECORD_COMMAND_SCHEMA,
+  REVIEW_INBOX_QUERY_CONTRACT,
+  projectReviewInbox,
+  projectReviewCandidateCurrency,
+  projectReviewCurrency,
+  REVIEW_PROJECTION_FOLD_CONTRACT,
+  reviewRecordCandidateAuthorityIssue,
+  reviewRecordSourceAuthorityIssue,
+} from "./review-flow.mjs";
+import {
+  executeHostRecoveryCommand,
+  initialBackupProjection,
+  initialRestoreBarrier,
+  isBackupRestoreCommand,
+  projectHostRecovery,
+  snapshotBackupRestoreAdapter,
+  reduceHostRecoveryEvent,
+} from "./backup-restore.mjs";
+import {
+  authorityBindingCatalogIdentity,
+  authorityFactFromIssue,
+  normalizeAuthorityBindings,
+  recheckAuthorityBindings,
+  validateDefinitionAuthorityBindings,
+} from "./authority-bindings.mjs";
+import {
+  createResultBindingRecord,
+  resultBindingDeclarationsForProducer,
+} from "./result-bindings.mjs";
+import {
+  DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA,
+} from "./delegate-input-envelope.mjs";
+import { flowGrantIdsForDrovrCapability } from "./delegate-capabilities.mjs";
+
+const EMPTY_WATERMARK = `sha256:${"0".repeat(64)}`;
+const REVIEW_TARGET_MOVEMENT_SHAPES = Object.freeze([
+  "fingerprint_only",
+  "generation_only",
+  "combined",
+]);
+const EFFECT_INTENT_EVENT_TYPES = new Set([
+  "effect_intent_recorded",
+  "effect_intent_adopted",
+]);
+const DEFERRED_EFFECT_EVENT_TYPES = new Set([
+  "delegate_completed",
+  "operation_completed",
+  "run_declined",
+  "run_succeeded",
+]);
+const require = createRequire(import.meta.url);
+let databaseConstructor = null;
+const authorityBindingCatalogs = new WeakMap();
+
+export function attachAuthorityBindingCatalogs(
+  runAuthority,
+  { authorities = new Map(), predefinedDefinitions = new Map() } = {},
+) {
+  if (runAuthority === null || typeof runAuthority !== "object") {
+    throw new TypeError("run authority is required for authority catalog binding");
+  }
+  if (!(authorities instanceof Map) || !(predefinedDefinitions instanceof Map)) {
+    throw new TypeError("authority catalogs must be Maps");
+  }
+  const snapshot = {
+    authorities: new Map(authorities),
+    predefinedDefinitions: new Map(predefinedDefinitions),
+  };
+  // The first catalog becomes the RunAuthority's immutable provider view.
+  // Same-identity attachment is a no-op; callbacks from later runtimes never
+  // replace the attached mechanism.
+  const identity = authorityBindingCatalogIdentity(snapshot);
+  const existing = authorityBindingCatalogs.get(runAuthority);
+  if (existing !== undefined) {
+    if (existing.identity !== identity) {
+      throw new TypeError("conflicting authority catalog attachment");
+    }
+    return undefined;
+  }
+  const attached = Object.freeze({ ...snapshot, identity });
+  authorityBindingCatalogs.set(runAuthority, attached);
+}
+
+export function createInMemoryRunAuthority({ backupRestoreAdapter = null } = {}) {
+  const runs = new Map();
+  const bundleRuns = new Map();
+  const authorityEvents = [];
+  const watchers = new Map();
+  const hostWatchers = new Set();
+  const recoveryAdapter = snapshotBackupRestoreAdapter(backupRestoreAdapter);
+  const hostRecoveryEvents = [];
+  let hostRecovery = {
+    backup: initialBackupProjection(),
+    restore: initialRestoreBarrier(),
+  };
+  let childLaunchLineage = null;
+
+  const hostProjection = () => {
+    const watermark = authorityWatermark([
+      ...authorityEvents,
+      ...hostRecoveryEvents,
+    ]);
+    const base = {
+      schema: "flow.run-index-projection/v1",
+      watermark,
+      runs: [...runs.keys()].sort(),
+    };
+    const recovery = projectHostRecovery(hostRecovery, watermark);
+    return freezeCanonical({ ...base, watermark, ...recovery });
+  };
+
+  const publishHost = () => {
+    const projection = hostProjection();
+    for (const watcher of hostWatchers) watcher.publish(projection);
+    for (const [runId, runWatchers] of watchers) {
+      const run = runs.get(runId);
+      if (!run) continue;
+      const runProjection = projectRunWithHostBarrier(
+        projectRun({
+          authorityEventStreamDigest: runWatermark(run),
+          fold: foldRun(run),
+          events: run.events,
+        }),
+        projection,
+      );
+      for (const watcher of runWatchers) watcher.publish(runProjection);
+    }
+  };
+
+  const appendHostRecovery = (payload) => {
+    hostRecoveryEvents.push(payload);
+    hostRecovery = reduceHostRecoveryEvent(hostRecovery, payload);
+    publishHost();
+    return hostProjection();
+  };
+
+  const hostMutationRejection = (operation, commandType = null) => {
+    const host = hostProjection();
+    return createRejection({
+      operation,
+      code: "host_reconciliation_required",
+      commandType,
+      authorityWatermark: host.watermark,
+      authorityWatermarkDomain: "host",
+      legalActions: host.legal_actions ?? host.restore?.legal_actions ??
+        host.backup?.legal_actions ?? [],
+    });
+  };
+
+  const hostCommand = (command = {}) => {
+    const before = hostProjection();
+    return executeHostRecoveryCommand({
+      command,
+      before,
+      recoveryAdapter,
+      append: appendHostRecovery,
+      read: hostProjection,
+      beforeMutation: () => {
+        if (hostProjection().restore?.active === true) {
+          throw new AuthorityFenceError(
+            "host_reconciliation_required",
+            "backup mutation is fenced by the host restore barrier",
+          );
+        }
+      },
+    });
+  };
+
+  const runAuthority = Object.freeze({
+    adoptExactLaunch(request = {}) {
+      if (hostProjection().restore?.active === true) return null;
+      const validation = validateLaunchRequest(request);
+      if (!validation.accepted) return null;
+      const runId = childLaunchLineage === null
+        ? `run:${validation.prepared.bundle_digest.slice("sha256:".length)}`
+        : deriveChildRunId(childLaunchLineage);
+      const existingRunId = childLaunchLineage === null
+        ? bundleRuns.get(validation.prepared.bundle_digest)
+        : null;
+      if (existingRunId) return launchReceipt(runs.get(existingRunId), false);
+      if (childLaunchLineage !== null && runs.has(runId)) {
+        return launchReceipt(runs.get(runId), false);
+      }
+      return null;
+    },
+
+    launch(request = {}) {
+      if (hostProjection().restore?.active === true) {
+        return hostMutationRejection("launch");
+      }
+      const lineage = childLaunchLineage;
+      const validation = validateLaunchRequest(request);
+      if (!validation.accepted) {
+        return launchRejection(
+          validation.code,
+          validation.prepared,
+          authorityEvents,
+          validation.reason,
+        );
+      }
+      const { prepared, closedFacts } = validation;
+
+      const runId = lineage === null
+        ? `run:${prepared.bundle_digest.slice("sha256:".length)}`
+        : deriveChildRunId(lineage);
+      const existingRunId = lineage === null
+        ? bundleRuns.get(prepared.bundle_digest)
+        : null;
+      if (existingRunId) return launchReceipt(runs.get(existingRunId), false);
+      if (lineage !== null && runs.has(runId)) {
+        return launchReceipt(runs.get(runId), false);
+      }
+
+      const authorityIssue = launchAuthorityBindingIssue(runAuthority, prepared);
+      if (authorityIssue) {
+        return launchAuthorityBindingRejection(
+          prepared,
+          authorityIssue,
+          authorityWatermark(authorityEvents),
+        );
+      }
+
+      const runOwnership = lineage === null
+        ? topLevelRunOwnership()
+        : childRunOwnership(lineage.parent_run_id);
+      if (runOwnership.scope === "child" &&
+          prepared.explicit_facts.tracker_binding !== undefined) {
+        return launchRejection(
+          "tracker_mutation_not_owned",
+          prepared,
+          authorityEvents,
+        );
+      }
+      const initialRun = {
+        run_id: runId,
+        ...(lineage === null ? {} : { lineage }),
+        prepared,
+        events: [
+          {
+            type: "run_launched",
+            bundle_digest: prepared.bundle_digest,
+            plan_fingerprint: prepared.plan_fingerprint,
+            confirmation_digest: prepared.confirmation_digest,
+            closed_fact_observation_digest: digest(closedFacts),
+            ...(lineage === null ? {} : { lineage }),
+            run_ownership: runOwnership,
+          },
+          ...prepared.explicit_facts.block_observations.map((observation) => ({
+            type: "card_blocked",
+            card_id: observation.card_id,
+            block: observation.block,
+            observation_digest: observation.evidence_digest,
+          })),
+        ],
+      };
+      const run = freezeCanonical({
+        ...initialRun,
+        launch_watermark: runWatermark(initialRun),
+      });
+      runs.set(runId, run);
+      if (lineage === null) bundleRuns.set(prepared.bundle_digest, runId);
+      authorityEvents.push({
+        type: "run_launched",
+        run_id: runId,
+        bundle_digest: prepared.bundle_digest,
+      });
+      publishHost();
+      return launchReceipt(run, true);
+    },
+
+    launchChild({
+      parent_run_id: parentRunId,
+      card_id: cardId,
+      card_identity: cardIdentity,
+      revision_ordinal: revisionOrdinal,
+      launch_request: launchRequest,
+    }) {
+      const lineage = childLineage(
+        parentRunId,
+        cardId,
+        cardIdentity,
+        revisionOrdinal,
+      );
+      const parent = runs.get(parentRunId);
+      if (!validChildLaunchParent(parent, lineage, launchRequest)) {
+        const projection = parent ? projectInMemoryRun(parent) : null;
+        return createRejection({
+          operation: "launch",
+          code: "subrun_not_actionable",
+          runId: parentRunId,
+          authorityWatermark: projection?.watermark ??
+            authorityWatermark(authorityEvents),
+          authorityWatermarkDomain: projection ? "run" : "host",
+          legalActions: projection?.legal_actions ?? [],
+        });
+      }
+      childLaunchLineage = lineage;
+      let receipt;
+      try {
+        receipt = this.launch(launchRequest);
+      } finally {
+        childLaunchLineage = null;
+      }
+      if (receipt?.schema !== "flow.launch-receipt/v1") return receipt;
+      this.recordSubrunAdmission(lineage);
+      return receipt;
+    },
+
+    recordSubrunAdmission(lineage) {
+      if (hostProjection().restore?.active === true) {
+        return hostMutationRejection(
+          "subrun_admission",
+          "subrun_admission",
+        );
+      }
+      const childRunId = deriveChildRunId(lineage);
+      const parent = runs.get(lineage.parent_run_id);
+      const child = runs.get(childRunId);
+      if (!validRecordedSubrunAdmission(parent, child, lineage)) {
+        const projection = parent ? projectInMemoryRun(parent) : null;
+        return createRejection({
+          operation: "subrun_admission",
+          code: "subrun_admission_unproven",
+          runId: lineage.parent_run_id,
+          authorityWatermark: projection?.watermark ??
+            authorityWatermark(authorityEvents),
+          authorityWatermarkDomain: projection ? "run" : "host",
+          legalActions: projection?.legal_actions ?? [],
+        });
+      }
+      if (!parent.events.some(({ type, child_run_id: recordedChildId }) =>
+        type === "subrun_admitted" && recordedChildId === childRunId)) {
+        const updatedParent = freezeCanonical({
+          ...parent,
+          events: [...parent.events, {
+            type: "subrun_admitted",
+            card_id: lineage.card_id,
+            child_run_id: childRunId,
+            child_watermark: runWatermark(child),
+          }],
+        });
+        runs.set(lineage.parent_run_id, updatedParent);
+        const projection = projectInMemoryRun(updatedParent);
+        for (const watcher of watchers.get(lineage.parent_run_id) ?? []) {
+          watcher.publish(projection);
+        }
+      }
+      return projectInMemoryRun(runs.get(lineage.parent_run_id));
+    },
+
+    command(command) {
+      if (isBackupRestoreCommand(command)) return hostCommand(command);
+      if (hostProjection().restore?.active === true) {
+        return hostMutationRejection("command", command?.type);
+      }
+      const run = runs.get(command?.run_id);
+      if (!run) {
+        return unknownRunRejection(
+          "command",
+          command?.run_id,
+          authorityEvents,
+          command?.type,
+        );
+      }
+      const fold = foldRun(run);
+      let decision;
+      try {
+        decision = decideLifecycle(fold, command);
+      } catch (error) {
+        if (!(error instanceof CanonicalValueError)) throw error;
+        return createRejection({
+          operation: "command",
+          code: "invalid_command",
+          reason: error.reason,
+          commandType: stringOrNull(command?.type),
+          runId: run.run_id,
+          bundleDigest: fold.bundle_digest,
+          authorityWatermark: fold.watermark,
+          authorityWatermarkDomain: "run",
+          legalActions: fold.legal_actions,
+        });
+      }
+      if (decision.schema === "flow.rejection/v1") {
+        return freezeCanonical(decision);
+      }
+
+      const updatedRun = freezeCanonical({
+        ...run,
+        events: [...run.events, ...decision.events],
+      });
+      runs.set(run.run_id, updatedRun);
+      const projection = projectRun({
+        authorityEventStreamDigest: runWatermark(updatedRun),
+        fold: foldRun(updatedRun),
+        events: updatedRun.events,
+      });
+      for (const watcher of watchers.get(run.run_id) ?? []) {
+        watcher.publish(projection);
+      }
+      return freezeCanonical({
+        schema: "flow.command-receipt/v1",
+        command_type: command.type,
+        run_id: run.run_id,
+        authority_watermark: projection.watermark,
+        accepted: true,
+      });
+    },
+
+    query(runId) {
+      if (runId !== undefined) {
+        const run = runs.get(runId);
+        if (!run) return unknownRunRejection("query", runId, authorityEvents);
+        return projectRunWithHostBarrier(projectRun({
+          authorityEventStreamDigest: runWatermark(run),
+          fold: foldRun(run),
+          events: run.events,
+        }), hostProjection());
+      }
+      return hostProjection();
+    },
+
+    queryByReviewCandidateReference(reference = {}) {
+      return queryRetainedSourceRunByReviewCandidateReference({
+        reference,
+        hostProjection: hostProjection(),
+        readRun: (runId) => {
+          const run = runs.get(runId);
+          if (!run) return null;
+          return projectRunWithHostBarrier(projectRun({
+            authorityEventStreamDigest: runWatermark(run),
+            fold: foldRun(run),
+            events: run.events,
+          }), hostProjection());
+        },
+      });
+    },
+
+    watch(runId, { unrefPollTimer = false } = {}) {
+      const run = runs.get(runId);
+      if (!run) {
+        return createOneShotWatcher(
+          unknownRunRejection("watch", runId, authorityEvents),
+        );
+      }
+      const watcher = createProjectionWatcher({
+        initialProjection: projectRunWithHostBarrier(projectRun({
+          authorityEventStreamDigest: runWatermark(run),
+          fold: foldRun(run),
+          events: run.events,
+        }), hostProjection()),
+        close: () => {
+        const runWatchers = watchers.get(runId);
+        runWatchers?.delete(watcher);
+        if (runWatchers?.size === 0) watchers.delete(runId);
+        },
+        unrefPollTimer,
+      });
+      const runWatchers = watchers.get(runId) ?? new Set();
+      runWatchers.add(watcher);
+      watchers.set(runId, runWatchers);
+      return watcher;
+    },
+
+    watchHost({ unrefPollTimer = false } = {}) {
+      const watcher = createProjectionWatcher({
+        initialProjection: hostProjection(),
+        close: () => hostWatchers.delete(watcher),
+        unrefPollTimer,
+      });
+      hostWatchers.add(watcher);
+      return watcher;
+    },
+
+    hostCommand,
+  });
+  attachRunEffectIntentReader(runAuthority, Object.freeze({
+    schema: "flow.run-effect-intent-reader/v1",
+    query(runId, effectId) {
+      const run = runs.get(runId);
+      const effect = run === undefined
+        ? null
+        : foldRun(run).effects.find(({ effect_id: id }) => id === effectId) ?? null;
+      return effect === null ? null : freezeCanonical(effect);
+    },
+  }));
+  return runAuthority;
+}
+
+export function createDurableRunAuthority({
+  afterCancellationCommit = () => {},
+  afterChildLaunchCommit = () => {},
+  afterEffectCommit = () => {},
+  authorityDirectory,
+  access = "mutate",
+  afterSchemaTransitionCommit = () => {},
+  backupRestoreAdapter = null,
+  beforeEffect = () => {},
+  beforeHandoffCommit = () => {},
+  beforeIntentCommit = () => {},
+  beforeSchemaTransitionCommit = () => {},
+  declaredCapacity = 4,
+  gitRetentionAdapter = createFailClosedGitRetentionAdapter(),
+  gitWorkspaceObservationAdapter = createFailClosedGitWorkspaceObservationAdapter(),
+  hostIdentityAdapter = createHostAuthorityIdentityAdapter(),
+  lifecycleKernel = decideLifecycle,
+  beforeCancellationCommit = () => {},
+  rebootObservationAdapter = createFailClosedRebootObservationAdapter(),
+  retryTimeAdapter = createFailClosedRetryTimeAdapter(),
+  timeObservationAdapter = createFailClosedExecutionTimeAdapter(),
+  reviewTargetObservationAdapter = null,
+  workEvidenceAdapter = createFailClosedWorkEvidenceAdapter(),
+  runOwnershipAdapter = createTopLevelRunOwnershipAdapter(),
+} = {}) {
+  if (typeof authorityDirectory !== "string" || authorityDirectory.length === 0) {
+    throw new TypeError("durable run authority requires an authority directory");
+  }
+  if (typeof hostIdentityAdapter?.observe !== "function") {
+    throw new TypeError("durable run authority requires a host identity Adapter");
+  }
+  if (typeof gitRetentionAdapter?.observe !== "function") {
+    throw new TypeError("durable run authority requires a Git retention Adapter");
+  }
+  if (typeof gitWorkspaceObservationAdapter?.observe !== "function") {
+    throw new TypeError("durable run authority requires a workspace Git Adapter");
+  }
+  if (!["inspect", "mutate"].includes(access)) {
+    throw new TypeError("durable run authority access must be inspect or mutate");
+  }
+  if (!Number.isSafeInteger(declaredCapacity) || declaredCapacity < 1) {
+    throw new TypeError("durable run authority capacity must be a positive integer");
+  }
+  if (typeof beforeEffect !== "function") {
+    throw new TypeError("durable run authority beforeEffect must be a function");
+  }
+  if (typeof beforeHandoffCommit !== "function") {
+    throw new TypeError(
+      "durable run authority beforeHandoffCommit must be a function",
+    );
+  }
+  if (typeof afterChildLaunchCommit !== "function") {
+    throw new TypeError(
+      "durable run authority child-launch hook must be a function",
+    );
+  }
+  if (typeof afterEffectCommit !== "function") {
+    throw new TypeError(
+      "durable run authority effect-commit hook must be a function",
+    );
+  }
+  if (typeof afterCancellationCommit !== "function" ||
+      typeof beforeCancellationCommit !== "function") {
+    throw new TypeError(
+      "durable run authority cancellation hooks must be functions",
+    );
+  }
+  if (typeof beforeIntentCommit !== "function") {
+    throw new TypeError(
+      "durable run authority beforeIntentCommit must be a function",
+    );
+  }
+  if (typeof afterSchemaTransitionCommit !== "function") {
+    throw new TypeError(
+      "durable run authority post-transition hook must be a function",
+    );
+  }
+  if (typeof beforeSchemaTransitionCommit !== "function") {
+    throw new TypeError(
+      "durable run authority schema transition hook must be a function",
+    );
+  }
+  if (typeof lifecycleKernel !== "function") {
+    throw new TypeError("durable run authority lifecycleKernel must be a function");
+  }
+  if (typeof rebootObservationAdapter?.observe !== "function") {
+    throw new TypeError(
+      "durable run authority requires a reboot observation Adapter",
+    );
+  }
+  if (typeof retryTimeAdapter?.observe !== "function") {
+    throw new TypeError(
+      "durable run authority requires a retry time observation Adapter",
+    );
+  }
+  if (typeof timeObservationAdapter?.observe !== "function") {
+    throw new TypeError(
+      "durable run authority requires an execution time observation Adapter",
+    );
+  }
+  if (typeof workEvidenceAdapter?.validate !== "function") {
+    throw new TypeError("durable run authority requires a Work evidence Adapter");
+  }
+  if (reviewTargetObservationAdapter !== null &&
+      (typeof reviewTargetObservationAdapter?.observe !== "function" ||
+       !Array.isArray(reviewTargetObservationAdapter?.movement_shapes) ||
+       REVIEW_TARGET_MOVEMENT_SHAPES.some((shape) =>
+         !reviewTargetObservationAdapter.movement_shapes.includes(shape)))) {
+    throw new TypeError(
+      "durable run authority review target observation Adapter must observe all target movement shapes",
+    );
+  }
+  if (typeof runOwnershipAdapter?.observe !== "function") {
+    throw new TypeError("durable run authority requires a run ownership Adapter");
+  }
+  const hostIdentity = hostIdentityAdapter.observe();
+  if (hostIdentity?.schema !== "flow.host-authority-identity/v1" ||
+      typeof hostIdentity.boot_id !== "string" ||
+      hostIdentity.boot_id.length === 0 ||
+      typeof hostIdentity.process_identity !== "string" ||
+      hostIdentity.process_identity.length === 0) {
+    throw new TypeError("host identity Adapter returned an invalid observation");
+  }
+  const bootId = hostIdentity.boot_id;
+  const processIdentity = hostIdentity.process_identity;
+  const recoveryAdapter = snapshotBackupRestoreAdapter(backupRestoreAdapter);
+  const fenceRun = (database, stream) => withCancelledWorkspaceSettlement(database, stream, fencedRunFold(
+    database,
+    stream,
+    rebootObservationAdapter,
+    () => authorityBindingCatalogs.get(runAuthority),
+    {
+      retryTimeObservation: observeRetryTime(retryTimeAdapter),
+      executionTimeObservation: observeExecutionTime(timeObservationAdapter, bootId),
+    },
+  ));
+  const fenceRunWithoutAuthorityRevalidation = (database, stream) =>
+    fencedRunFold(
+      database,
+      stream,
+      rebootObservationAdapter,
+      () => authorityBindingCatalogs.get(runAuthority),
+      {
+        revalidateAuthorities: false,
+        retryTimeObservation: observeRetryTime(retryTimeAdapter),
+        executionTimeObservation: observeExecutionTime(timeObservationAdapter, bootId),
+      },
+    );
+
+  const databasePath = join(authorityDirectory, "authority.sqlite");
+  const lockPath = join(authorityDirectory, "authority.lock.sqlite");
+  const watchers = new Map();
+  const effectsInFlight = new Map();
+  let lockDatabase = null;
+  let authorityEpoch = null;
+  let authoritySchemaCompatibility = null;
+  let sameBootRecoveryRunIds = new Set();
+  let childLaunchLineage = null;
+  let closed = false;
+
+  if (access === "mutate") {
+    mkdirSync(authorityDirectory, { recursive: true, mode: 0o700 });
+    lockDatabase = acquireAuthorityLock({
+      createDatabase,
+      lockPath,
+      processIdentity,
+    });
+    if (lockDatabase) {
+      let database = null;
+      try {
+        database = openAuthorityDatabase(databasePath);
+        authoritySchemaCompatibility = initializeStoreSchema(database, {
+          afterCommit: afterSchemaTransitionCommit,
+          beforeCommit: beforeSchemaTransitionCommit,
+        });
+        if (authoritySchemaCompatibility.status === "compatible") {
+          migrateReviewProjectionFolds(database);
+          const previousAdmission = readAdmission(database);
+          // Active runs retain capacity until unresolved effects settle. Any
+          // future release path must preserve that recovery-coverage invariant.
+          if (previousAdmission?.boot_id === bootId) {
+            sameBootRecoveryRunIds = new Set(previousAdmission.active_runs);
+            const runIndex = readStream(database, "host:runs")?.fold;
+            for (const runId of runIndex?.runs ?? []) {
+              const stream = readStream(database, runId);
+              if (stream?.lastBootId === bootId &&
+                  stream.fold.legal_actions.some((action) =>
+                    action.type === "recovery" &&
+                    (["delegate", "delegate_cancellation"].includes(
+                      stream.fold.effects.find(({ effect_id: effectId }) =>
+                        effectId === action.effect_id)?.effect_kind,
+                    ) || stream.fold.effects.find(({ effect_id: effectId }) =>
+                      effectId === action.effect_id)?.operation_contract === "flow.operation/project-check/v2"))) {
+                sameBootRecoveryRunIds.add(runId);
+              }
+            }
+          }
+          authorityEpoch = acquireAuthorityEpoch(database, {
+            bootId,
+            declaredCapacity,
+            processIdentity,
+          });
+        } else if (authoritySchemaCompatibility.status === "incompatible") {
+          if (lockDatabase.isTransaction) lockDatabase.exec("ROLLBACK");
+          lockDatabase.close();
+          lockDatabase = null;
+        }
+      } catch (error) {
+        if (lockDatabase?.isTransaction) lockDatabase.exec("ROLLBACK");
+        lockDatabase?.close();
+        lockDatabase = null;
+        throw error;
+      } finally {
+        database?.close();
+      }
+    }
+  }
+
+  function publishHostProjection() {
+    const projection = authorityMethods.query();
+    for (const watcher of watchers.get(undefined) ?? []) {
+      watcher.publish(projection);
+    }
+    for (const [runId, runWatchers] of watchers) {
+      if (runId === undefined) continue;
+      const runProjection = authorityMethods.query(runId);
+      if (runProjection?.schema === "flow.rejection/v1") continue;
+      for (const watcher of runWatchers) watcher.publish(runProjection);
+    }
+  }
+
+  function hostCommand(command = {}) {
+    assertOpen();
+    if (!isBackupRestoreCommand(command)) {
+      const host = authorityMethods.query();
+      return hostCommandRejection(
+        "command",
+        "unsupported_host_command",
+        null,
+        host,
+      );
+    }
+    if (authoritySchemaCompatibility?.status === "incompatible") {
+      return schemaCompatibilityRejection(
+        "command",
+        authoritySchemaCompatibility,
+        null,
+        command?.type,
+      );
+    }
+    if (authoritySchemaCompatibility?.status === "transition_required") {
+      return schemaTransitionRequiredRejection(
+        "command",
+        databasePath,
+        null,
+        null,
+        command?.type,
+      );
+    }
+    if (!lockDatabase) {
+      return durableMutationRejection(
+        "command",
+        null,
+        databasePath,
+        command?.type,
+        fenceRun,
+      );
+    }
+    const readHost = () => {
+      const database = openAuthorityDatabase(databasePath, { readOnly: true });
+      try {
+        return durableHostProjection(database);
+      } finally {
+        database.close();
+      }
+    };
+    let before;
+    try {
+      before = readHost();
+    } catch (error) {
+      const integrity = authorityIntegrityError(error);
+      if (!integrity) throw error;
+      return authorityIntegrityRejection("command", integrity.reason);
+    }
+    return executeHostRecoveryCommand({
+      command,
+      before,
+      recoveryAdapter,
+      append: appendDurableHostRecoveryEvent,
+      read: readHost,
+      publish: publishHostProjection,
+      effectsInFlight,
+      unresolvedRunEffects: () => {
+        const database = openAuthorityDatabase(databasePath, { readOnly: true });
+        try {
+          return durableUnresolvedRunEffects(database);
+        } finally {
+          database.close();
+        }
+      },
+      beforeMutation: () => {
+        const database = openAuthorityDatabase(databasePath, { readOnly: true });
+        try {
+          assertDurableHostRestoreClear(
+            database,
+            "backup mutation is fenced by the host restore barrier",
+          );
+        } finally {
+          database.close();
+        }
+      },
+    });
+  }
+  function appendDurableHostRecoveryEvent(payload) {
+    const database = openAuthorityDatabase(databasePath);
+    try {
+      assertMutationFence(lockDatabase, database, {
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        assertAuthorityEpoch(database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        appendAuthorityEvents(database, {
+          streamId: "host:admission",
+          streamKind: "host_admission",
+          events: [{
+            contract: "flow.host-admission-event/v1",
+            payload,
+          }],
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        database.exec("COMMIT");
+      } catch (error) {
+        if (database.isTransaction) database.exec("ROLLBACK");
+        throw error;
+      }
+    } catch (error) {
+      if (error instanceof AuthorityFenceError) {
+        return durableMutationRejection(
+          "restore",
+          null,
+          databasePath,
+          payload?.type,
+          fenceRun,
+        );
+      }
+      const integrity = authorityIntegrityError(error);
+      if (!integrity) throw error;
+      return authorityIntegrityRejection("restore", integrity.reason);
+    } finally {
+      database.close();
+    }
+    return null;
+  }
+
+  const authorityMethods = {
+    // This is deliberately a read-only fact. Callers cannot turn an inspect
+    // authority into a mutation authority by observing the host projection.
+    get mutationAuthority() {
+      return !closed && lockDatabase !== null &&
+        authoritySchemaCompatibility?.status === "compatible";
+    },
+
+    hostCommand,
+    pendingSameBootRecoveryRunIds() {
+      return Object.freeze([...sameBootRecoveryRunIds].sort());
+    },
+
+    completeSameBootRecovery(runId) {
+      sameBootRecoveryRunIds.delete(runId);
+    },
+    adoptExactLaunch(request = {}) {
+      assertOpen();
+      // Exact adoption is intentionally read-only, including while another
+      // process owns the mutation lock. New launches take the fence below.
+      if (authoritySchemaCompatibility?.status === "incompatible" ||
+          !databaseExists(databasePath)) return null;
+      let database = null;
+      try {
+        database = openAuthorityDatabase(databasePath, { readOnly: true });
+        const compatibility = readAuthoritySchemaCompatibility(database);
+        if (compatibility.status !== "compatible") return null;
+        const hostRuns = readStream(database, "host:runs");
+        const admission = readStream(database, "host:admission");
+        if (!admission) {
+          throw new AuthorityIntegrityError(
+            "missing_stream",
+            "authority host stream is missing",
+          );
+        }
+        const host = durableHostProjection(database);
+        if (host.restore?.active === true) return null;
+        const validation = validateLaunchRequest(request);
+        if (!validation.accepted) return null;
+        const runId = childLaunchLineage === null
+          ? `run:${validation.prepared.bundle_digest.slice("sha256:".length)}`
+          : deriveChildRunId(childLaunchLineage);
+        const existing = readStream(database, runId);
+        if (!existing) {
+          if (hostRuns?.fold.runs.includes(runId)) {
+            throw new AuthorityIntegrityError(
+              "missing_stream",
+              "authority run stream is missing",
+            );
+          }
+          return null;
+        }
+        if (!hostRuns) {
+          throw new AuthorityIntegrityError(
+            "missing_stream",
+            "authority run index stream is missing",
+          );
+        }
+        return durableLaunchReceipt(
+          database,
+          existing,
+          false,
+          fenceRunWithoutAuthorityRevalidation,
+        );
+      } catch (error) {
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return authorityIntegrityRejection("launch", integrity.reason);
+      } finally {
+        database?.close();
+      }
+    },
+
+    launch(request = {}) {
+      const lineage = childLaunchLineage;
+      assertOpen();
+      if (authoritySchemaCompatibility?.status === "incompatible") {
+        return schemaCompatibilityRejection(
+          "launch",
+          authoritySchemaCompatibility,
+          null,
+          null,
+          request?.prepared?.bundle_digest ?? null,
+        );
+      }
+      if (authoritySchemaCompatibility?.status === "transition_required") {
+        return schemaTransitionRequiredRejection(
+          "launch",
+          databasePath,
+          request?.prepared?.bundle_digest ?? null,
+        );
+      }
+      if (!lockDatabase) {
+        return durableMutationRejection(
+          "launch",
+          null,
+          databasePath,
+          null,
+          fenceRun,
+        );
+      }
+      let hostBeforeLaunch;
+      try {
+        hostBeforeLaunch = durableHostProjectionFromPath(databasePath);
+      } catch (error) {
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return authorityIntegrityRejection("launch", integrity.reason);
+      }
+      if (hostBeforeLaunch.restore?.active === true) {
+        return hostCommandRejection(
+          "launch",
+          "host_reconciliation_required",
+          null,
+          hostBeforeLaunch,
+        );
+      }
+      const validation = validateLaunchRequest(request);
+      if (!validation.accepted) {
+        return durableLaunchRejection(
+          validation.code,
+          validation.prepared,
+          databasePath,
+          validation.reason,
+        );
+      }
+      const { prepared, closedFacts } = validation;
+      const launchTimeObservation = observeExecutionTime(
+        timeObservationAdapter,
+        bootId,
+      );
+      if (preparedRequiresExecutionTime(prepared) &&
+          launchTimeObservation.status !== "observed") {
+        return durableLaunchRejection(
+          "execution_time_unavailable",
+          prepared,
+          databasePath,
+          "fresh typed execution time facts are required for bounded admission",
+        );
+      }
+
+      const runId = lineage === null
+        ? `run:${prepared.bundle_digest.slice("sha256:".length)}`
+        : deriveChildRunId(lineage);
+      let database = null;
+      try {
+        database = openAuthorityDatabase(databasePath);
+        assertMutationFence(lockDatabase, database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        const existing = readStream(database, runId);
+        if (existing) {
+          return durableLaunchReceipt(database, existing, false, fenceRun);
+        }
+        const runOwnership = lineage === null
+          ? observeRunOwnership(runOwnershipAdapter, prepared)
+          : childRunOwnership(lineage.parent_run_id);
+        assertDurableHostRestoreClear(
+          database,
+          "launch observation is fenced by the host restore barrier",
+        );
+        if (runOwnership.scope !== "top_level" &&
+            prepared.explicit_facts.tracker_binding !== undefined) {
+          return durableLaunchRejection(
+            "tracker_mutation_not_owned",
+            prepared,
+            databasePath,
+          );
+        }
+        let consumerBindings;
+        try {
+          consumerBindings = prepareConsumerHandoffBindings(
+            database,
+            authorityDirectory,
+            gitRetentionAdapter,
+            prepared,
+            runId,
+          );
+        } catch (error) {
+          if (!(error instanceof TypeError)) throw error;
+          return durableLaunchRejection(
+            error.code === "forbidden_latest_resource_selection"
+              ? error.code
+              : "invalid_resource_handoff_binding",
+            prepared,
+            databasePath,
+          );
+        }
+        assertDurableHostRestoreClear(
+          database,
+          "consumer handoff preparation is fenced by the host restore barrier",
+        );
+
+        database.exec("BEGIN IMMEDIATE");
+        try {
+          assertAuthorityEpoch(database, {
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          const authorityIssue = launchAuthorityBindingIssue(
+            runAuthority,
+            prepared,
+          );
+          if (authorityIssue) {
+            database.exec("ROLLBACK");
+            return durableLaunchAuthorityBindingRejection(
+              prepared,
+              databasePath,
+              authorityIssue,
+            );
+          }
+          const admission = readStream(database, "host:admission").fold;
+          if (admission.active_runs.length >= admission.declared_capacity) {
+            database.exec("ROLLBACK");
+            return durableLaunchRejection(
+              "host_capacity_exhausted",
+              prepared,
+              databasePath,
+            );
+          }
+          assertDurableHostRestoreClear(
+            database,
+            "launch commit is fenced by the host restore barrier",
+          );
+          appendAuthorityEvents(database, {
+            streamId: runId,
+            streamKind: "run",
+            events: [
+              {
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "run_launched",
+                  prepared,
+                  bundle_digest: prepared.bundle_digest,
+                  plan_fingerprint: prepared.plan_fingerprint,
+                  confirmation_digest: prepared.confirmation_digest,
+                  closed_fact_observation_digest: digest(closedFacts),
+                  ...(() => {
+                    const facts = launchTimeObservation.facts;
+                    return facts === null ? {} : { admission_time_facts: facts };
+                  })(),
+                  ...(lineage === null ? {} : { lineage }),
+                  run_ownership: runOwnership,
+                },
+              },
+              ...prepared.explicit_facts.block_observations.map(
+                (observation) => ({
+                  contract: "flow.run-event/v1",
+                  payload: {
+                    type: "card_blocked",
+                    card_id: observation.card_id,
+                    block: observation.block,
+                    observation_digest: observation.evidence_digest,
+                  },
+                }),
+              ),
+              ...consumerBindings.map(({ binding }) => ({
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "resource_handoff_bound",
+                  handoff_id: binding.handoff_id,
+                  handoff_digest: binding.handoff_digest,
+                  binding_digest: digest(binding),
+                  operations: binding.operations,
+                },
+              })),
+            ],
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          appendConsumerHandoffBindings(database, consumerBindings, {
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          appendAuthorityEvents(database, {
+            streamId: "host:runs",
+            streamKind: "host_runs",
+            events: [{
+              contract: "flow.host-run-event/v1",
+              payload: {
+                type: "run_registered",
+                run_id: runId,
+                bundle_digest: prepared.bundle_digest,
+              },
+            }],
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          appendAuthorityEvents(database, {
+            streamId: "host:admission",
+            streamKind: "host_admission",
+            events: [{
+              contract: "flow.host-admission-event/v1",
+              payload: {
+                type: "run_capacity_reserved",
+                run_id: runId,
+              },
+            }],
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          database.exec("COMMIT");
+        } catch (error) {
+          if (database.isTransaction) database.exec("ROLLBACK");
+          throw error;
+        }
+        return durableLaunchReceipt(
+          database,
+          readStream(database, runId),
+          true,
+          fenceRun,
+        );
+      } catch (error) {
+        if (error instanceof AuthorityFenceError) {
+          return durableMutationRejection(
+            "launch",
+            null,
+            databasePath,
+            null,
+            fenceRun,
+            prepared.bundle_digest,
+            "host_reconciliation_required",
+          );
+        }
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return authorityIntegrityRejection("launch", integrity.reason);
+      } finally {
+        database?.close();
+      }
+    },
+
+    launchChild({
+      parent_run_id: parentRunId,
+      card_id: cardId,
+      card_identity: cardIdentity,
+      revision_ordinal: revisionOrdinal,
+      launch_request: launchRequest,
+    }) {
+      const lineage = childLineage(
+        parentRunId,
+        cardId,
+        cardIdentity,
+        revisionOrdinal,
+      );
+      const parent = this.query(parentRunId);
+      if (parent?.schema !== "flow.run-projection/v1" ||
+          parent.phase !== "active" ||
+          parent.admission !== "admitted" ||
+          parent.current_revision.ordinal !== revisionOrdinal ||
+          !parent.subruns.some(({ card_id: linkedCardId,
+            card_identity: linkedIdentity,
+            revision_ordinal: linkedOrdinal }) =>
+            linkedCardId === cardId && linkedIdentity === cardIdentity &&
+              linkedOrdinal === revisionOrdinal) ||
+          !parent.active_plan.cards.some(({ executor, id }) =>
+            id === cardId && executor.kind === "subrun") ||
+          digest(parent.active_plan.cards.find(({ id }) => id === cardId)) !==
+            cardIdentity ||
+          !isDeepStrictEqual(parent.active_plan.cards.find(
+            ({ id }) => id === cardId,
+          ).inputs.child_launch_request, launchRequest)) {
+        return createRejection({
+          operation: "launch",
+          code: "subrun_not_actionable",
+          runId: parentRunId,
+          authorityWatermark: parent?.watermark ?? null,
+          authorityWatermarkDomain: "run",
+          legalActions: parent?.legal_actions ?? [],
+        });
+      }
+      childLaunchLineage = lineage;
+      let receipt;
+      try {
+        receipt = this.launch(launchRequest);
+      } finally {
+        childLaunchLineage = null;
+      }
+      if (receipt?.schema !== "flow.launch-receipt/v1") return receipt;
+      afterChildLaunchCommit({
+        parent_run_id: parentRunId,
+        child_run_id: receipt.run_id,
+      });
+      this.recordSubrunAdmission(lineage);
+      return receipt;
+    },
+
+    recordSubrunAdmission(lineage) {
+      assertOpen();
+      const hostBeforeAdmission = durableHostProjectionFromPath(databasePath);
+      if (hostBeforeAdmission.restore?.active === true) {
+        return hostCommandRejection(
+          "subrun_admission",
+          "host_reconciliation_required",
+          null,
+          hostBeforeAdmission,
+        );
+      }
+      if (authoritySchemaCompatibility?.status === "incompatible") {
+        return schemaCompatibilityRejection(
+          "subrun_admission",
+          authoritySchemaCompatibility,
+          lineage?.parent_run_id,
+        );
+      }
+      if (authoritySchemaCompatibility?.status === "transition_required") {
+        return schemaTransitionRequiredRejection(
+          "subrun_admission",
+          databasePath,
+          null,
+          lineage?.parent_run_id,
+        );
+      }
+      if (!lockDatabase) {
+        return durableMutationRejection(
+          "subrun_admission",
+          lineage?.parent_run_id,
+          databasePath,
+          null,
+          fenceRun,
+        );
+      }
+      const childRunId = deriveChildRunId(lineage);
+      const parent = this.query(lineage.parent_run_id);
+      const child = this.query(childRunId);
+      if (!validRecordedSubrunAdmission(parent, child, lineage)) {
+        return createRejection({
+          operation: "subrun_admission",
+          code: "subrun_admission_unproven",
+          runId: lineage.parent_run_id,
+          authorityWatermark: parent?.watermark ?? null,
+          authorityWatermarkDomain: "run",
+          legalActions: parent?.legal_actions ?? [],
+        });
+      }
+      const database = openAuthorityDatabase(databasePath);
+      try {
+        assertMutationFence(lockDatabase, database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        database.exec("BEGIN IMMEDIATE");
+        assertAuthorityEpoch(database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        const stream = readStream(database, lineage.parent_run_id);
+        if (!stream.records.some(({ payload }) =>
+          payload.type === "subrun_admitted" &&
+          payload.child_run_id === childRunId)) {
+          appendAuthorityEvents(database, {
+            streamId: lineage.parent_run_id,
+            streamKind: "run",
+            events: [{
+              contract: "flow.run-event/v1",
+              payload: {
+                type: "subrun_admitted",
+                card_id: lineage.card_id,
+                child_run_id: childRunId,
+                child_watermark: child.watermark,
+              },
+            }],
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+        }
+        database.exec("COMMIT");
+        const projection = projectFencedRun(
+          database,
+          readStream(database, lineage.parent_run_id),
+          fenceRun,
+        );
+        for (const watcher of watchers.get(lineage.parent_run_id) ?? []) {
+          watcher.publish(projection);
+        }
+      } catch (error) {
+        if (database.isTransaction) database.exec("ROLLBACK");
+        if (error instanceof AuthorityFenceError) {
+          return durableMutationRejection(
+            "subrun_admission",
+            lineage.parent_run_id,
+            databasePath,
+            null,
+            fenceRun,
+          );
+        }
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return authorityIntegrityRejection(
+          "subrun_admission",
+          integrity.reason,
+          lineage.parent_run_id,
+        );
+      } finally {
+        database.close();
+      }
+      return this.query(lineage.parent_run_id);
+    },
+
+    command(command) {
+      assertOpen();
+      if (authoritySchemaCompatibility?.status === "incompatible") {
+        return schemaCompatibilityRejection(
+          "command",
+          authoritySchemaCompatibility,
+          command?.run_id,
+          command?.type,
+        );
+      }
+      if (authoritySchemaCompatibility?.status === "transition_required") {
+        if (command?.type !== "recovery" ||
+            command?.recovery !== "authority_schema_transition") {
+          return schemaTransitionRequiredRejection(
+            "command",
+            databasePath,
+            null,
+            command?.run_id,
+            command?.type,
+          );
+        }
+        return applySchemaTransitionCommand(command);
+      }
+      if (!lockDatabase) {
+        return durableMutationRejection(
+          "command",
+          command?.run_id,
+          databasePath,
+          command?.type,
+          fenceRun,
+        );
+      }
+      let hostBeforeCommand;
+      try {
+        hostBeforeCommand = durableHostProjectionFromPath(databasePath);
+      } catch (error) {
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return authorityIntegrityRejection("command", integrity.reason,
+          command?.run_id);
+      }
+      if (hostBeforeCommand.restore?.active === true) {
+        return hostCommandRejection(
+          "command",
+          "host_reconciliation_required",
+          null,
+          hostBeforeCommand,
+        );
+      }
+      let database = null;
+      try {
+        database = openAuthorityDatabase(databasePath);
+        assertMutationFence(lockDatabase, database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        const stream = readStream(database, command?.run_id);
+        if (!stream) {
+          return durableUnknownRunRejection(
+            "command",
+            command?.run_id,
+            database,
+            command?.type,
+          );
+        }
+        const fold = fenceRun(database, stream);
+        if (command?.type === "recovery" && ["settle_cancelled_workspace", "settle_cancelled_capture"].includes(command.recovery)) {
+          const result = settleCancelledWorkspace(database, stream, command, {
+            fenceRun, gitWorkspaceObservationAdapter, lockDatabase, authorityEpoch, bootId, processIdentity,
+          });
+          for (const watcher of watchers.get(command.run_id) ?? []) watcher.publish(this.query(command.run_id));
+          return result;
+        }
+        let canonicalCommand;
+        let commandDigest;
+        try {
+          canonicalCommand = canonicalize(command);
+          commandDigest = digest(canonicalCommand);
+        } catch (error) {
+          if (!(error instanceof CanonicalValueError)) throw error;
+          return invalidCommandRejection(fold, command);
+        }
+        const decision = lifecycleKernel(fold, canonicalCommand);
+        if (decision.schema === "flow.rejection/v1") {
+          return freezeCanonical(decision);
+        }
+        let committedDecision;
+        let cancellationBoundary = null;
+        database.exec("BEGIN IMMEDIATE");
+        try {
+          assertAuthorityEpoch(database, {
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          const current = readStream(database, canonicalCommand.run_id);
+          const currentFold = fenceRun(database, current);
+          const currentDecision = lifecycleKernel(
+            currentFold,
+            canonicalCommand,
+          );
+          if (currentDecision.schema === "flow.rejection/v1") {
+            database.exec("ROLLBACK");
+            return freezeCanonical(currentDecision);
+          }
+          committedDecision = currentDecision;
+          const settlementTimeFacts = observeExecutionTime(
+            timeObservationAdapter,
+            bootId,
+          ).facts;
+          const decisionEvents = currentDecision.events.map((event) =>
+            ["run_cancelled", "run_admitted_after_reboot"].includes(event.type) &&
+              settlementTimeFacts !== null
+              ? { ...event, time_facts: settlementTimeFacts }
+              : event);
+          const cancellationEvent = decisionEvents.find(
+            ({ type }) => type === "run_cancelled",
+          );
+          if (cancellationEvent) {
+            cancellationBoundary = freezeCanonical({
+              schema: "flow.cancellation-commit-boundary/v1",
+              run_id: canonicalCommand.run_id,
+              command_digest: commandDigest,
+              resource_dispositions: cancellationEvent.resource_dispositions,
+            });
+          }
+          const deferredEvents = decisionEvents.filter(({ type }) =>
+            DEFERRED_EFFECT_EVENT_TYPES.has(type));
+          const immediateEvents = decisionEvents.filter(({ type }) =>
+            !DEFERRED_EFFECT_EVENT_TYPES.has(type));
+          const effectIntents = currentDecision.effect_intents.map((intent) =>
+            bindEffectIntent(intent, {
+              authorityEpoch,
+              bootId,
+              commandDigest,
+              decision: currentDecision,
+              deferredEvents,
+              prepared: current.records[0].payload.prepared,
+              capabilityBindings: currentFold.capability_bindings,
+              runOwnership: currentFold.run_ownership,
+              runId: canonicalCommand.run_id,
+            }));
+          appendAuthorityEvents(database, {
+            streamId: canonicalCommand.run_id,
+            streamKind: "run",
+            events: [
+              ...(effectIntents.length === 0
+                ? decisionEvents
+                : immediateEvents).map((payload) => ({
+                contract: "flow.run-event/v1",
+                payload,
+              })),
+              ...effectIntents.map((intent) => ({
+                contract: "flow.run-event/v1",
+                payload: { type: "effect_intent_recorded", intent },
+              })),
+            ],
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          if (effectIntents.length > 0) {
+            beforeIntentCommit({
+              run_id: canonicalCommand.run_id,
+              effect_intents: effectIntents,
+            });
+          }
+          const terminalEvent = currentDecision.events.find(({ type }) =>
+            ["run_cancelled", "run_declined", "run_succeeded"].includes(type));
+          const terminalCommitsImmediately = terminalEvent?.type ===
+              "run_cancelled" || effectIntents.length === 0;
+          if (terminalEvent && terminalCommitsImmediately) {
+            appendTerminalConsumerHandoffReleases(database, {
+              prepared: current.records[0].payload.prepared,
+              runId: canonicalCommand.run_id,
+              terminalEvent,
+            }, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+            appendTerminalWorkspaceClaimReleases(database, {
+              prepared: current.records[0].payload.prepared,
+              runId: canonicalCommand.run_id,
+              terminalEvent,
+            }, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+          }
+          if (terminalEvent && terminalCommitsImmediately) {
+            appendAuthorityEvents(database, {
+              streamId: "host:admission",
+              streamKind: "host_admission",
+              events: [{
+                contract: "flow.host-admission-event/v1",
+                payload: {
+                  type: "run_capacity_released",
+                  run_id: canonicalCommand.run_id,
+                },
+              }],
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+          }
+          if (cancellationBoundary) {
+            beforeCancellationCommit(cancellationBoundary);
+          }
+          database.exec("COMMIT");
+          if (cancellationBoundary) {
+            afterCancellationCommit(cancellationBoundary);
+          }
+        } catch (error) {
+          if (database.isTransaction) database.exec("ROLLBACK");
+          throw error;
+        }
+        const projection = projectFencedRun(database, readStream(
+          database,
+          canonicalCommand.run_id,
+        ), fenceRun);
+        for (const watcher of watchers.get(canonicalCommand.run_id) ?? []) {
+          watcher.publish(projection);
+        }
+        const receipt = {
+          schema: "flow.command-receipt/v1",
+          command_type: canonicalCommand.type,
+          run_id: canonicalCommand.run_id,
+          authority_watermark: projection.watermark,
+          accepted: true,
+        };
+        const recordedIntents = readRecordedEffectIntents(
+          database,
+          canonicalCommand.run_id,
+          commandDigest,
+        );
+        const dispatchedIntents = [
+          ...recordedIntents,
+          ...(committedDecision.recovery_intents ?? []),
+        ];
+        return freezeCanonical(dispatchedIntents.length === 0
+          ? receipt
+          : { ...receipt, effect_intents: dispatchedIntents });
+      } catch (error) {
+        if (error instanceof AuthorityFenceError) {
+          return durableMutationRejection(
+            "command",
+            command?.run_id,
+            databasePath,
+            command?.type,
+            fenceRun,
+          );
+        }
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return authorityIntegrityRejection(
+          "command",
+          integrity.reason,
+          command?.run_id,
+        );
+      } finally {
+        database?.close();
+      }
+    },
+
+    workCommand(command) {
+      assertOpen();
+      if (authoritySchemaCompatibility?.status !== "compatible" || !lockDatabase) {
+        return workRejection("command", "mutation_authority_unavailable", { command });
+      }
+      let hostBeforeWorkCommand;
+      try {
+        hostBeforeWorkCommand = durableHostProjectionFromPath(databasePath);
+      } catch (error) {
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return workRejection("command", "authority_integrity_failure", {
+          command,
+        });
+      }
+      if (hostBeforeWorkCommand.restore?.active === true) {
+        return workRejection(
+          "command",
+          "host_reconciliation_required",
+          {
+            command,
+            current: {
+              watermark: hostBeforeWorkCommand.watermark,
+              legal_actions: hostBeforeWorkCommand.legal_actions ??
+                hostBeforeWorkCommand.restore?.legal_actions ??
+                hostBeforeWorkCommand.backup?.legal_actions ?? [],
+            },
+          },
+        );
+      }
+      const identity = workStreamIdentity(command?.contract, command?.subject_id);
+      if (!identity) return workRejection("command", "invalid_command", { command });
+      let database = null;
+      try {
+        database = openAuthorityDatabase(databasePath);
+        assertMutationFence(lockDatabase, database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        const storedProjection = readStream(database, identity.streamId)?.fold ?? null;
+        const humanCommand = isReviewHumanCommand(command);
+        // Human review commands carry a disposable projection watermark. The
+        // command boundary must rebuild that projection from the same Work
+        // observations used by query(), otherwise a copied action could cross
+        // a workspace, artifact, retention, or candidate-lifecycle fence.
+        const currentProjection = humanCommand &&
+            storedProjection?.schema === "flow.review-projection/v1"
+          ? queryWorkProjection(
+              database,
+              authorityDirectory,
+              identity,
+              gitRetentionAdapter,
+            )
+          : storedProjection;
+        let reviewAuthorityObservation = null;
+        if (isReviewTargetInvalidationCommand(command)) {
+          reviewAuthorityObservation = durableReviewTargetObservation(
+            database,
+            currentProjection,
+            command,
+            reviewTargetObservationAdapter,
+          );
+          if (reviewAuthorityObservation === null) {
+            return workRejection("command", "review_target_observation_unavailable", {
+              command,
+              current: currentProjection,
+            });
+          }
+        } else if (isReviewTargetRefreshCommand(command)) {
+          reviewAuthorityObservation = currentProjection?.invalidation?.observation ?? null;
+        }
+        if (currentProjection?.schema === "work.workspace-projection/v1" &&
+            ["workspace_claim", "workspace_observe"].includes(command.type)) {
+          let observation;
+          try {
+            observation = gitWorkspaceObservationAdapter.observe({
+              repository_id: currentProjection.repository.canonical_id,
+              workspace_path: currentProjection.workspace.canonical_path,
+              ref: command.type === "workspace_observe"
+                ? command.git_observation?.git?.ref
+                : currentProjection.git.ref,
+            });
+          } catch {
+            return workRejection("command", "workspace_git_observation_unavailable", {
+              command,
+              current: currentProjection,
+            });
+          }
+          assertDurableHostRestoreClear(
+            database,
+            "workspace Git observation is fenced by the host restore barrier",
+          );
+          command = freezeCanonical({ ...command, git_observation: observation });
+        }
+        if (currentProjection?.schema === "work.workspace-projection/v1" &&
+            command.disposition === "destructive_reset") {
+          let observation;
+          try {
+            observation = gitWorkspaceObservationAdapter.observe({
+              repository_id: currentProjection.repository.canonical_id,
+              workspace_path: currentProjection.workspace.canonical_path,
+              ref: command.replacement?.git?.ref,
+            });
+          } catch {
+            return workRejection("command", "workspace_git_observation_unavailable", {
+              command,
+              current: currentProjection,
+            });
+          }
+          assertDurableHostRestoreClear(
+            database,
+            "workspace Git observation is fenced by the host restore barrier",
+          );
+          command = freezeCanonical({ ...command, git_observation: observation });
+        }
+        if (currentProjection?.schema === "work.workspace-projection/v1" &&
+            command.type === "workspace_taint_disposition") {
+          let validation;
+          try {
+            validation = workEvidenceAdapter.validate({
+              workspace: currentProjection,
+              command,
+            });
+          } catch {
+            validation = null;
+          }
+          assertDurableHostRestoreClear(
+            database,
+            "work evidence validation is fenced by the host restore barrier",
+          );
+          command = freezeCanonical({
+            ...command,
+            evidence_validation: validation,
+          });
+        }
+        if (currentProjection?.schema === "flow.resource-handoff-projection/v1" &&
+            command.type === "resource_handoff_disposition") {
+          let validation;
+          try {
+            validation = workEvidenceAdapter.validate({
+              handoff: currentProjection,
+              command,
+            });
+          } catch {
+            validation = null;
+          }
+          assertDurableHostRestoreClear(
+            database,
+            "handoff evidence validation is fenced by the host restore barrier",
+          );
+          command = freezeCanonical({ ...command, evidence_validation: validation });
+        }
+        if (currentProjection?.schema === "work.workspace-projection/v1" &&
+            (command.type === "workspace_risk_acceptance" ||
+             command.disposition === "destructive_reset")) {
+          command = freezeCanonical({
+            ...command,
+            human_authority_validation: validateHumanWorkAuthority(
+              database,
+              command,
+              fenceRun,
+            ),
+          });
+        }
+        const structuralDecision = evaluateWorkCommand(
+          database,
+          identity,
+          command,
+          reviewAuthorityObservation,
+          humanCommand ? currentProjection : undefined,
+        );
+        if (structuralDecision.schema === "work.rejection/v1") {
+          return structuralDecision;
+        }
+        if (currentProjection === null && command.type === "workspace_register") {
+          let observation;
+          try {
+            observation = gitWorkspaceObservationAdapter.observe({
+              repository_id: command.registration?.repository?.canonical_id,
+              workspace_path: command.registration?.workspace?.canonical_path,
+              ref: command.registration?.git?.ref,
+            });
+          } catch {
+            return workRejection("command", "workspace_git_observation_unavailable", {
+              command,
+            });
+          }
+          assertDurableHostRestoreClear(
+            database,
+            "workspace Git observation is fenced by the host restore barrier",
+          );
+          if (observation?.schema !== "work.git-observation/v1" ||
+              !isDeepStrictEqual(observation.git, command.registration?.git)) {
+            return workRejection("command", "workspace_git_facts_mismatch", { command });
+          }
+          command = freezeCanonical({ ...command, git_observation: observation });
+        }
+        if (isReviewRecordCommand(command)) {
+          const sourceIssue = reviewSourceCommandIssue(database, command);
+          if (sourceIssue) {
+            return workRejection("command", sourceIssue.code, {
+              command,
+              current: sourceIssue.projection,
+            });
+          }
+        }
+        const decision = evaluateWorkCommand(
+          database,
+          identity,
+          command,
+          reviewAuthorityObservation,
+          humanCommand ? currentProjection : undefined,
+        );
+        if (decision.schema === "work.rejection/v1") return decision;
+        if (decision.replayed) {
+          return workCommandReceipt(command, currentProjection, false);
+        }
+        if (isReviewRecordCommand(command)) {
+          const candidateIssue = reviewCandidateCommandIssue(
+            database,
+            command,
+            authorityDirectory,
+            gitRetentionAdapter,
+          );
+          if (candidateIssue) {
+            return workRejection("command", candidateIssue.code, {
+              command,
+              current: candidateIssue.projection,
+            });
+          }
+          const sourceIssue = reviewSourceCommandIssue(database, command);
+          if (sourceIssue) {
+            return workRejection("command", sourceIssue.code, {
+              command,
+              current: sourceIssue.projection,
+            });
+          }
+        }
+        let createdArtifactPath = null;
+        if (decision.artifactBytes !== undefined) {
+          try {
+            createdArtifactPath = storeArtifactBytes(
+              authorityDirectory,
+              command.artifact,
+              decision.artifactBytes,
+            );
+          } catch (error) {
+            return workRejection(
+              "command",
+              error instanceof TypeError
+                ? "artifact_bytes_mismatch"
+                : error.code === "artifact_bytes_conflict"
+                  ? "artifact_bytes_conflict"
+                  : "artifact_storage_unavailable",
+              { command },
+            );
+          }
+        }
+        database.exec("BEGIN IMMEDIATE");
+        try {
+          assertAuthorityEpoch(database, {
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          const committedProjection = humanCommand
+            ? queryWorkProjection(
+                database,
+                authorityDirectory,
+                identity,
+                gitRetentionAdapter,
+              )
+            : undefined;
+          const committed = evaluateWorkCommand(
+            database,
+            identity,
+            command,
+            reviewAuthorityObservation,
+            humanCommand ? committedProjection : undefined,
+          );
+          if (committed.schema === "work.rejection/v1") {
+            database.exec("ROLLBACK");
+            if (createdArtifactPath) unlinkSync(createdArtifactPath);
+            return committed;
+          }
+          if (committed.replayed) {
+            database.exec("ROLLBACK");
+            if (createdArtifactPath) unlinkSync(createdArtifactPath);
+            return workCommandReceipt(command, currentProjection, false);
+          }
+          if (isReviewRecordCommand(command)) {
+            const candidateIssue = reviewCandidateCommandIssue(
+              database,
+              command,
+              authorityDirectory,
+              gitRetentionAdapter,
+            );
+            if (candidateIssue) {
+              database.exec("ROLLBACK");
+              if (createdArtifactPath) unlinkSync(createdArtifactPath);
+              return workRejection("command", candidateIssue.code, {
+                command,
+                current: candidateIssue.projection,
+              });
+            }
+            const sourceIssue = reviewSourceCommandIssue(database, command);
+            if (sourceIssue) {
+              database.exec("ROLLBACK");
+              if (createdArtifactPath) unlinkSync(createdArtifactPath);
+              return workRejection("command", sourceIssue.code, {
+                command,
+                current: sourceIssue.projection,
+              });
+            }
+          }
+          assertDurableHostRestoreClear(
+            database,
+            "work mutation is fenced by the host restore barrier",
+          );
+          appendAuthorityEvents(database, {
+            streamId: identity.streamId,
+            streamKind: committed.streamKind,
+            events: [committed.event],
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          database.exec("COMMIT");
+        } catch (error) {
+          if (database.isTransaction) database.exec("ROLLBACK");
+          if (createdArtifactPath) unlinkSync(createdArtifactPath);
+          throw error;
+        }
+        const projection = queryWorkProjection(
+          database,
+          authorityDirectory,
+          identity,
+          gitRetentionAdapter,
+        );
+        return workCommandReceipt(command, projection, true);
+      } catch (error) {
+        if (error instanceof AuthorityFenceError) {
+          return workRejection(
+            "command",
+            error.code === "host_reconciliation_required"
+              ? "host_reconciliation_required"
+              : "mutation_authority_unavailable",
+            { command },
+          );
+        }
+        throw error;
+      } finally {
+        database?.close();
+      }
+    },
+
+    workQuery(request) {
+      assertOpen();
+      const identity = workStreamIdentity(request?.contract, request?.subject_id);
+      if (!identity || !databaseExists(databasePath)) {
+        return workRejection("query", "unknown_subject", {
+          contract: request?.contract ?? null,
+          subjectId: request?.subject_id ?? null,
+        });
+      }
+      const database = openAuthorityDatabase(databasePath, { readOnly: true });
+      try {
+        const stream = readStream(database, identity.streamId);
+        if (!stream) {
+          return workRejection("query", "unknown_subject", {
+            contract: request.contract,
+            subjectId: request.subject_id,
+          });
+        }
+        return queryWorkProjection(
+          database,
+          authorityDirectory,
+          identity,
+          gitRetentionAdapter,
+        );
+      } finally {
+        database.close();
+      }
+    },
+
+    query(runId) {
+      assertOpen();
+      if (!databaseExists(databasePath)) {
+        if (runId !== undefined) {
+          return unknownRunRejection("query", runId, []);
+        }
+        return fencedHostProjection(freezeCanonical({
+          schema: "flow.run-index-projection/v1",
+          watermark: EMPTY_WATERMARK,
+          runs: [],
+        }), null, 0, uninitializedAuthoritySchemaCompatibility());
+      }
+      let database = null;
+      try {
+        database = openAuthorityDatabase(databasePath, { readOnly: true });
+        const compatibility = readAuthoritySchemaCompatibility(database);
+        if (compatibility.status === "incompatible") {
+          return runId === undefined
+            ? incompatibleHostProjection(compatibility)
+            : schemaCompatibilityRejection(
+                "query",
+                compatibility,
+                runId,
+              );
+        }
+        if (runId !== undefined) {
+          const stream = readStream(database, runId);
+          if (!stream) {
+            return durableUnknownRunRejection("query", runId, database);
+          }
+          const projection = projectFencedRun(database, stream, fenceRun);
+          const transitioned = compatibility.status === "transition_required"
+            ? transitionRequiredRunProjection(projection, compatibility)
+            : projection;
+          return projectRunWithHostBarrier(
+            transitioned,
+            durableHostProjection(database),
+          );
+        }
+        const hostStream = readStream(database, "host:runs");
+        const host = hostStream?.fold ?? freezeCanonical({
+          schema: "flow.run-index-projection/v1",
+          watermark: EMPTY_WATERMARK,
+          runs: [],
+        });
+        const admission = readStream(database, "host:admission")?.fold;
+        return fencedHostProjection(
+          host,
+          admission,
+          0,
+          readAuthoritySchemaCompatibility(database),
+        );
+      } catch (error) {
+        const integrity = authorityIntegrityError(error);
+        if (!integrity) throw error;
+        return authorityIntegrityRejection("query", integrity.reason, runId);
+      } finally {
+        database?.close();
+      }
+    },
+
+    queryByReviewCandidateReference(reference = {}) {
+      return queryRetainedSourceRunByReviewCandidateReference({
+        reference,
+        hostProjection: this.query(),
+        readRun: (runId) => this.query(runId),
+      });
+    },
+
+    watch(runId, { unrefPollTimer = false } = {}) {
+      assertOpen();
+      const initial = this.query(runId);
+      if (initial.schema === "flow.rejection/v1") {
+        return createOneShotWatcher(initial);
+      }
+      const watcher = createProjectionWatcher({
+        initialProjection: initial,
+        readProjection: () => this.query(runId),
+        unrefPollTimer,
+        close: () => {
+          const runWatchers = watchers.get(runId);
+          runWatchers?.delete(watcher);
+          if (runWatchers?.size === 0) watchers.delete(runId);
+        },
+      });
+      const runWatchers = watchers.get(runId) ?? new Set();
+      runWatchers.add(watcher);
+      watchers.set(runId, runWatchers);
+      return watcher;
+    },
+
+    async invokeEffect(intent, adapter) {
+      assertOpen();
+      if (!lockDatabase) {
+        throw new AuthorityFenceError(
+          "mutation_authority_unavailable",
+          "effect runner does not hold mutation authority",
+        );
+      }
+      const reconciliation = adapter?.reconciliation ?? null;
+      const settleCancelled = adapter?.settleCancelled === true;
+      if (![null, "adopt_present", "invoke_absent", "settle_absent"].includes(
+        reconciliation,
+      ) || !["adopt_present", "settle_absent"].includes(reconciliation) &&
+          typeof adapter?.invoke !== "function") {
+        throw new TypeError("effect adapter must expose invoke");
+      }
+      const dispatchKey = [
+        intent?.run_id,
+        intent?.effect_id,
+        intent?.idempotency_key,
+      ].join("\0");
+      if (!readEffectRecoveryState(databasePath, intent).intentRecorded) {
+        throw new AuthorityFenceError(
+          "unrecorded_effect_intent",
+          "effect intent was not durably recorded by RunAuthority",
+        );
+      }
+      while (effectsInFlight.has(dispatchKey)) {
+        const inFlight = effectsInFlight.get(dispatchKey);
+        const recovery = readEffectRecoveryState(databasePath, intent);
+        if (!recovery.recoveryRequested) {
+          throw new AuthorityFenceError(
+            "effect_dispatch_in_progress",
+            "effect intent is already being dispatched by this authority",
+          );
+        }
+        await inFlight.settled;
+        const settled = readEffectRecoveryState(databasePath, intent);
+        if (settled.receiptRecorded) return settled.receipt;
+      }
+      const dispatch = deferredEffectDispatch();
+      effectsInFlight.set(dispatchKey, dispatch);
+      let database = null;
+      try {
+        database = openAuthorityDatabase(databasePath);
+        assertDurableHostRestoreClear(database);
+        const stream = typeof intent?.run_id === "string"
+          ? readStream(database, intent.run_id)
+          : null;
+        const recorded = stream?.records.some(({ payload }) =>
+          EFFECT_INTENT_EVENT_TYPES.has(payload.type) &&
+          isDeepStrictEqual(payload.intent, intent));
+        if (!recorded) {
+          throw new AuthorityFenceError(
+            "unrecorded_effect_intent",
+            "effect intent was not durably recorded by RunAuthority",
+          );
+        }
+        assertEffectRunAdmitted(stream, bootId);
+        if (settleCancelled &&
+            !["delegate", "delegate_cancellation"].includes(intent.effect_kind)) {
+          throw new AuthorityFenceError(
+            "invalid_cancelled_settlement",
+            "cancelled settlement is reserved for delegated resources",
+          );
+        }
+        if (stream.records.some(({ payload }) =>
+          payload.type === "effect_receipt_recorded" &&
+          payload.effect_id === intent.effect_id)) {
+          throw new AuthorityFenceError(
+            "effect_already_recorded",
+            "effect already has a durable receipt",
+          );
+        }
+        assertMutationFence(lockDatabase, database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        let latestObservation = null;
+        let latestObservationIndex = -1;
+        let latestInvocationIndex = -1;
+        let latestInvocation = null;
+        stream.records.forEach(({ payload }, index) => {
+          if (payload.type === "effect_observation_recorded" &&
+              payload.effect_id === intent.effect_id) {
+            latestObservation = payload.observation;
+            latestObservationIndex = index;
+          } else if ((payload.type === "effect_invocation_started" ||
+              payload.type === "effect_invocation_resumed") &&
+              payload.effect_id === intent.effect_id) {
+            latestInvocationIndex = index;
+            latestInvocation = payload;
+          }
+        });
+        const resumesUnknownInvocation = reconciliation === "invoke_absent" &&
+          latestInvocation?.type === "effect_invocation_started" &&
+          (!validateTimeFacts(latestInvocation.time_facts) ||
+            latestInvocation.time_facts.length === 0);
+        const unobservedInvocation = unobservedCallerIdempotentInvocation(intent, runEventsFromRecords(stream.records));
+        const resumesUnobservedIdempotentInvocation = reconciliation === null &&
+          adapter?.operatorRecovery === true && intent.authority_boot_id === bootId &&
+          intent.authority_epoch < authorityEpoch &&
+          unobservedInvocation !== null && unobservedInvocation.authority_epoch < authorityEpoch;
+        const resumesInvocation = resumesUnknownInvocation || resumesUnobservedIdempotentInvocation;
+        const observedPresence = validateEffectObservation(
+          latestObservation,
+          intent,
+        );
+        const observationIsFresh = latestObservationIndex > latestInvocationIndex;
+        const provenDelegateAbsence = isProvenDelegatePreDispatchAbsence(
+          intent,
+          latestObservation,
+          observedPresence,
+          observationIsFresh,
+        );
+        if (reconciliation === "adopt_present" &&
+            (observedPresence !== "present" || !observationIsFresh)) {
+          throw new AuthorityFenceError(
+            "effect_presence_not_proven",
+            "effect adoption requires exact durable presence evidence",
+          );
+        }
+        if (reconciliation === "invoke_absent" &&
+            (intent.classification !== "reconcilable" ||
+             observedPresence !== "absent" || !observationIsFresh)) {
+          throw new AuthorityFenceError(
+            "effect_absence_not_proven",
+            "effect reinvocation requires exact durable absence evidence",
+          );
+        }
+        if (reconciliation === "settle_absent" &&
+            (observedPresence !== "absent" || !observationIsFresh ||
+             !provenDelegateAbsence && stream.fold.phase !== "cancelled")) {
+          throw new AuthorityFenceError(
+            "effect_absence_not_proven",
+            "effect settlement requires exact durable absence evidence",
+          );
+        }
+        const executionTimeObservation = observeExecutionTime(
+          timeObservationAdapter,
+          bootId,
+        );
+        const executionTimeProjection = applyExecutionTimeObservation(
+          stream.fold,
+          [],
+          executionTimeObservation,
+          runEventsFromRecords(stream.records),
+        );
+        const executionTimeFence = executionTimeAdmissionFence(
+          executionTimeProjection,
+          resumesUnknownInvocation ? intent.effect_id : null,
+        );
+        if (!settleCancelled && intent.effect_kind !== "delegate_cancellation" &&
+            !["adopt_present", "settle_absent"].includes(reconciliation) &&
+            executionTimeFence !== null) {
+          throw executionTimeFence;
+        }
+        if (!["adopt_present", "settle_absent"].includes(reconciliation) &&
+            !resumesUnknownInvocation) {
+          const retryFence = effectRetryAdmissionFence(
+            stream.records,
+            intent,
+            retryTimeAdapter,
+            {
+              operatorRecovery: adapter?.operatorRecovery === true,
+              onRetryEvent: (retryEvent) => appendEffectRetryEvent(
+                database,
+                intent,
+                retryEvent,
+              ),
+            },
+          );
+          if (retryFence !== null) throw retryFence;
+        }
+        const previouslyInvoked = stream.records.some(({ payload }) =>
+          payload.type === "effect_invocation_started" &&
+          payload.effect_id === intent.effect_id);
+        if (reconciliation !== "adopt_present" &&
+            reconciliation !== "settle_absent" &&
+            !resumesInvocation &&
+            (intent.effect_kind === undefined || intent.effect_kind === "operation")) {
+          const invocationCount = stream.records.filter(({ payload }) =>
+            payload.type === "effect_invocation_started" &&
+            payload.effect_id === intent.effect_id).length;
+          const maxAttempts = Number.isSafeInteger(intent.max_attempts) &&
+              intent.max_attempts >= 1
+            ? intent.max_attempts
+            : null;
+          if (maxAttempts !== null && invocationCount >= maxAttempts) {
+            throw new AuthorityFenceError(
+              "effect_retry_exhausted",
+              "registered operation retry budget is exhausted",
+            );
+          }
+        }
+        let effectiveIntent = intent;
+        const crossedBootBoundary = intent.authority_boot_id !== bootId;
+        const effectPolicy = effectClassPolicy(intent.classification);
+        const crossBootRecoveryAllowed = reconciliation === null
+          ? effectPolicy?.can_repeat_across_epoch === true
+          : ["adopt_present", "invoke_absent", "settle_absent"].includes(
+              reconciliation,
+            );
+        if (crossedBootBoundary && !crossBootRecoveryAllowed) {
+          throw new AuthorityFenceError(
+            "stale_authority_epoch",
+            "effects require exact reconciliation across a host reboot",
+          );
+        }
+        if (crossedBootBoundary || intent.authority_epoch !== authorityEpoch) {
+          if (!effectPolicy?.can_repeat_across_epoch &&
+              reconciliation === null) {
+            throw new AuthorityFenceError(
+              "effect_reconciliation_required",
+              "effect classification cannot be retried during recovery",
+            );
+          }
+          effectiveIntent = adoptEffectIntent(database, intent, {
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+        }
+        if (previouslyInvoked &&
+            !effectPolicy?.can_repeat_across_epoch &&
+            reconciliation === null) {
+          throw new AuthorityFenceError(
+            "effect_reconciliation_required",
+            "effect classification requires reconciliation before repetition",
+          );
+        }
+        assertMutationFence(lockDatabase, database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        let result;
+        if (reconciliation === "settle_absent") {
+          const providerReceipt = sanitizeProviderEvidence(
+            latestObservation?.provider_observation,
+            effectiveIntent,
+          );
+          if (!hasAffirmativeProviderObservation(providerReceipt, "absent")) {
+            throw new AuthorityFenceError(
+              "effect_absence_not_proven",
+              "cancelled effect settlement requires affirmative provider absence evidence",
+            );
+          }
+          result = {
+            schema: "flow.effect-receipt/v1",
+            effect_id: effectiveIntent.effect_id,
+            idempotency_key: effectiveIntent.idempotency_key,
+            outcome: "not_created",
+            provider_receipt: providerReceipt,
+          };
+        } else if (reconciliation === "adopt_present") {
+          const providerReceipt = sanitizeProviderEvidence(
+            latestObservation?.provider_observation,
+            effectiveIntent,
+          );
+          if (providerReceipt === null ||
+              !hasAffirmativeProviderObservation(providerReceipt, "present")) {
+            throw new AuthorityFenceError(
+              "effect_presence_not_proven",
+              "effect adoption requires a positive sanitized provider receipt",
+            );
+          }
+          result = {
+            schema: "flow.effect-receipt/v1",
+            effect_id: effectiveIntent.effect_id,
+            idempotency_key: effectiveIntent.idempotency_key,
+            outcome: "succeeded",
+            provider_receipt: providerReceipt,
+          };
+        } else {
+          // This must remain the first await in invokeEffect. It lets command()
+          // return its intent-commit watermark before invocation-start advances it.
+          await Promise.resolve();
+          const admissionStream = readStream(database, effectiveIntent.run_id);
+          if (settleCancelled && admissionStream.fold.phase !== "cancelled") {
+            throw new AuthorityFenceError(
+              "cancelled_settlement_not_actionable",
+              "delegate cancellation settlement requires cancelled authority",
+            );
+          }
+          if (!settleCancelled && admissionStream.fold.phase !== "active") {
+            throw new AuthorityFenceError(
+              "attempt_disposed",
+              "terminal run authority fenced effect admission",
+            );
+          }
+          assertDurableHostRestoreClear(database);
+          const recordsInvocationStart = !resumesInvocation &&
+            (!settleCancelled ||
+              effectiveIntent.effect_kind === "delegate_cancellation");
+          if (recordsInvocationStart || resumesInvocation) {
+            // beforeEffect is the last injected boundary before dispatch. It
+            // may advance time or invalidate an authority fence, so it must
+            // run before the final typed time observation and invocation
+            // start event. A post-start deadline fence would create a
+            // phantom attempt when it rejects before Adapter invocation.
+            try {
+              beforeEffect(effectiveIntent);
+            } catch (error) {
+              // A provider-side crash can occur at this boundary after the
+              // effect intent has been admitted but before the adapter gets
+              // control. Preserve that durable in-flight attempt so recovery
+              // can reconcile the exact effect. A fence raised by the hook
+              // itself still wins and leaves no phantom attempt behind.
+              if (recordsInvocationStart) {
+                try {
+                  recordEffectInvocationStarted(database, effectiveIntent, {
+                    authorityDirectory,
+                    authorityEpoch,
+                    bootId,
+                    executionTimeFacts: null,
+                    gitRetentionAdapter,
+                    gitWorkspaceObservationAdapter,
+                    processIdentity,
+                  });
+                } catch {
+                  // The authority may have been closed or replaced by the
+                  // crash hook. In that case the original fence is preserved.
+                }
+              }
+              throw error;
+            }
+            assertDurableHostRestoreClear(
+              database,
+              "effect admission is fenced by the host restore barrier",
+            );
+            assertMutationFence(lockDatabase, database, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+            assertEffectWorkspaceAuthority(database, effectiveIntent);
+            const dispatchStream = readStream(database, effectiveIntent.run_id);
+            if (settleCancelled && dispatchStream.fold.phase !== "cancelled") {
+              throw new AuthorityFenceError(
+                "cancelled_settlement_not_actionable",
+                "delegate cancellation settlement requires cancelled authority",
+              );
+            }
+            if (!settleCancelled && dispatchStream.fold.phase !== "active") {
+              throw new AuthorityFenceError(
+                "attempt_disposed",
+                "terminal run authority fenced effect admission",
+              );
+            }
+            const finalExecutionTimeObservation = observeExecutionTime(
+              timeObservationAdapter,
+              bootId,
+            );
+            const finalExecutionTimeProjection = applyExecutionTimeObservation(
+              dispatchStream.fold,
+              [],
+              finalExecutionTimeObservation,
+              runEventsFromRecords(dispatchStream.records),
+            );
+            const finalExecutionTimeFence = executionTimeAdmissionFence(
+              finalExecutionTimeProjection,
+              resumesUnknownInvocation ? effectiveIntent.effect_id : null,
+            );
+            if (!settleCancelled &&
+                effectiveIntent.effect_kind !== "delegate_cancellation" &&
+                finalExecutionTimeFence !== null) {
+              throw finalExecutionTimeFence;
+            }
+            if (recordsInvocationStart) {
+              recordEffectInvocationStarted(database, effectiveIntent, {
+                authorityDirectory,
+                authorityEpoch,
+                bootId,
+                executionTimeFacts: finalExecutionTimeObservation.facts,
+                gitRetentionAdapter,
+                gitWorkspaceObservationAdapter,
+                processIdentity,
+              });
+            } else {
+              if (finalExecutionTimeObservation.facts === null) {
+                throw new AuthorityFenceError(
+                  "execution_time_unavailable",
+                  "fresh typed execution time facts are required to resume an effect",
+                );
+              }
+              recordEffectInvocationResumed(database, effectiveIntent, {
+                authorityDirectory,
+                authorityEpoch,
+                bootId,
+                executionTimeFacts: finalExecutionTimeObservation.facts,
+                gitRetentionAdapter,
+                gitWorkspaceObservationAdapter,
+                processIdentity,
+              });
+            }
+          } else {
+            assertDurableHostRestoreClear(
+              database,
+              "effect admission is fenced by the host restore barrier",
+            );
+            assertMutationFence(lockDatabase, database, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+            assertEffectWorkspaceAuthority(database, effectiveIntent);
+          }
+          result = sanitizeEffectReceipt(
+            await adapter.invoke(effectiveIntent),
+            effectiveIntent,
+          );
+        }
+        assertDurableHostRestoreClear(
+          database,
+          "effect receipt publication is fenced by the host restore barrier",
+        );
+        assertMutationFence(lockDatabase, database, {
+          authorityEpoch,
+          bootId,
+          processIdentity,
+        });
+        const publicationRequest = effectiveIntent.operation_input?.publication;
+        const effectSucceeded = result?.outcome !== "quarantined";
+        if (publicationRequest !== undefined && effectSucceeded &&
+            !settleCancelled) {
+          const retentionReceipt = result?.provider_receipt?.git_retention;
+          const retentionObservation = gitRetentionAdapter.observe(retentionReceipt);
+          if (retentionObservation?.available !== true ||
+              retentionObservation.commit_sha !== retentionReceipt?.commit_sha ||
+              retentionObservation.tree_sha !== retentionReceipt?.tree_sha ||
+              retentionObservation.retention_ref !== retentionReceipt?.retention_ref) {
+            throw new TypeError("Git retention was not independently observed");
+          }
+        }
+        let committedPublication = null;
+        database.exec("BEGIN IMMEDIATE");
+        try {
+          assertAuthorityEpoch(database, {
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          const current = readStream(database, effectiveIntent.run_id);
+          const unresolved = unresolvedEffectIds(current);
+          unresolved.delete(effectiveIntent.effect_id);
+          let deferredEvents = unresolved.size === 0 && effectSucceeded &&
+              current.fold.phase === "active"
+            ? pendingDeferredEvents(current, effectiveIntent)
+            : [];
+          deferredEvents = settleSubrunTerminalEvents(
+            deferredEvents,
+            effectiveIntent,
+            result,
+          );
+          const publication = effectiveIntent.operation_input?.publication === undefined ||
+              !effectSucceeded || settleCancelled || current.fold.phase !== "active"
+            ? null
+            : prepareHandoffPublication(
+                database,
+                authorityDirectory,
+                gitRetentionAdapter,
+                gitWorkspaceObservationAdapter,
+                {
+                intent: effectiveIntent,
+                publication: effectiveIntent.operation_input.publication,
+                receipt: result,
+                },
+              );
+          committedPublication = publication;
+          let reviewCandidateReference = null;
+          if (publication !== null) {
+            assertDurableHostRestoreClear(
+              database,
+              "handoff publication observations are fenced by the host restore barrier",
+            );
+            reviewCandidateReference = appendHandoffPublication(
+              database,
+              publication,
+              {
+                authorityEpoch,
+                bootId,
+                processIdentity,
+              },
+            );
+            beforeHandoffCommit({
+              run_id: effectiveIntent.run_id,
+              handoff: publication.handoff,
+            });
+          }
+          const cleanup = effectiveIntent.operation_input?.resource_cleanup;
+          if (cleanup !== undefined) {
+            appendResourceCleanupCompletion(database, effectiveIntent, result, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+          }
+          const capturedResultBindings = effectSucceeded &&
+            !settleCancelled && current.fold.phase === "active"
+            ? captureResultBindings({
+              intent: effectiveIntent,
+              receipt: result,
+              activePlan: current.fold.active_plan,
+            })
+            : [];
+          const deferredTerminalEvent = deferredEvents.find(({ type }) =>
+            ["run_cancelled", "run_declined", "run_succeeded"].includes(type));
+          if (effectSucceeded && deferredTerminalEvent) {
+            appendTerminalConsumerHandoffReleases(database, {
+              prepared: current.records[0].payload.prepared,
+              runId: effectiveIntent.run_id,
+              terminalEvent: deferredTerminalEvent,
+            }, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+            appendTerminalWorkspaceClaimReleases(database, {
+              prepared: current.records[0].payload.prepared,
+              runId: effectiveIntent.run_id,
+              terminalEvent: deferredTerminalEvent,
+            }, {
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+          }
+          assertDurableHostRestoreClear(
+            database,
+            "effect and handoff commit is fenced by the host restore barrier",
+          );
+          appendAuthorityEvents(database, {
+            streamId: effectiveIntent.run_id,
+            streamKind: "run",
+            events: [
+              ...capturedResultBindings.map((binding) => ({
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "result_binding_recorded",
+                  binding,
+                },
+              })),
+              {
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "effect_receipt_recorded",
+                  effect_id: effectiveIntent.effect_id,
+                  idempotency_key: effectiveIntent.idempotency_key,
+                  ...(() => {
+                    const facts = observeExecutionTime(timeObservationAdapter, bootId).facts;
+                    return facts === null ? {} : { time_facts: facts };
+                  })(),
+                  ...(result === undefined ? {} : { receipt: result }),
+                },
+              },
+              ...(publication === null ? [] : [{
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "resource_handoff_published",
+                  handoff_id: publication.handoff.handoff_id,
+                  handoff_watermark: queryWorkProjection(
+                    database,
+                    authorityDirectory,
+                    workStreamIdentity(
+                      "flow.resource-handoff/v1",
+                      publication.handoff.handoff_id,
+                    ),
+                    gitRetentionAdapter,
+                  ).watermark,
+                },
+              }]),
+              ...(reviewCandidateReference === null ? [] : [{
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "review_candidate_referenced",
+                  candidate_id: reviewCandidateReference.candidate_id,
+                  candidate_fingerprint: reviewCandidateReference.candidate_fingerprint,
+                  review_authority_watermark:
+                    reviewCandidateReference.review_authority_watermark,
+                },
+              }]),
+              ...(result?.outcome === "quarantined" ||
+                result?.provider_receipt?.quarantine_record !== undefined ? [{
+                contract: "flow.run-event/v1",
+                payload: {
+                  type: "delegate_output_quarantined",
+                  effect_id: effectiveIntent.effect_id,
+                  attempt_id: effectiveIntent.attempt_id,
+                  card_id: effectiveIntent.card_id,
+                  quarantine_record: result.provider_receipt.quarantine_record ??
+                    result.provider_receipt,
+                },
+              }] : []),
+              ...deferredEvents.map((payload) => ({
+                contract: "flow.run-event/v1",
+                payload,
+              })),
+            ],
+            authorityEpoch,
+            bootId,
+            processIdentity,
+          });
+          if (deferredEvents.some(({ type }) =>
+            ["run_declined", "run_succeeded"].includes(type))) {
+            appendAuthorityEvents(database, {
+              streamId: "host:admission",
+              streamKind: "host_admission",
+              events: [{
+                contract: "flow.host-admission-event/v1",
+                payload: {
+                  type: "run_capacity_released",
+                  run_id: effectiveIntent.run_id,
+                },
+              }],
+              authorityEpoch,
+              bootId,
+              processIdentity,
+            });
+          }
+          database.exec("COMMIT");
+        } catch (error) {
+          if (database.isTransaction) database.exec("ROLLBACK");
+          throw error;
+        }
+        afterEffectCommit({
+          schema: "flow.effect-commit-boundary/v1",
+          run_id: effectiveIntent.run_id,
+          effect_id: effectiveIntent.effect_id,
+          effect_kind: effectiveIntent.effect_kind,
+          card_id: effectiveIntent.card_id,
+          operation_contract: effectiveIntent.operation_contract,
+          publication: committedPublication?.handoff ?? null,
+          receipt: result,
+        });
+        dispatch.resolve();
+        return result;
+      } catch (error) {
+        const providerObservation = durableProviderObservation(error);
+        if (providerObservation !== null) {
+          try {
+            appendEffectObservation(
+              database,
+              intent,
+              providerEffectErrorObservation(intent, providerObservation),
+              {
+                retryEvent: durableRetryEvent(
+                  intent,
+                  providerObservation,
+                  retryTimeAdapter,
+                ),
+                executionTimeFacts: observeExecutionTime(timeObservationAdapter, bootId).facts,
+              },
+            );
+          } catch {
+            // Preserve the provider failure. The original error remains the
+            // caller-visible result if durable observation publication is
+            // fenced, while successful publication survives a restart.
+          }
+        }
+        dispatch.resolve();
+        throw error;
+      } finally {
+        database?.close();
+        if (effectsInFlight.get(dispatchKey) === dispatch) {
+          effectsInFlight.delete(dispatchKey);
+        }
+      }
+    },
+
+    async recordEffectObservation(intent, observation) {
+      assertOpen();
+      if (!lockDatabase) {
+        throw new AuthorityFenceError(
+          "mutation_authority_unavailable",
+          "effect observer does not hold mutation authority",
+        );
+      }
+      const database = openAuthorityDatabase(databasePath);
+      try {
+        return appendEffectObservation(database, intent, observation, {
+          retryTimeAdapter,
+          executionTimeFacts: observeExecutionTime(timeObservationAdapter, bootId).facts,
+        });
+      } finally {
+        database.close();
+      }
+    },
+
+    close() {
+      if (closed) return;
+      closed = true;
+      for (const runWatchers of watchers.values()) {
+        for (const watcher of runWatchers) watcher.return();
+      }
+      watchers.clear();
+      if (lockDatabase) {
+        if (lockDatabase.isTransaction) lockDatabase.exec("ROLLBACK");
+        lockDatabase.close();
+        lockDatabase = null;
+      }
+    },
+  };
+
+  function assertOpen() {
+    if (closed) throw new Error("durable run authority is closed");
+  }
+
+  function appendEffectObservation(
+    database,
+    intent,
+    observation,
+    {
+      retryEvent = null,
+      retryTimeAdapter = null,
+      executionTimeFacts = null,
+    } = {},
+  ) {
+    assertDurableHostRestoreClear(
+      database,
+      "effect observations are fenced by the host restore barrier",
+    );
+    assertMutationFence(lockDatabase, database, {
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    });
+    const stream = readStream(database, intent?.run_id);
+    const recorded = stream?.records.some(({ payload }) =>
+      EFFECT_INTENT_EVENT_TYPES.has(payload.type) &&
+      isDeepStrictEqual(payload.intent, intent));
+    if (!recorded) {
+      throw new AuthorityFenceError(
+        "unrecorded_effect_intent",
+        "effect observation is not bound to a recorded intent",
+      );
+    }
+    assertEffectRunAdmitted(stream, bootId);
+    if (stream.records.some(({ payload }) =>
+      payload.type === "effect_receipt_recorded" &&
+      payload.effect_id === intent.effect_id)) {
+      throw new AuthorityFenceError(
+        "effect_already_recorded",
+        "effect already has a durable receipt",
+      );
+    }
+    if (!["active", "cancelled"].includes(stream.fold.phase)) {
+      throw new AuthorityFenceError(
+        "run_terminal",
+        "effect observations cannot mutate a settled terminal run",
+      );
+    }
+    const normalizedObservation = normalizeEffectObservation(
+      sanitizeEffectObservation(observation, intent),
+      intent,
+    );
+    const priorRetryState = foldRetryStates(stream.records.map(({ payload }) =>
+      payload)).get(intent.effect_id) ?? null;
+    const durableObservationRetry = retryEvent ?? (
+      retryTimeAdapter === null
+        ? null
+        : durableRetryEvent(
+            intent,
+            normalizedObservation.provider_observation,
+            retryTimeAdapter,
+          )
+    );
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      assertAuthorityEpoch(database, {
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+      appendAuthorityEvents(database, {
+        streamId: intent.run_id,
+        streamKind: "run",
+        events: [
+          {
+            contract: "flow.run-event/v1",
+            payload: {
+              type: "effect_observation_recorded",
+              effect_id: intent.effect_id,
+              observation: normalizedObservation,
+              ...(executionTimeFacts === null ? {} : {
+                time_facts: executionTimeFacts,
+              }),
+            },
+          },
+          ...(durableObservationRetry === null
+            ? priorRetryState === null ? [] : [{
+              contract: "flow.run-event/v1",
+              payload: {
+                type: "effect_retry_cleared",
+                effect_id: intent.effect_id,
+                attempt_id: intent.attempt_id,
+                reason: "fresh_provider_observation_without_retry_delay",
+              },
+            }]
+            : [{
+              contract: "flow.run-event/v1",
+              payload: durableObservationRetry,
+            }]),
+        ],
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+      database.exec("COMMIT");
+    } catch (error) {
+      if (database.isTransaction) database.exec("ROLLBACK");
+      throw error;
+    }
+    const projection = projectFencedRun(database, readStream(
+      database,
+      intent.run_id,
+    ), fenceRun);
+    for (const watcher of watchers.get(intent.run_id) ?? []) {
+      watcher.publish(projection);
+    }
+    return normalizedObservation;
+  }
+
+  function appendEffectRetryEvent(database, intent, payload) {
+    assertDurableHostRestoreClear(
+      database,
+      "effect retry scheduling is fenced by the host restore barrier",
+    );
+    assertMutationFence(lockDatabase, database, {
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    });
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      assertAuthorityEpoch(database, {
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+      appendAuthorityEvents(database, {
+        streamId: intent.run_id,
+        streamKind: "run",
+        events: [{
+          contract: "flow.run-event/v1",
+          payload,
+        }],
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+      database.exec("COMMIT");
+    } catch (error) {
+      if (database.isTransaction) database.exec("ROLLBACK");
+      throw error;
+    }
+    const projection = projectFencedRun(database, readStream(
+      database,
+      intent.run_id,
+    ), fenceRun);
+    for (const watcher of watchers.get(intent.run_id) ?? []) {
+      watcher.publish(projection);
+    }
+  }
+
+  function applySchemaTransitionCommand(command) {
+    if (!lockDatabase) {
+      return durableMutationRejection(
+        "command",
+        null,
+        databasePath,
+        command?.type,
+        fenceRun,
+      );
+    }
+    const database = openAuthorityDatabase(databasePath);
+    try {
+      const before = durableHostProjection(database);
+      const expectedCommand = before.legal_actions[0];
+      if (!isDeepStrictEqual(command, expectedCommand)) {
+        return createRejection({
+          operation: "command",
+          code: "stale_authority_schema_transition",
+          reason: "schema transition command differs from current authority",
+          commandType: typeof command?.type === "string" ? command.type : null,
+          runId: stringOrNull(command?.run_id),
+          authorityWatermark: before.watermark,
+          authorityWatermarkDomain: "host",
+          legalActions: before.legal_actions,
+        });
+      }
+      authoritySchemaCompatibility = transitionAuthoritySchema(database, {
+        afterCommit: afterSchemaTransitionCommit,
+        beforeCommit: beforeSchemaTransitionCommit,
+        expectedWatermark: authoritySchemaCompatibility.watermark,
+      });
+      if (authoritySchemaCompatibility.status !== "compatible") {
+        return schemaTransitionRequiredRejection("command", databasePath);
+      }
+      // Version-one stores predate registered effect intents, so this
+      // transition-time epoch acquisition has no same-boot recovery snapshot.
+      authorityEpoch = acquireAuthorityEpoch(database, {
+        bootId,
+        declaredCapacity,
+        processIdentity,
+      });
+      const after = durableHostProjection(database);
+      return freezeCanonical({
+        schema: "flow.command-receipt/v1",
+        command_type: "recovery",
+        run_id: null,
+        authority_watermark: after.watermark,
+        accepted: true,
+      });
+    } finally {
+      database.close();
+    }
+  }
+
+  const workCommand = authorityMethods.workCommand;
+  const workQuery = authorityMethods.workQuery;
+  const workspaceAuthority = Object.freeze({
+    schema: "work.workspace-authority/v1",
+    command(command) {
+      if (![
+        "work.workspace-register-command/v1",
+        "work.workspace-claim-command/v1",
+        "work.workspace-observation-command/v1",
+        "work.workspace-claim-release-command/v1",
+        "work.workspace-taint-command/v1",
+        "work.workspace-taint-disposition-command/v1",
+        "work.workspace-risk-acceptance-command/v1",
+      ]
+        .includes(command?.schema) ||
+          command.contract !== "work.workspace/v1") {
+        return workRejection("command", "invalid_workspace_command", { command });
+      }
+      return workCommand(command);
+    },
+    query(request) {
+      if (request?.contract !== "work.workspace/v1") {
+        return workRejection("query", "invalid_workspace_query", {
+          contract: request?.contract ?? null,
+          subjectId: request?.subject_id ?? null,
+        });
+      }
+      return workQuery(request);
+    },
+    previewCleanup(request) {
+      const projection = this.query(request);
+      if (projection?.schema !== "work.workspace-projection/v1") {
+        return projection;
+      }
+      let observation;
+      try {
+        observation = gitWorkspaceObservationAdapter.observe({
+          repository_id: projection.repository.canonical_id,
+          workspace_path: projection.workspace.canonical_path,
+          ref: projection.git.ref,
+        });
+      } catch {
+        return workRejection("cleanup_preview", "workspace_git_observation_unavailable", {
+          contract: request?.contract ?? null,
+          subjectId: request?.subject_id ?? null,
+        });
+      }
+      return buildWorkspaceCleanupPreview(projection, observation);
+    },
+  });
+  const artifactAuthority = Object.freeze({
+    schema: "work.artifact-authority/v1",
+    command(command) {
+      if (command?.schema !== "work.artifact-record-command/v1" ||
+          command.contract !== "work.artifact/v1") {
+        return workRejection("command", "invalid_artifact_command", { command });
+      }
+      return workCommand(command);
+    },
+    query(request) {
+      if (request?.contract !== "work.artifact/v1") {
+        return workRejection("query", "invalid_artifact_query", {
+          contract: request?.contract ?? null,
+          subjectId: request?.subject_id ?? null,
+        });
+      }
+      return workQuery(request);
+    },
+    previewCollection(request) {
+      const projection = this.query(request);
+      return projection?.schema === "work.artifact-projection/v1"
+        ? buildArtifactCollectionPreview(projection)
+        : projection;
+    },
+  });
+  const reviewAuthority = Object.freeze({
+    schema: "work.review-authority/v1",
+    command(command) {
+      if (![
+        "work.review-candidate-seal-command/v1",
+        "work.review-record-command/v1",
+        "work.review-target-invalidation-command/v1",
+        "work.review-target-refresh-command/v1",
+        GITHUB_REVIEW_RECORD_COMMAND_SCHEMA,
+      ].includes(command?.schema) && !isReviewHumanCommand(command) ||
+          command.contract !== "work.review/v1") {
+        return workRejection("command", "invalid_review_command", { command });
+      }
+      if (command.schema === "work.review-record-command/v1" ||
+          command.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA) {
+        return workCommand(command);
+      }
+      if (isReviewTargetInvalidationCommand(command)) {
+        return workCommand(command);
+      }
+      if (isReviewTargetRefreshCommand(command)) {
+        return workCommand(command);
+      }
+      if (isReviewHumanCommand(command)) {
+        return workCommand(command);
+      }
+      return workRejection(
+        "command",
+        "review_candidate_seal_requires_run_authority",
+        { command },
+      );
+    },
+    query(request) {
+      if (request?.contract === REVIEW_INBOX_QUERY_CONTRACT) {
+        assertOpen();
+        if (!databaseExists(databasePath)) return projectReviewInbox();
+        const database = openAuthorityDatabase(databasePath, { readOnly: true });
+        try {
+          return queryReviewInboxProjection(
+            database,
+            authorityDirectory,
+            gitRetentionAdapter,
+          );
+        } finally {
+          database.close();
+        }
+      }
+      if (request?.contract !== "work.review/v1") {
+        return workRejection("query", "invalid_review_query", {
+          contract: request?.contract ?? null,
+          subjectId: request?.subject_id ?? null,
+        });
+      }
+      return workQuery(request);
+    },
+    watch(request) {
+      if (request?.contract === REVIEW_INBOX_QUERY_CONTRACT) {
+        return createOneShotWatcher(this.query(request));
+      }
+      return createOneShotWatcher(workQuery({
+        contract: "work.review/v1",
+        subject_id: request?.subject_id,
+      }));
+    },
+  });
+  const handoffAuthority = Object.freeze({
+    schema: "flow.resource-handoff-authority/v1",
+    command(command) {
+      if (command?.schema !== "flow.resource-handoff-disposition-command/v1" ||
+          command.contract !== "flow.resource-handoff/v1") {
+        return workRejection("command", "invalid_handoff_command", { command });
+      }
+      return workCommand(command);
+    },
+    query(request) {
+      if (request?.contract !== "flow.resource-handoff/v1") {
+        return workRejection("query", "invalid_handoff_query", {
+          contract: request?.contract ?? null,
+          subjectId: request?.subject_id ?? null,
+        });
+      }
+      return workQuery(request);
+    },
+    previewCleanup(request) {
+      const projection = this.query(request);
+      return projection?.schema === "flow.resource-handoff-projection/v1"
+        ? buildHandoffCleanupPreview(projection)
+        : projection;
+    },
+  });
+  delete authorityMethods.workCommand;
+  delete authorityMethods.workQuery;
+  const runAuthority = Object.freeze(authorityMethods);
+  attachRunEffectIntentReader(runAuthority, Object.freeze({
+    schema: "flow.run-effect-intent-reader/v1",
+    query(runId, effectId) {
+      assertOpen();
+      if (!databaseExists(databasePath)) return null;
+      const database = openAuthorityDatabase(databasePath, { readOnly: true });
+      try {
+        const effect = readStream(database, runId)?.fold?.effects
+          ?.find(({ effect_id: id }) => id === effectId) ?? null;
+        return effect === null ? null : freezeCanonical(effect);
+      } finally {
+        database.close();
+      }
+    },
+  }));
+  attachWorkAuthorities(runAuthority, Object.freeze({
+    workspace: workspaceAuthority,
+    artifact: artifactAuthority,
+    review: reviewAuthority,
+    handoff: handoffAuthority,
+  }));
+  return runAuthority;
+}
+
+function openAuthorityDatabase(databasePath, { readOnly = false } = {}) {
+  let database = null;
+  try {
+    database = createDatabase(databasePath, { readOnly });
+    database.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 0;");
+    if (!readOnly) {
+      database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
+    }
+    return database;
+  } catch (error) {
+    database?.close();
+    throw authorityIntegrityError(error) ?? error;
+  }
+}
+
+function deferredEffectDispatch() {
+  let resolve;
+  const settled = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { settled, resolve };
+}
+
+function createFailClosedRetryTimeAdapter() {
+  return Object.freeze({
+    observe() {
+      return null;
+    },
+  });
+}
+
+function createFailClosedExecutionTimeAdapter() {
+  return Object.freeze({
+    observe() {
+      return null;
+    },
+  });
+}
+
+function preparedRequiresExecutionTime(prepared) {
+  const maxElapsedSeconds = prepared?.explicit_facts?.limits
+    ?.max_elapsed_seconds;
+  return (Number.isSafeInteger(maxElapsedSeconds) && maxElapsedSeconds >= 0) ||
+    prepared?.graph?.cards?.some(({ limits }) =>
+      Number.isSafeInteger(limits?.max_active_seconds) &&
+      limits.max_active_seconds >= 0) === true;
+}
+
+function observeExecutionTime(adapter, expectedBootId = undefined) {
+  try {
+    const observation = adapter.observe();
+    if (observation === null || observation === undefined) {
+      return { status: "invalid", facts: null };
+    }
+    if (!validateTimeFacts(observation) || observation.length === 0) {
+      return { status: "invalid", facts: null };
+    }
+    const observedBootId = observation.find(({ kind }) => kind === "boot")?.boot_id;
+    if (expectedBootId !== undefined && observedBootId !== expectedBootId) {
+      return { status: "invalid", facts: null };
+    }
+    return {
+      status: "observed",
+      facts: freezeCanonical(observation),
+    };
+  } catch {
+    return { status: "invalid", facts: null };
+  }
+}
+
+function executionTimeAdmissionFence(
+  projection,
+  allowedUnknownActiveEffectId = null,
+) {
+  const executionTime = projection?.executionTime ?? projection;
+  const admission = projection?.executionTime === undefined
+    ? null
+    : projection.admission;
+  if (allowedUnknownActiveEffectId !== null && admission !== null) {
+    const wallFence = executionTimeDecisionFence(admission.wall);
+    if (wallFence !== null) return wallFence;
+    const activeFence = executionTimeDecisionFence(admission.active);
+    if (activeFence === null) return null;
+    const uncertainEffects = admission.uncertain_active_effect_ids;
+    if (admission.active?.status === "uncertain" &&
+        admission.active.reason === "active_time_uncertain" &&
+        Array.isArray(uncertainEffects) &&
+        uncertainEffects.length === 1 &&
+        uncertainEffects[0] === allowedUnknownActiveEffectId) {
+      return null;
+    }
+    return activeFence;
+  }
+  return executionTimeDecisionFence(executionTime);
+}
+
+function executionTimeDecisionFence(executionTime) {
+  if (!["exhausted", "uncertain", "unobserved"].includes(
+    executionTime?.status,
+  )) return null;
+  if (executionTime.status === "uncertain") {
+    return new AuthorityFenceError(
+      "execution_deadline_uncertain",
+      "execution time facts do not prove safe effect admission",
+    );
+  }
+  if (executionTime.status === "unobserved") {
+    return new AuthorityFenceError(
+      "execution_time_unavailable",
+      "fresh typed execution time facts are required for effect admission",
+    );
+  }
+  return new AuthorityFenceError(
+    "execution_deadline_exhausted",
+    "run execution deadline is exhausted",
+  );
+}
+
+function observeRetryTime(adapter) {
+  try {
+    const observation = adapter.observe();
+    if (observation?.schema !== "flow.time-fact/v1" ||
+        observation.kind !== "wall_clock" ||
+        Object.keys(observation).length !== 5 ||
+        !Number.isSafeInteger(observation.value_ms) ||
+        observation.value_ms < 0 ||
+        observation.uncertainty_ms !== 0 ||
+        typeof observation.clock_source_id !== "string" ||
+        observation.clock_source_id.length === 0) {
+      return null;
+    }
+    return freezeCanonical(observation);
+  } catch {
+    return null;
+  }
+}
+
+function readEffectRecoveryState(databasePath, intent) {
+  const database = openAuthorityDatabase(databasePath, { readOnly: true });
+  try {
+    const stream = typeof intent?.run_id === "string"
+      ? readStream(database, intent.run_id)
+      : null;
+    const intentRecorded = Boolean(stream?.records.some(({ payload }) =>
+      EFFECT_INTENT_EVENT_TYPES.has(payload.type) &&
+      isDeepStrictEqual(payload.intent, intent)));
+    const recoveryRequested = Boolean(stream?.records.some(({ payload }) =>
+      payload.type === "effect_recovery_requested" &&
+      payload.effect_id === intent.effect_id));
+    const receiptEvent = stream?.records.find(({ payload }) =>
+      payload.type === "effect_receipt_recorded" &&
+      payload.effect_id === intent.effect_id);
+    return {
+      intentRecorded,
+      recoveryRequested,
+      receiptRecorded: receiptEvent !== undefined,
+      receipt: receiptEvent?.payload?.receipt,
+    };
+  } finally {
+    database.close();
+  }
+}
+
+function queryWorkProjection(
+  database,
+  authorityDirectory,
+  identity,
+  gitRetentionAdapter,
+) {
+  const projection = readStream(database, identity.streamId).fold;
+  if (projection.schema === "work.artifact-projection/v1") {
+    return withArtifactAvailability(
+      projection,
+      artifactBytesAvailable(authorityDirectory, projection) ? "available" : "missing",
+    );
+  }
+  if (projection.schema === "work.review-candidate-projection/v1") {
+    const artifacts = queryArtifactProjections(
+      database,
+      authorityDirectory,
+      projection.artifacts,
+      gitRetentionAdapter,
+    );
+    return projectReviewCandidateCurrency(
+      projection,
+      queryWorkspaceForReview(database, projection),
+      artifacts,
+      queryReviewCurrencyContext(
+        database,
+        authorityDirectory,
+        projection,
+        artifacts,
+        gitRetentionAdapter,
+      ),
+    );
+  }
+  if (projection.schema === "flow.review-projection/v1") {
+    if (projection.target_kind === "github") {
+      return projection;
+    }
+    const candidateIdentity = workStreamIdentity(
+      "work.review/v1",
+      projection.candidate?.candidate_id,
+    );
+    const candidateProjection = candidateIdentity
+      ? readStream(database, candidateIdentity.streamId)?.fold ?? null
+      : null;
+    if (candidateProjection === null) {
+      return freezeCanonical({
+        ...projection,
+        status: "stale",
+        current: false,
+        evidence_currency: "stale",
+        blocking_reasons: ["candidate_authority_projection_missing"],
+        approval: "ineligible",
+        approval_eligible: false,
+        submission_pending: false,
+        submission_eligible: false,
+        integration_eligible: false,
+        integration_authorized: false,
+        merge_eligible: false,
+        merge_authorized: false,
+        tracker_completion_eligible: false,
+        tracker_completion_authorized: false,
+        remote_submission_authorized: false,
+        legal_actions: [],
+      });
+    }
+    if (projection.current !== true &&
+        !["superseded", "abandoned"].includes(candidateProjection?.status)) {
+      return projection;
+    }
+    const artifacts = queryArtifactProjections(
+      database,
+      authorityDirectory,
+      projection.candidate?.artifacts,
+      gitRetentionAdapter,
+    );
+    return projectReviewCurrency(
+      projection,
+      queryWorkspaceForReview(database, projection),
+      artifacts,
+      queryReviewCurrencyContext(
+        database,
+        authorityDirectory,
+        projection.candidate,
+        artifacts,
+        gitRetentionAdapter,
+      ),
+      candidateProjection,
+    );
+  }
+  if (projection.schema !== "flow.resource-handoff-projection/v1") {
+    return projection;
+  }
+  const workspaceIdentity = workStreamIdentity(
+    "work.workspace/v1",
+    projection.associated_workspace.subject_id,
+  );
+  const workspace = readStream(database, workspaceIdentity.streamId)?.fold ?? null;
+  const artifacts = queryArtifactProjections(
+    database,
+    authorityDirectory,
+    projection.artifacts,
+    gitRetentionAdapter,
+  );
+  const consumerObservations = projection.legal_actions.map((action) => {
+    const consumerStream = readStream(database, action.consumer_run_id);
+    if (!consumerStream) {
+      return { run_id: action.consumer_run_id, watermark: null, actionable: false };
+    }
+    const consumer = projectRun({
+      authorityEventStreamDigest: consumerStream.authorityEventStreamDigest,
+      fold: consumerStream.fold,
+      events: runEventsFromRecords(consumerStream.records),
+    });
+    const operationCardIds = consumer.legal_actions
+      .filter(({ type }) => type === "operation_execute")
+      .filter(({ card_id: cardId }) => {
+        const card = consumer.active_plan.cards.find(({ id }) => id === cardId);
+        const request = card?.inputs?.resource_handoff;
+        return request?.handoff_id === projection.handoff_id &&
+          request.handoff_digest === projection.handoff_digest &&
+          action.operations.includes(request.operation);
+      })
+      .map(({ card_id: cardId }) => cardId)
+      .sort();
+    return {
+      run_id: action.consumer_run_id,
+      watermark: consumer.watermark,
+      actionable: operationCardIds.length > 0,
+      operation_card_ids: operationCardIds,
+    };
+  });
+  const actionableRuns = new Set(consumerObservations
+    .filter(({ actionable }) => actionable)
+    .map(({ run_id: runId }) => runId));
+  const currentProjection = {
+    ...projection,
+    legal_actions: projection.legal_actions.filter(({ consumer_run_id: runId }) =>
+      actionableRuns.has(runId)),
+  };
+  return withHandoffObservations(
+    currentProjection,
+    workspace,
+    artifacts,
+    observeGitRetention(gitRetentionAdapter, projection.git_retention),
+    consumerObservations,
+  );
+}
+
+function queryReviewInboxProjection(
+  database,
+  authorityDirectory,
+  gitRetentionAdapter,
+) {
+  const candidates = [];
+  const reviews = [];
+  const rows = database.prepare(`
+    SELECT stream_id FROM authority_streams
+     WHERE stream_kind = 'review'
+     ORDER BY stream_id ASC
+  `).all();
+  const prefix = "work:work.review/v1:";
+  for (const row of rows) {
+    if (typeof row.stream_id !== "string" ||
+        !row.stream_id.startsWith(prefix)) continue;
+    const subjectId = row.stream_id.slice(prefix.length);
+    const identity = workStreamIdentity("work.review/v1", subjectId);
+    if (!identity) continue;
+    const stream = readStream(database, identity.streamId);
+    if (!stream) continue;
+    const projection = queryWorkProjection(
+      database,
+      authorityDirectory,
+      identity,
+      gitRetentionAdapter,
+    );
+    if (projection?.schema === "work.review-candidate-projection/v1") {
+      candidates.push(projection);
+    } else if (projection?.schema === "flow.review-projection/v1") {
+      reviews.push(projection);
+    }
+  }
+  return projectReviewInbox({ candidates, reviews });
+}
+
+function queryWorkspaceForReview(database, projection) {
+  const subjectId = projection?.candidate?.workspace?.subject_id ??
+    projection?.workspace?.subject_id;
+  const identity = workStreamIdentity("work.workspace/v1", subjectId);
+  return identity ? readStream(database, identity.streamId)?.fold ?? null : null;
+}
+
+function queryArtifactProjections(
+  database,
+  authorityDirectory,
+  artifactReferences,
+  gitRetentionAdapter,
+) {
+  return (artifactReferences ?? []).map(({ digest: artifactDigest }) => {
+    const identity = workStreamIdentity("work.artifact/v1", artifactDigest);
+    const stream = identity ? readStream(database, identity.streamId) : null;
+    if (!stream) return null;
+    if (authorityDirectory === null) return stream.fold;
+    return queryWorkProjection(
+      database,
+      authorityDirectory,
+      identity,
+      gitRetentionAdapter,
+    );
+  });
+}
+
+function observeGitRetention(gitRetentionAdapter, receipt) {
+  if (!isPlainRecord(receipt) || typeof gitRetentionAdapter?.observe !== "function") {
+    return null;
+  }
+  try {
+    return gitRetentionAdapter.observe(receipt);
+  } catch {
+    return null;
+  }
+}
+
+function queryReviewCurrencyContext(
+  database,
+  authorityDirectory,
+  projection,
+  artifacts,
+  gitRetentionAdapter,
+) {
+  const context = {
+    git_retention_observation: observeGitRetention(
+      gitRetentionAdapter,
+      projection?.candidate?.git_retention ?? projection?.git_retention,
+    ),
+    handoff: null,
+    handoff_issue: null,
+  };
+  const artifactReferences = projection?.artifacts ?? [];
+  const handoffIds = [];
+  for (let index = 0; index < artifactReferences.length; index += 1) {
+    const pins = artifacts[index]?.pins?.filter(({ holder }) =>
+      holder === "handoff") ?? [];
+    if (pins.length === 0) {
+      context.handoff_issue = "artifact_handoff_pin_missing";
+      return context;
+    }
+    if (pins.length !== 1) {
+      context.handoff_issue = "artifact_handoff_pin_mismatch";
+      return context;
+    }
+    handoffIds.push(pins[0].id);
+  }
+  if (handoffIds.length === 0 || new Set(handoffIds).size !== 1) {
+    context.handoff_issue = "artifact_handoff_pin_mismatch";
+    return context;
+  }
+  const handoffIdentity = workStreamIdentity(
+    "flow.resource-handoff/v1",
+    handoffIds[0],
+  );
+  const handoffStream = handoffIdentity
+    ? readStream(database, handoffIdentity.streamId)
+    : null;
+  if (!handoffStream) {
+    context.handoff_issue = "handoff_unavailable";
+    return context;
+  }
+  const handoff = queryWorkProjection(
+    database,
+    authorityDirectory,
+    handoffIdentity,
+    gitRetentionAdapter,
+  );
+  context.handoff = handoff;
+  const candidateWorkspace = projection?.candidate?.workspace ?? projection?.workspace;
+  context.handoff_workspace_matches =
+    handoff?.associated_workspace?.subject_id === candidateWorkspace?.subject_id &&
+    handoff?.associated_workspace?.generation === candidateWorkspace?.generation &&
+    isDeepStrictEqual(handoff?.associated_workspace?.git, projection?.git) &&
+    handoff?.subject?.subject_id === candidateWorkspace?.subject_id &&
+    handoff?.subject?.generation === candidateWorkspace?.generation &&
+    handoff?.subject?.fingerprint === candidateWorkspace?.fingerprint;
+  context.handoff_artifacts_match = exactArtifactReferences(
+    handoff?.artifacts,
+    artifactReferences,
+  );
+  context.handoff_git_retention_matches = isDeepStrictEqual(
+    handoff?.git_retention,
+    projection?.candidate?.git_retention ?? projection?.git_retention,
+  );
+  return context;
+}
+
+function exactArtifactReferences(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+    return false;
+  }
+  const identity = (artifact) =>
+    `${artifact?.digest ?? ""}:${artifact?.generation ?? ""}`;
+  return left.map(identity).sort().join("\n") ===
+    right.map(identity).sort().join("\n");
+}
+
+function workCommandReceipt(command, projection, created) {
+  return freezeCanonical({
+    schema: "work.command-receipt/v1",
+    command_type: command.type,
+    contract: command.contract,
+    subject_id: command.subject_id,
+    authority_watermark: projection.watermark,
+    accepted: true,
+    created,
+  });
+}
+
+function evaluateWorkCommand(
+  database,
+  identity,
+  command,
+  authorityObservation = null,
+  currentOverride = undefined,
+) {
+  const current = currentOverride === undefined
+    ? readStream(database, identity.streamId)?.fold ?? null
+    : currentOverride;
+  return decideWorkCommand(current, command, { authorityObservation });
+}
+
+function isReviewRecordCommand(command) {
+  return ((command?.schema === "work.review-record-command/v1" &&
+    command.type === "review_record") ||
+    (command?.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA &&
+      command.type === "github_review_record")) &&
+    command.contract === "work.review/v1";
+}
+
+function reviewCandidateCommandIssue(
+  database,
+  command,
+  authorityDirectory = null,
+  gitRetentionAdapter = createFailClosedGitRetentionAdapter(),
+) {
+  if (command?.schema === GITHUB_REVIEW_RECORD_COMMAND_SCHEMA) return null;
+  const candidateIdentity = workStreamIdentity(
+    "work.review/v1",
+    command.candidate?.candidate_id,
+  );
+  const candidateProjection = candidateIdentity
+    ? (() => {
+        const raw = readStream(database, candidateIdentity.streamId)?.fold ?? null;
+        if (raw?.schema !== "work.review-candidate-projection/v1") return raw;
+        const artifacts = queryArtifactProjections(
+          database,
+          authorityDirectory,
+          raw.artifacts,
+          gitRetentionAdapter,
+        );
+        return projectReviewCandidateCurrency(
+          raw,
+          queryWorkspaceForReview(database, raw),
+          artifacts,
+          queryReviewCurrencyContext(
+            database,
+            authorityDirectory,
+            raw,
+            artifacts,
+            gitRetentionAdapter,
+          ),
+        );
+      })()
+    : null;
+  return reviewRecordCandidateAuthorityIssue(command, candidateProjection);
+}
+
+function reviewSourceCommandIssue(database, command) {
+  const stream = typeof command?.source_run_id === "string"
+    ? readStream(database, command.source_run_id)
+    : null;
+  const issue = reviewRecordSourceAuthorityIssue(command, stream?.fold ?? null);
+  return issue ? { ...issue, projection: stream?.fold ?? null } : null;
+}
+
+function durableReviewTargetObservation(
+  database,
+  reviewProjection,
+  command,
+  adapter,
+) {
+  if (reviewProjection?.schema !== "flow.review-projection/v1") return null;
+  if (typeof adapter?.observe !== "function") return null;
+  try {
+    const candidateIdentity = workStreamIdentity(
+      "work.review/v1",
+      reviewProjection.candidate?.candidate_id,
+    );
+    const candidateProjection = candidateIdentity
+      ? readStream(database, candidateIdentity.streamId)?.fold ?? null
+      : null;
+    const workspace = queryWorkspaceForReview(
+      database,
+      candidateProjection ?? reviewProjection,
+    );
+    const observation = adapter.observe({
+      command,
+      review: reviewProjection,
+      candidate: candidateProjection,
+      workspace,
+    });
+    return observation === null || observation === undefined
+      ? null
+      : freezeCanonical(observation);
+  } catch {
+    return null;
+  }
+}
+
+function prepareHandoffPublication(
+  database,
+  authorityDirectory,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
+  {
+  intent,
+  publication,
+  receipt,
+  },
+) {
+  const authority = handoffPublicationAuthorityContext(
+    database,
+    authorityDirectory,
+    gitRetentionAdapter,
+    gitWorkspaceObservationAdapter,
+    intent,
+    publication,
+  );
+  return buildHandoffPublication({
+    ...authority,
+    intent,
+    publication,
+    receipt,
+  });
+}
+
+function handoffPublicationAuthorityContext(
+  database,
+  authorityDirectory,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
+  intent,
+  publication,
+) {
+  const workspaceIdentity = workStreamIdentity(
+    "work.workspace/v1",
+    publication?.workspace?.subject_id,
+  );
+  if (!workspaceIdentity) {
+    throw new TypeError("resource handoff publication has no workspace identity");
+  }
+  const workspaceStream = readStream(database, workspaceIdentity.streamId);
+  const gitObservation = gitWorkspaceObservationAdapter.observe({
+    repository_id: workspaceStream?.fold?.repository?.canonical_id,
+    workspace_path: workspaceStream?.fold?.workspace?.canonical_path,
+    ref: publication?.workspace?.promoted_git?.ref,
+  });
+  const artifacts = (publication.artifacts ?? []).map(({ digest: artifactDigest }) => {
+    const identity = workStreamIdentity("work.artifact/v1", artifactDigest);
+    if (!identity) return null;
+    const stream = readStream(database, identity.streamId);
+    return stream
+      ? queryWorkProjection(
+          database,
+          authorityDirectory,
+          identity,
+          gitRetentionAdapter,
+        )
+      : null;
+  });
+  const authority = {
+    artifacts,
+    intent,
+    publication,
+    workspace: workspaceStream?.fold ?? null,
+    gitObservation,
+  };
+  validateHandoffPublicationAuthority(authority);
+  return authority;
+}
+
+function resourceCleanupAuthorityContext(
+  database,
+  authorityDirectory,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
+  intent,
+) {
+  const request = intent?.operation_input?.resource_cleanup;
+  if (request?.schema !== "flow.resource-cleanup-request/v1") {
+    throw new TypeError("resource cleanup request is invalid");
+  }
+  const identity = workStreamIdentity(request.contract, request.subject_id);
+  if (!identity || !["workspace", "artifact", "handoff"].includes(identity.streamKind) ||
+      !readStream(database, identity.streamId)) {
+    throw new TypeError("resource cleanup subject is unavailable");
+  }
+  const projection = queryWorkProjection(
+    database,
+    authorityDirectory,
+    identity,
+    gitRetentionAdapter,
+  );
+  const preview = identity.streamKind === "workspace"
+    ? buildWorkspaceCleanupPreview(
+        projection,
+        gitWorkspaceObservationAdapter.observe({
+          repository_id: projection.repository.canonical_id,
+          workspace_path: projection.workspace.canonical_path,
+          ref: projection.git.ref,
+        }),
+      )
+    : identity.streamKind === "artifact"
+      ? buildArtifactCollectionPreview(projection)
+      : buildHandoffCleanupPreview(projection);
+  const action = preview.legal_actions[0];
+  const sameInFlightEffect = identity.streamKind === "workspace"
+    ? projection.taint?.reason === "resource_cleanup_in_flight" &&
+      projection.taint.source_effect_id === intent.effect_id
+    : identity.streamKind === "artifact"
+      ? projection.status === "uncertain" &&
+        projection.collection_effect_id === intent.effect_id
+      : projection.status === "uncertain" &&
+        projection.cleanup_effect_id === intent.effect_id;
+  if (!sameInFlightEffect && (preview.eligibility !== "eligible" ||
+      !isDeepStrictEqual(action?.operation_input?.resource_cleanup, request))) {
+    throw new TypeError("resource cleanup authority is stale or unsafe");
+  }
+  return { identity, preview };
+}
+
+function appendResourceCleanupCompletion(database, intent, receipt, fence) {
+  const request = intent.operation_input.resource_cleanup;
+  const providerReceipt = receipt?.provider_receipt?.resource_cleanup;
+  if (receipt?.outcome !== "succeeded" ||
+      providerReceipt?.schema !== "flow.resource-cleanup-receipt/v1" ||
+      providerReceipt.outcome !== "removed" ||
+      !isDeepStrictEqual(providerReceipt.request, request)) {
+    throw new TypeError("resource cleanup receipt does not match its request");
+  }
+  const identity = workStreamIdentity(request.contract, request.subject_id);
+  const current = readStream(database, identity.streamId)?.fold;
+  if (identity.streamKind === "workspace" &&
+      (current?.taint?.reason !== "resource_cleanup_in_flight" ||
+       current.taint.source_effect_id !== intent.effect_id ||
+       current.taint.evidence_digest !== digest(intent))) {
+    throw new TypeError("workspace cleanup authority changed after invocation");
+  }
+  if (identity.streamKind === "artifact" &&
+      (current?.status !== "uncertain" ||
+       current.collection_effect_id !== intent.effect_id ||
+       current.pins.length > 0)) {
+    throw new TypeError("artifact cleanup authority changed after invocation");
+  }
+  if (identity.streamKind === "handoff" &&
+      (current?.status !== "uncertain" ||
+       current.cleanup_effect_id !== intent.effect_id ||
+       current.consumer_pins.length > 0)) {
+    throw new TypeError("handoff cleanup authority changed after invocation");
+  }
+  if (identity.streamKind === "handoff") {
+    for (const artifact of current.artifacts) {
+      const artifactIdentity = workStreamIdentity("work.artifact/v1", artifact.digest);
+      appendAuthorityEvents(database, {
+        streamId: artifactIdentity.streamId,
+        streamKind: artifactIdentity.streamKind,
+        events: [{
+          contract: "work.artifact-event/v1",
+          payload: {
+            type: "artifact_pins_transferred",
+            remove: [{ holder: "handoff", id: current.handoff_id }],
+            add: [],
+          },
+        }],
+        ...fence,
+      });
+    }
+    const workspaceIdentity = workStreamIdentity(
+      "work.workspace/v1",
+      current.associated_workspace.subject_id,
+    );
+    appendAuthorityEvents(database, {
+      streamId: workspaceIdentity.streamId,
+      streamKind: workspaceIdentity.streamKind,
+      events: [{
+        contract: "work.workspace-event/v1",
+        payload: {
+          type: "workspace_handoff_retention_released",
+          expected_generation: current.associated_workspace.generation,
+          expected_fingerprint: digest({ git: current.associated_workspace.git }),
+        },
+      }],
+      ...fence,
+    });
+  }
+  appendAuthorityEvents(database, {
+    streamId: identity.streamId,
+    streamKind: identity.streamKind,
+    events: [{
+      contract: identity.streamKind === "workspace"
+        ? "work.workspace-event/v1"
+        : identity.streamKind === "artifact"
+          ? "work.artifact-event/v1"
+          : "flow.resource-handoff-event/v1",
+      payload: identity.streamKind === "workspace"
+        ? {
+            type: "workspace_cleaned",
+            cleanup_receipt: providerReceipt,
+          }
+        : identity.streamKind === "artifact" ? {
+            type: "artifact_collected",
+            cleanup_receipt: providerReceipt,
+          } : {
+            type: "resource_handoff_cleaned",
+            cleanup_receipt: providerReceipt,
+          },
+    }],
+    ...fence,
+  });
+}
+
+function appendHandoffPublication(database, publication, fence) {
+  let reviewCandidateReference = null;
+  if (publication.reviewEvent !== null) {
+    const reviewIdentity = workStreamIdentity(
+      "work.review/v1",
+      publication.reviewEvent.payload.candidate.candidate_id,
+    );
+    if (!reviewIdentity || readStream(database, reviewIdentity.streamId)) {
+      throw new Error("review candidate identity is already active");
+    }
+    appendAuthorityEvents(database, {
+      streamId: reviewIdentity.streamId,
+      streamKind: reviewIdentity.streamKind,
+      events: [publication.reviewEvent],
+      ...fence,
+    });
+    const reviewStream = readStream(database, reviewIdentity.streamId);
+    reviewCandidateReference = {
+      candidate_id: publication.reviewEvent.payload.candidate.candidate_id,
+      candidate_fingerprint:
+        publication.reviewEvent.payload.candidate.candidate_fingerprint,
+      review_authority_watermark: reviewStream.fold.watermark,
+    };
+  }
+  const workspaceIdentity = workStreamIdentity(
+    "work.workspace/v1",
+    publication.handoff.associated_workspace.subject_id,
+  );
+  appendAuthorityEvents(database, {
+    streamId: workspaceIdentity.streamId,
+    streamKind: workspaceIdentity.streamKind,
+    events: [publication.workspaceEvent],
+    ...fence,
+  });
+  publication.handoff.artifacts.forEach((artifact, index) => {
+    const identity = workStreamIdentity("work.artifact/v1", artifact.digest);
+    appendAuthorityEvents(database, {
+      streamId: identity.streamId,
+      streamKind: identity.streamKind,
+      events: [publication.artifactEvents[index]],
+      ...fence,
+    });
+  });
+  const handoffIdentity = workStreamIdentity(
+    "flow.resource-handoff/v1",
+    publication.handoff.handoff_id,
+  );
+  if (readStream(database, handoffIdentity.streamId)) {
+    throw new Error("resource handoff identity is already active");
+  }
+  appendAuthorityEvents(database, {
+    streamId: handoffIdentity.streamId,
+    streamKind: handoffIdentity.streamKind,
+    events: [publication.handoffEvent],
+    ...fence,
+  });
+  return reviewCandidateReference;
+}
+
+function prepareConsumerHandoffBindings(
+  database,
+  authorityDirectory,
+  gitRetentionAdapter,
+  prepared,
+  runId,
+) {
+  if (prepared.explicit_facts.resource_claims.some((claim) =>
+    claim?.kind === "resource_handoff" && claim.id === "latest")) {
+    const error = new TypeError("latest resource handoff selection is forbidden");
+    error.code = "forbidden_latest_resource_selection";
+    throw error;
+  }
+  const claimsByHandoff = new Map();
+  for (const claim of prepared.explicit_facts.resource_claims
+    .filter(({ kind }) => kind === "resource_handoff")) {
+    const existing = claimsByHandoff.get(claim.id);
+    if (existing && existing.digest !== claim.digest) {
+      throw new TypeError("prepared consumer handoff claims disagree on identity");
+    }
+    claimsByHandoff.set(claim.id, {
+      ...claim,
+      operations: [...new Set([
+        ...(existing?.operations ?? []),
+        ...claim.operations,
+      ])].sort(),
+    });
+  }
+  return [...claimsByHandoff.values()]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((claim) => {
+      const cardOperations = [...new Set(prepared.graph.cards.flatMap((card) =>
+        (card.resource_claims ?? [])
+          .filter((cardClaim) =>
+            cardClaim.kind === "resource_handoff" && cardClaim.id === claim.id &&
+            cardClaim.digest === claim.digest)
+          .flatMap((cardClaim) => cardClaim.operations ?? [])))].sort();
+      const requestedOperations = [...new Set(prepared.graph.cards
+        .map((card) => card.inputs?.resource_handoff)
+        .filter((request) => request?.handoff_id === claim.id &&
+          request.handoff_digest === claim.digest)
+        .map((request) => request.operation))].sort();
+      if (!isDeepStrictEqual(cardOperations, claim.operations) ||
+          requestedOperations.some((operation) =>
+            !cardOperations.includes(operation))) {
+        throw new TypeError("consumer handoff claims exceed exact card authority");
+      }
+      const identity = workStreamIdentity("flow.resource-handoff/v1", claim.id);
+      if (!identity || !readStream(database, identity.streamId)) {
+        throw new TypeError("prepared consumer handoff does not exist");
+      }
+      const handoff = queryWorkProjection(
+        database,
+        authorityDirectory,
+        identity,
+        gitRetentionAdapter,
+      );
+      return {
+        ...buildConsumerHandoffBinding({ handoff, claim, runId }),
+        handoff,
+      };
+    });
+}
+
+function appendConsumerHandoffBindings(database, bindings, fence) {
+  for (const binding of bindings) {
+    const handoffIdentity = workStreamIdentity(
+      "flow.resource-handoff/v1",
+      binding.handoff.handoff_id,
+    );
+    appendAuthorityEvents(database, {
+      streamId: handoffIdentity.streamId,
+      streamKind: handoffIdentity.streamKind,
+      events: [binding.handoffEvent],
+      ...fence,
+    });
+    if (binding.workspaceEvent !== null) {
+      const workspaceIdentity = workStreamIdentity(
+        "work.workspace/v1",
+        binding.handoff.associated_workspace.subject_id,
+      );
+      const workspace = readStream(database, workspaceIdentity.streamId)?.fold;
+      if (workspace?.claims.length > 0) {
+        throw new TypeError("consumer mutation workspace is already claimed");
+      }
+      appendAuthorityEvents(database, {
+        streamId: workspaceIdentity.streamId,
+        streamKind: workspaceIdentity.streamKind,
+        events: [binding.workspaceEvent],
+        ...fence,
+      });
+    }
+    binding.handoff.artifacts.forEach((artifact, index) => {
+      const artifactIdentity = workStreamIdentity("work.artifact/v1", artifact.digest);
+      appendAuthorityEvents(database, {
+        streamId: artifactIdentity.streamId,
+        streamKind: artifactIdentity.streamKind,
+        events: [binding.artifactEvents[index]],
+        ...fence,
+      });
+    });
+  }
+}
+
+function appendConsumerHandoffRelease(database, {
+  effectId = null,
+  handoffId,
+  runId: holderRunId,
+}, fence) {
+  const handoffIdentity = workStreamIdentity(
+    "flow.resource-handoff/v1",
+    handoffId,
+  );
+  const handoff = readStream(database, handoffIdentity.streamId)?.fold;
+  const pin = handoff?.consumer_pins.find(({ run_id: runId }) =>
+    runId === holderRunId);
+  if (!pin) return;
+  appendAuthorityEvents(database, {
+    streamId: handoffIdentity.streamId,
+    streamKind: handoffIdentity.streamKind,
+    events: [{
+      contract: "flow.resource-handoff-event/v1",
+      payload: {
+        type: "resource_handoff_consumer_released",
+        consumer_run_id: holderRunId,
+        effect_id: effectId,
+      },
+    }],
+    ...fence,
+  });
+  for (const artifact of handoff.artifacts) {
+    const artifactIdentity = workStreamIdentity("work.artifact/v1", artifact.digest);
+    appendAuthorityEvents(database, {
+      streamId: artifactIdentity.streamId,
+      streamKind: artifactIdentity.streamKind,
+      events: [{
+        contract: "work.artifact-event/v1",
+        payload: {
+          type: "artifact_pins_transferred",
+          remove: [{ holder: "run", id: holderRunId }],
+          add: [],
+        },
+      }],
+      ...fence,
+    });
+  }
+  if (handoff.mutation_claim?.holder === holderRunId) {
+    const workspaceIdentity = workStreamIdentity(
+      "work.workspace/v1",
+      handoff.associated_workspace.subject_id,
+    );
+    appendAuthorityEvents(database, {
+      streamId: workspaceIdentity.streamId,
+      streamKind: workspaceIdentity.streamKind,
+      events: [{
+        contract: "work.workspace-event/v1",
+        payload: {
+          type: "workspace_claim_released",
+          claim_id: handoff.mutation_claim.claim_id,
+          holder: holderRunId,
+        },
+      }],
+      ...fence,
+    });
+  }
+}
+
+function appendTerminalConsumerHandoffReleases(database, {
+  prepared,
+  runId,
+  terminalEvent,
+}, fence) {
+  const releasableHandoffIds = terminalEvent.type === "run_cancelled"
+    ? terminalEvent.resource_dispositions
+      .filter(({ claim }) => claim.kind === "resource_handoff")
+      .reduce((releasable, { claim, disposition }) => {
+        const existing = releasable.get(claim.id) ?? true;
+        releasable.set(claim.id, existing && disposition === "released");
+        return releasable;
+      }, new Map())
+    : new Map(prepared.explicit_facts.resource_claims
+      .filter(({ kind }) => kind === "resource_handoff")
+      .map(({ id }) => [id, true]));
+  const handoffIds = [...releasableHandoffIds.entries()]
+    .filter(([, releasable]) => releasable)
+    .map(([handoffId]) => handoffId);
+  for (const handoffId of handoffIds) {
+    appendConsumerHandoffRelease(database, { handoffId, runId }, fence);
+  }
+}
+
+function appendTerminalWorkspaceClaimReleases(database, {
+  prepared,
+  runId,
+  terminalEvent,
+}, fence) {
+  const workspaceClaims = prepared?.explicit_facts?.resource_claims
+    ?.filter(({ kind }) => kind === "workspace") ?? [];
+  for (const claim of workspaceClaims) {
+    if (terminalEvent.type === "run_cancelled") {
+      const disposition = terminalEvent.resource_dispositions?.find((entry) =>
+        entry.claim?.kind === "workspace" &&
+        entry.claim.id === claim.id)?.disposition;
+      if (disposition !== "released") continue;
+    }
+    const identity = workStreamIdentity("work.workspace/v1", claim.id);
+    const workspace = identity === null
+      ? null
+      : readStream(database, identity.streamId)?.fold ?? null;
+    const currentClaim = workspace?.claims?.find(({ holder }) => holder === runId);
+    if (workspace === null || currentClaim === undefined ||
+        workspace.taint !== null ||
+        workspace.generation !== claim.generation ||
+        workspace.mutation_epoch !== claim.mutation_epoch ||
+        digest({ git: workspace.git }) !== claim.fingerprint) {
+      continue;
+    }
+    appendAuthorityEvents(database, {
+      streamId: identity.streamId,
+      streamKind: identity.streamKind,
+      events: [{
+        contract: "work.workspace-event/v1",
+        payload: {
+          type: "workspace_claim_released",
+          claim_id: currentClaim.claim_id,
+          holder: currentClaim.holder,
+          reason: terminalEvent.type,
+        },
+      }],
+      ...fence,
+    });
+  }
+}
+
+function storeArtifactBytes(authorityDirectory, artifact, encodedBytes) {
+  const bytes = Buffer.from(encodedBytes, "base64");
+  if (bytes.toString("base64") !== encodedBytes || bytes.length !== artifact.size ||
+      byteDigest(bytes) !== artifact.digest) {
+    throw new TypeError("artifact bytes do not match immutable artifact identity");
+  }
+  const directory = join(authorityDirectory, "artifacts");
+  const path = join(directory, artifact.digest.slice("sha256:".length));
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (existsSync(path)) {
+    const existing = readFileSync(path);
+    if (!existing.equals(bytes)) {
+      const error = new Error("artifact digest already names different retained bytes");
+      error.code = "artifact_bytes_conflict";
+      throw error;
+    }
+    return null;
+  }
+  writeFileSync(path, bytes, { flag: "wx", mode: 0o600 });
+  return path;
+}
+
+function artifactBytesAvailable(authorityDirectory, artifact) {
+  const path = join(
+    authorityDirectory,
+    "artifacts",
+    artifact.digest.slice("sha256:".length),
+  );
+  if (!existsSync(path)) return false;
+  const bytes = readFileSync(path);
+  return bytes.length === artifact.size && byteDigest(bytes) === artifact.digest;
+}
+
+function byteDigest(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function acquireAuthorityEpoch(database, {
+  bootId,
+  declaredCapacity,
+  processIdentity,
+}) {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const admission = readStream(database, "host:admission");
+    if (admission && admission.fold.declared_capacity !== declaredCapacity) {
+      throw new Error("declared authority capacity conflicts with durable state");
+    }
+    const authorityEpoch = (admission?.fold.authority_epoch ?? 0) + 1;
+    appendAuthorityEvents(database, {
+      streamId: "host:admission",
+      streamKind: "host_admission",
+      events: [{
+        contract: "flow.host-admission-event/v1",
+        payload: {
+          type: "authority_acquired",
+          authority_epoch: authorityEpoch,
+          boot_id: bootId,
+          declared_capacity: declaredCapacity,
+          process_identity: processIdentity,
+        },
+      }],
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    });
+    database.exec("COMMIT");
+    return authorityEpoch;
+  } catch (error) {
+    if (database.isTransaction) database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function appendAuthorityEvents(database, {
+  streamId,
+  streamKind,
+  events,
+  authorityEpoch,
+  bootId,
+  processIdentity,
+}) {
+  let stream = database.prepare(`
+    SELECT * FROM authority_streams WHERE stream_id = ?
+  `).get(streamId);
+  if (!stream) {
+    database.prepare(`
+      INSERT INTO authority_streams(
+        stream_id, stream_kind, generation, head_sequence, head_digest
+      ) VALUES (?, ?, 1, 0, ?)
+    `).run(streamId, streamKind, EMPTY_WATERMARK);
+    stream = database.prepare(`
+      SELECT * FROM authority_streams WHERE stream_id = ?
+    `).get(streamId);
+  }
+  if (stream.stream_kind !== streamKind) {
+    throw new Error("authority stream kind conflict");
+  }
+
+  let sequence = Number(stream.head_sequence);
+  let previousDigest = stream.head_digest;
+  for (const event of events) {
+    sequence += 1;
+    const payload = canonicalize(event.payload);
+    const payloadJson = JSON.stringify(payload);
+    const payloadDigest = digest(payload);
+    const record = {
+      schema: "flow.authority-event-record/v1",
+      stream_id: streamId,
+      sequence,
+      generation: Number(stream.generation),
+      contract: event.contract,
+      payload,
+      payload_digest: payloadDigest,
+      previous_digest: previousDigest,
+      authority_epoch: authorityEpoch,
+      boot_id: bootId,
+      process_identity: processIdentity,
+    };
+    const recordDigest = digest(record);
+    database.prepare(`
+      INSERT INTO authority_events(
+        stream_id, sequence, generation, contract, payload_json,
+        payload_digest, previous_digest, record_digest, authority_epoch,
+        boot_id, process_identity
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      streamId,
+      sequence,
+      Number(stream.generation),
+      event.contract,
+      payloadJson,
+      payloadDigest,
+      previousDigest,
+      recordDigest,
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    );
+    previousDigest = recordDigest;
+  }
+  database.prepare(`
+    UPDATE authority_streams
+       SET head_sequence = ?, head_digest = ?
+     WHERE stream_id = ?
+  `).run(sequence, previousDigest, streamId);
+
+  const replayed = replayStream(database, streamId, { verifyFold: false });
+  const foldJson = JSON.stringify(canonicalize(replayed.fold));
+  const foldContract = replayed.fold.schema === "flow.review-projection/v1"
+    ? REVIEW_PROJECTION_FOLD_CONTRACT
+    : replayed.fold.schema;
+  database.prepare(`
+    UPDATE authority_streams
+       SET fold_contract = ?, fold_json = ?, fold_digest = ?
+     WHERE stream_id = ?
+  `).run(foldContract, foldJson, digest(replayed.fold), streamId);
+}
+
+function readStream(database, streamId) {
+  return readAuthorityStream(database, streamId);
+}
+
+function assertEffectWorkspaceAuthority(database, intent) {
+  const readOnlyWorkspaceClaimIds = delegateReadOnlyWorkspaceClaimIds(intent);
+  const workspaceClaims = (intent?.resource_claims ?? [])
+    .filter(({ kind, id }) => kind === "workspace" &&
+      !readOnlyWorkspaceClaimIds.has(id));
+  const fullClaims = workspaceClaims.filter((claim) =>
+    typeof claim.id === "string" && claim.id.length > 0 &&
+    Number.isSafeInteger(claim.generation) && claim.generation >= 1 &&
+    Number.isSafeInteger(claim.mutation_epoch) && claim.mutation_epoch >= 0 &&
+    typeof claim.fingerprint === "string" &&
+    /^sha256:[0-9a-f]{64}$/u.test(claim.fingerprint));
+  if (fullClaims.length === 0) return;
+  if (fullClaims.length !== workspaceClaims.length) {
+    throw new AuthorityFenceError(
+      "workspace_claim_incomplete",
+      "effect mixes exact and partial workspace claims",
+    );
+  }
+  for (const claim of fullClaims) {
+    const identity = workStreamIdentity("work.workspace/v1", claim.id);
+    const projection = identity
+      ? readStream(database, identity.streamId)?.fold ?? null
+      : null;
+    const issue = workspaceEffectAuthorityIssue(projection, claim, intent);
+    if (issue !== null) {
+      throw new AuthorityFenceError(
+        issue,
+        "effect workspace authority changed before Adapter invocation",
+      );
+    }
+  }
+}
+
+function delegateReadOnlyWorkspaceClaimIds(intent) {
+  if (intent?.effect_kind !== "delegate" ||
+      !Array.isArray(intent.delegate_input?.resource_references)) {
+    return new Set();
+  }
+  const bySubject = new Map();
+  for (const reference of intent.delegate_input.resource_references) {
+    if (reference?.kind !== "workspace" ||
+        typeof reference.subject_id !== "string") continue;
+    const accesses = bySubject.get(reference.subject_id) ?? [];
+    accesses.push(reference.access);
+    bySubject.set(reference.subject_id, accesses);
+  }
+  if (bySubject.size === 0) return new Set();
+  const capability = intent.delegate_input?.description?.launch?.capability;
+  const grantIds = flowGrantIdsForDrovrCapability(capability);
+  if (capability !== "read-only" || grantIds === null || grantIds.length !== 0) {
+    return new Set();
+  }
+  const capabilityBindings = intent.capability_bindings;
+  const mutatingGrantIds = new Set([
+    ...flowGrantIdsForDrovrCapability("workspace-write"),
+    ...flowGrantIdsForDrovrCapability("auto"),
+  ]);
+  if (!Array.isArray(capabilityBindings) || capabilityBindings.some((binding) =>
+      !isPlainRecord(binding) ||
+      !Array.isArray(binding.card_ids) ||
+      !binding.card_ids.every((cardId) => typeof cardId === "string") ||
+      ((binding.card_ids.includes(intent.card_id) ||
+        binding.card_ids.includes("*")) &&
+        mutatingGrantIds.has(binding.capability)))) {
+    return new Set();
+  }
+  return new Set([...bySubject.entries()]
+    .filter(([, accesses]) => accesses.length > 0 &&
+      accesses.every((access) => access === "read_only"))
+    .map(([subjectId]) => subjectId));
+}
+
+function replayStream(database, streamId, options) {
+  return replayAuthorityStream(database, streamId, options);
+}
+
+function assertMutationFence(lockDatabase, database, expected) {
+  assertMutationFenceState({
+    database,
+    expected,
+    lockDatabase,
+    readAdmission,
+  });
+}
+
+function assertAuthorityEpoch(database, expected) {
+  assertAuthorityEpochFence({ database, expected, readAdmission });
+}
+
+function readAdmission(database) {
+  return readStream(database, "host:admission")?.fold;
+}
+
+function bindEffectIntent(intent, {
+  authorityEpoch,
+  bootId,
+  commandDigest,
+  decision,
+  deferredEvents,
+  prepared,
+  capabilityBindings,
+  runOwnership,
+  runId,
+}) {
+  const facts = prepared.explicit_facts;
+  const resourceClaims = intent?.resource_claims;
+  if (intent?.effect_kind === "delegate") {
+    validateDelegateAuthorityBoundary(intent, prepared);
+  }
+  if (intent?.schema !== "flow.effect-intent/v1" ||
+      typeof intent.effect_id !== "string" || intent.effect_id.length === 0 ||
+      typeof intent.idempotency_key !== "string" ||
+      intent.idempotency_key.length === 0 ||
+      typeof intent.attempt_id !== "string" || intent.attempt_id.length === 0 ||
+      !effectClassPolicy(intent.classification) ||
+      typeof intent.operation_contract !== "string" ||
+      intent.operation_contract.length === 0 ||
+      !Array.isArray(resourceClaims) ||
+      !resourceClaims.every((claim) => facts.resource_claims.some(
+        (declared) => digest(declared) === digest(claim),
+      )) ||
+      !(intent.route_binding === null ||
+        (typeof intent.route_binding === "object" &&
+          !Array.isArray(intent.route_binding)))) {
+    throw new TypeError(
+      "lifecycle decisions must emit identified, idempotent effect intents",
+    );
+  }
+  return freezeCanonical({
+    ...intent,
+    run_id: runId,
+    decision_digest: digest(decision),
+    command_digest: commandDigest,
+    deferred_events: deferredEvents,
+    authority_epoch: authorityEpoch,
+    authority_boot_id: bootId,
+    catalog_fingerprint: facts.catalog_fingerprint,
+    route_snapshot: facts.route_snapshot,
+    capability_envelopes: facts.capability_envelopes,
+    operation_contracts: facts.operation_contracts,
+    validator_contracts: facts.validator_contracts,
+    ...(facts.tracker_binding === undefined ? {} : {
+      tracker_binding: facts.tracker_binding,
+      run_ownership: runOwnership,
+    }),
+    ...(intent.effect_kind === "delegate" ? {
+      required_authority_bindings: prepared.required_authorities ?? [],
+      capability_bindings: capabilityBindings ?? [],
+    } : {}),
+    resource_claims: resourceClaims,
+    time_facts: facts.time_facts,
+    subject_generations: facts.subject_generations,
+  });
+}
+
+function validateDelegateAuthorityBoundary(intent, prepared) {
+  const input = intent.delegate_input;
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError("delegate effect input is incomplete");
+  }
+  if (Object.hasOwn(input, "execution_authority") ||
+      Object.hasOwn(input, "predecessor_evidence")) {
+    throw new TypeError(
+      "delegate execution authority and predecessor evidence are authority-owned",
+    );
+  }
+  const approvedBindings = normalizeAuthorityBindings(
+    prepared.required_authorities ?? [],
+  );
+  const approvedIds = new Set(approvedBindings.map(({ id }) => id));
+  if (Object.hasOwn(intent, "required_authority_bindings") &&
+      digest(normalizeAuthorityBindings(intent.required_authority_bindings)) !==
+        digest(approvedBindings)) {
+    throw new TypeError(
+      "delegate required authority bindings do not match RunAuthority facts",
+    );
+  }
+  const references = input.resource_references;
+  if (references === undefined) return;
+  if (!Array.isArray(references)) {
+    throw new TypeError("delegate resource selections must be an array");
+  }
+  for (const reference of references) {
+    if (!reference || typeof reference !== "object" ||
+        Array.isArray(reference) ||
+        Object.hasOwn(reference, "authority_binding")) {
+      throw new TypeError(
+        "delegate resource bindings must be resolved by RunAuthority",
+      );
+    }
+    if (reference.schema !== DELEGATE_EXECUTION_RESOURCE_SELECTION_SCHEMA ||
+        typeof reference.authority_binding_id !== "string" ||
+        !approvedIds.has(reference.authority_binding_id)) {
+      throw new TypeError(
+        "delegate resource selection is outside RunAuthority bindings",
+      );
+    }
+  }
+}
+
+export function createTopLevelRunOwnershipAdapter() {
+  return Object.freeze({ observe: topLevelRunOwnership });
+}
+
+function topLevelRunOwnership() {
+  return {
+    schema: "flow.run-ownership/v1",
+    scope: "top_level",
+    parent_run_id: null,
+  };
+}
+
+function childRunOwnership(parentRunId) {
+  return freezeCanonical({
+    schema: "flow.run-ownership/v1",
+    scope: "child",
+    parent_run_id: parentRunId,
+  });
+}
+
+function observeRunOwnership(adapter, prepared) {
+  const ownership = adapter.observe({ prepared });
+  if (ownership?.schema !== "flow.run-ownership/v1" ||
+      !["top_level", "child"].includes(ownership.scope) ||
+      (ownership.scope === "top_level" && ownership.parent_run_id !== null) ||
+      (ownership.scope === "child" &&
+        (typeof ownership.parent_run_id !== "string" ||
+         ownership.parent_run_id.length === 0)) ||
+      Object.keys(ownership).length !== 3) {
+    throw new TypeError("run ownership Adapter returned an invalid observation");
+  }
+  return freezeCanonical(ownership);
+}
+
+function adoptEffectIntent(database, intent, {
+  authorityEpoch,
+  bootId,
+  processIdentity,
+}) {
+  const priorIntentDigest = digest(intent);
+  const existing = readStream(database, intent.run_id).records
+    .find(({ payload }) =>
+      payload.type === "effect_intent_adopted" &&
+      payload.prior_intent_digest === priorIntentDigest &&
+      payload.intent.authority_epoch === authorityEpoch &&
+      payload.intent.authority_boot_id === bootId);
+  if (existing) return existing.payload.intent;
+
+  const adopted = freezeCanonical({
+    ...intent,
+    authority_epoch: authorityEpoch,
+    authority_boot_id: bootId,
+  });
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    assertAuthorityEpoch(database, {
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    });
+    appendAuthorityEvents(database, {
+      streamId: intent.run_id,
+      streamKind: "run",
+      events: [{
+        contract: "flow.run-event/v1",
+        payload: {
+          type: "effect_intent_adopted",
+          prior_intent_digest: priorIntentDigest,
+          intent: adopted,
+        },
+      }],
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    });
+    database.exec("COMMIT");
+  } catch (error) {
+    if (database.isTransaction) database.exec("ROLLBACK");
+    throw error;
+  }
+  return adopted;
+}
+
+function recordEffectInvocationStarted(database, intent, {
+  authorityDirectory,
+  authorityEpoch,
+  bootId,
+  executionTimeFacts = null,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
+  processIdentity,
+}) {
+  recordEffectInvocationEvent(database, intent, {
+    authorityDirectory,
+    authorityEpoch,
+    bootId,
+    executionTimeFacts,
+    gitRetentionAdapter,
+    gitWorkspaceObservationAdapter,
+    processIdentity,
+    type: "effect_invocation_started",
+  });
+}
+
+function recordEffectInvocationResumed(database, intent, {
+  authorityDirectory,
+  authorityEpoch,
+  bootId,
+  executionTimeFacts,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
+  processIdentity,
+}) {
+  recordEffectInvocationEvent(database, intent, {
+    authorityDirectory,
+    authorityEpoch,
+    bootId,
+    executionTimeFacts,
+    gitRetentionAdapter,
+    gitWorkspaceObservationAdapter,
+    processIdentity,
+    type: "effect_invocation_resumed",
+  });
+}
+
+function recordEffectInvocationEvent(database, intent, {
+  authorityDirectory,
+  authorityEpoch,
+  bootId,
+  executionTimeFacts = null,
+  gitRetentionAdapter,
+  gitWorkspaceObservationAdapter,
+  processIdentity,
+  type,
+}) {
+  const publication = intent.operation_input?.publication;
+  let publicationAuthority = null;
+  if (publication !== undefined) {
+    publicationAuthority = handoffPublicationAuthorityContext(
+      database,
+      authorityDirectory,
+      gitRetentionAdapter,
+      gitWorkspaceObservationAdapter,
+      intent,
+      publication,
+    );
+  }
+  let cleanupAuthority = null;
+  if (intent.operation_input?.resource_cleanup !== undefined) {
+    cleanupAuthority = resourceCleanupAuthorityContext(
+      database,
+      authorityDirectory,
+      gitRetentionAdapter,
+      gitWorkspaceObservationAdapter,
+      intent,
+    );
+  }
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    assertAuthorityEpoch(database, {
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    });
+    assertDurableHostRestoreClear(database);
+    if (publicationAuthority !== null) {
+      const identity = workStreamIdentity(
+        "work.workspace/v1",
+        publicationAuthority.workspace.subject_id,
+      );
+      appendAuthorityEvents(database, {
+        streamId: identity.streamId,
+        streamKind: identity.streamKind,
+        events: [{
+          contract: "work.workspace-event/v1",
+          payload: {
+            type: "workspace_tainted",
+            taint: {
+              reason: "handoff_publication_in_flight",
+              evidence_digest: digest(intent),
+              source_effect_id: intent.effect_id,
+            },
+          },
+        }],
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+    }
+    if (cleanupAuthority !== null) {
+      appendAuthorityEvents(database, {
+        streamId: cleanupAuthority.identity.streamId,
+        streamKind: cleanupAuthority.identity.streamKind,
+        events: [{
+          contract: cleanupAuthority.identity.streamKind === "workspace"
+            ? "work.workspace-event/v1"
+            : cleanupAuthority.identity.streamKind === "artifact"
+              ? "work.artifact-event/v1"
+              : "flow.resource-handoff-event/v1",
+          payload: cleanupAuthority.identity.streamKind === "workspace"
+            ? {
+                type: "workspace_tainted",
+                taint: {
+                  reason: "resource_cleanup_in_flight",
+                  evidence_digest: digest(intent),
+                  source_effect_id: intent.effect_id,
+                },
+              }
+            : cleanupAuthority.identity.streamKind === "artifact" ? {
+                type: "artifact_collection_started",
+                effect_id: intent.effect_id,
+                evidence_digest: digest(intent),
+              } : {
+                type: "resource_handoff_cleanup_started",
+                effect_id: intent.effect_id,
+                evidence_digest: digest(intent),
+              },
+        }],
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+    }
+    const handoffRequest = intent.operation_input?.resource_handoff;
+    if (handoffRequest !== undefined) {
+      const handoffIdentity = workStreamIdentity(
+        "flow.resource-handoff/v1",
+        handoffRequest.handoff_id,
+      );
+      if (!handoffIdentity || !readStream(database, handoffIdentity.streamId)) {
+        throw new TypeError("consumer mutation handoff is unavailable");
+      }
+      const handoff = queryWorkProjection(
+        database,
+        authorityDirectory,
+        handoffIdentity,
+        gitRetentionAdapter,
+      );
+      const authorization = buildConsumerMutationAuthorization({
+        handoff,
+        intent,
+      });
+      appendAuthorityEvents(database, {
+        streamId: handoffIdentity.streamId,
+        streamKind: handoffIdentity.streamKind,
+        events: [{
+          contract: "flow.resource-handoff-event/v1",
+          payload: { type: "consumer_handoff_rechecked", authorization },
+        }],
+        authorityEpoch,
+        bootId,
+        processIdentity,
+      });
+    }
+    appendAuthorityEvents(database, {
+      streamId: intent.run_id,
+      streamKind: "run",
+      events: [{
+        contract: "flow.run-event/v1",
+        payload: {
+          type,
+          effect_id: intent.effect_id,
+          authority_epoch: authorityEpoch,
+          ...(executionTimeFacts === null ? {} : {
+            time_facts: executionTimeFacts,
+          }),
+        },
+      }],
+      authorityEpoch,
+      bootId,
+      processIdentity,
+    });
+    database.exec("COMMIT");
+  } catch (error) {
+    if (database.isTransaction) database.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function readRecordedEffectIntents(database, runId, commandDigest) {
+  return readStream(database, runId).records
+    .filter(({ payload }) =>
+      payload.type === "effect_intent_recorded" &&
+      payload.intent.command_digest === commandDigest)
+    .map(({ payload }) => payload.intent);
+}
+
+function pendingDeferredEvents(stream, settlingIntent) {
+  const events = [];
+  const seen = new Set();
+  const successfulEffects = new Set(stream.records
+    .filter(({ payload }) => payload.type === "effect_receipt_recorded" &&
+      payload.receipt?.outcome !== "quarantined")
+    .map(({ payload }) => payload.effect_id));
+  successfulEffects.add(settlingIntent.effect_id);
+  for (const { payload } of stream.records) {
+    if (!EFFECT_INTENT_EVENT_TYPES.has(payload.type) ||
+        !successfulEffects.has(payload.intent.effect_id)) continue;
+    for (const event of payload.intent.deferred_events) {
+      const eventDigest = digest(event);
+      if (seen.has(eventDigest)) continue;
+      seen.add(eventDigest);
+      events.push(event);
+    }
+  }
+  return events;
+}
+
+function captureResultBindings({ intent, receipt, activePlan }) {
+  if (receipt?.outcome !== "succeeded" ||
+      !isPlainRecord(receipt.provider_receipt)) return [];
+  const declarations = resultBindingDeclarationsForProducer(
+    activePlan,
+    intent.card_id,
+  );
+  if (declarations === null || declarations.length === 0) return [];
+  const declarationsByContract = new Map();
+  for (const declaration of declarations) {
+    const existing = declarationsByContract.get(declaration.output_contract);
+    if (existing !== undefined &&
+        existing.expected_schema !== declaration.expected_schema) {
+      throw resultBindingError(
+        "result_binding_declaration_conflict",
+        "producer output has conflicting expected schemas",
+      );
+    }
+    declarationsByContract.set(declaration.output_contract, declaration);
+  }
+  const content = receipt.provider_receipt;
+  const requiresObservedWorkspace = declarations.some((declaration) =>
+    declaration.expected_schema === "work.feature-capture-receipt/v1");
+  const workspace = resultWorkspaceFence(
+    content,
+    requiresObservedWorkspace ? [] : intent.resource_claims,
+  );
+  if (requiresObservedWorkspace && workspace === null) {
+    throw resultBindingError(
+      "result_binding_workspace_missing",
+      "feature capture requires the provider observed workspace fence",
+    );
+  }
+  const provenance = {
+    schema: "flow.result-provenance/v1",
+    run_id: intent.run_id,
+    effect_id: intent.effect_id,
+    attempt_id: intent.attempt_id,
+    idempotency_key: intent.idempotency_key,
+    source_authority_watermark: intent.source_authority_watermark,
+  };
+  return [...declarationsByContract.values()].map((declaration) => {
+    if (content.schema !== declaration.expected_schema) {
+      throw resultBindingError(
+        "result_binding_schema_mismatch",
+        "settled result schema does not match its declared output",
+      );
+    }
+    return createResultBindingRecord({
+      declaration,
+      content,
+      attemptId: intent.attempt_id,
+      provenance,
+      ...(workspace === null ? {} : {
+        producerGeneration: workspace.generation,
+        workspaceMutationEpoch: workspace.mutation_epoch,
+      }),
+    });
+  });
+}
+
+function resultWorkspaceFence(content, resourceClaims = []) {
+  const candidates = [
+    content.workspace,
+    content.review_candidate?.workspace,
+    content.candidate?.workspace,
+    resourceClaims.find(({ kind }) => kind === "workspace"),
+  ];
+  const workspace = candidates.find((candidate) =>
+    isPlainRecord(candidate) &&
+    Number.isSafeInteger(candidate.generation) && candidate.generation >= 1 &&
+    Number.isSafeInteger(candidate.mutation_epoch) &&
+      candidate.mutation_epoch >= 0);
+  return workspace === undefined ? null : workspace;
+}
+
+function resultBindingError(code, message) {
+  const error = new TypeError(message);
+  error.code = code;
+  return error;
+}
+
+function settleSubrunTerminalEvents(events, intent, receipt) {
+  if (intent.operation_contract !== "flow.subrun/create-and-observe/v1" ||
+      receipt?.provider_receipt?.child_phase === "succeeded" ||
+      events.length === 0) {
+    return events;
+  }
+  return [
+    ...events.filter(({ type }) =>
+      !["operation_completed", "run_succeeded"].includes(type)),
+    {
+      type: "subrun_failed",
+      card_id: intent.card_id,
+      attempt_id: intent.attempt_id,
+      child_run_id: receipt.provider_receipt.child_run_id,
+      child_phase: receipt.provider_receipt.child_phase,
+    },
+    { type: "run_declined" },
+  ];
+}
+
+function unresolvedEffectIds(stream) {
+  const unresolved = new Set(stream.records
+    .filter(({ payload }) => EFFECT_INTENT_EVENT_TYPES.has(payload.type))
+    .map(({ payload }) => payload.intent.effect_id));
+  for (const { payload } of stream.records) {
+    if (payload.type === "effect_receipt_recorded") {
+      unresolved.delete(payload.effect_id);
+    }
+  }
+  return unresolved;
+}
+
+
+function authorityIntegrityRejection(operation, reason, runId = null) {
+  return createRejection({
+    operation,
+    code: "authority_integrity_failure",
+    reason,
+    runId: runId ?? null,
+    authorityWatermark: null,
+    authorityWatermarkDomain: runId ? "run" : "host",
+  });
+}
+
+function invalidCommandRejection(fold, command) {
+  return createRejection({
+    operation: "command",
+    code: "invalid_command",
+    commandType: typeof command?.type === "string" ? command.type : null,
+    runId: typeof command?.run_id === "string" ? command.run_id : null,
+    bundleDigest: fold.bundle_digest,
+    authorityWatermark: fold.watermark,
+    authorityWatermarkDomain: "run",
+    legalActions: fold.legal_actions,
+  });
+}
+
+function durableLaunchReceipt(
+  database,
+  stream,
+  created,
+  fenceRun,
+) {
+  const fold = fenceRun(database, stream);
+  return freezeCanonical({
+    schema: "flow.launch-receipt/v1",
+    run_id: fold.run_id,
+    bundle_digest: fold.bundle_digest,
+    plan_fingerprint: fold.plan_fingerprint,
+    launch_watermark: fold.watermark,
+    authority_watermark: fold.watermark,
+    created,
+  });
+}
+
+function fencedRunFold(
+  database,
+  stream,
+  rebootObservationAdapter,
+  authorityCatalogs = () => null,
+  {
+    revalidateAuthorities = true,
+    retryTimeObservation = null,
+    executionTimeObservation = { status: "invalid", facts: null },
+  } = {},
+) {
+  const admission = readStream(database, "host:admission")?.fold;
+  const hostRestoreBarrier = admission?.restore?.active === true;
+  if (!admission) throw new Error("authority admission stream is missing");
+  const suspendedAfterReboot = stream.fold.phase === "active" &&
+    !hasCurrentBootAdmission(stream, admission.boot_id);
+  const revalidation = suspendedAfterReboot && revalidateAuthorities
+    ? rebootRevalidation(
+        stream,
+        rebootObservationAdapter,
+        admission.boot_id,
+        authorityCatalogs(),
+      )
+    : null;
+  const watermark = digest({
+    schema: "flow.fenced-run-watermark/v1",
+    stream_watermark: stream.fold.watermark,
+    stream_generation: stream.generation,
+    authority_epoch: admission.authority_epoch,
+    authority_boot_id: admission.boot_id,
+  });
+  // Recovery under a newer owner is a fenced query decision. Keep the
+  // persisted reducer output compatible with stores written before takeover
+  // recovery was supported.
+  const runEvents = runEventsFromRecords(stream.records);
+  const recoveryActions = stream.fold.phase === "active"
+    ? stream.fold.effect_intents.flatMap((intent) => {
+        const effect = stream.fold.effects.find(({ effect_id: effectId }) =>
+          effectId === intent.effect_id);
+        const invocation = unobservedCallerIdempotentInvocation(intent, runEvents);
+        if (effect?.retry?.status !== "exhausted" || effect.receipt !== null ||
+            invocation === null || intent.authority_boot_id !== admission.boot_id ||
+            intent.authority_epoch >= admission.authority_epoch ||
+            invocation.authority_epoch >= admission.authority_epoch ||
+            stream.fold.legal_actions.some((action) =>
+              action.type === "recovery" && action.effect_id === intent.effect_id)) {
+          return [];
+        }
+        return [{
+          schema: "flow.command/v1",
+          type: "recovery",
+          run_id: stream.fold.run_id,
+          effect_id: intent.effect_id,
+          recovery: effectClassPolicy(intent.classification).recovery,
+          expected_watermark: watermark,
+        }];
+      })
+    : [];
+  const legalActions = hostRestoreBarrier
+    ? []
+    : suspendedAfterReboot
+    ? [{
+        schema: "flow.command/v1",
+        type: "reboot_admission",
+        run_id: stream.fold.run_id,
+        expected_watermark: watermark,
+        authority_epoch: admission.authority_epoch,
+        authority_boot_id: admission.boot_id,
+        expected_generation: stream.generation,
+        revalidation,
+      }]
+    : [...stream.fold.legal_actions, ...recoveryActions].map((action) => ({
+        ...action,
+        expected_watermark: watermark,
+      }));
+  const executionProjection = applyExecutionTimeObservation(
+    stream.fold,
+    legalActions,
+    executionTimeObservation,
+    runEvents,
+  );
+  const retryProjection = applyRetryTimeObservation(
+    stream.fold,
+    executionProjection.legalActions,
+    retryTimeObservation,
+  );
+  const trackerProgress = stream.fold.tracker_progress;
+  const trackerEffectIds = new Set(stream.fold.effects
+    .filter(({ card_id: cardId }) =>
+      cardId === trackerProgress?.operation_card_id)
+    .map(({ effect_id: effectId }) => effectId));
+  return freezeCanonical({
+    ...stream.fold,
+    effects: retryProjection.effects,
+    attempts: retryProjection.attempts,
+    watermark,
+    revision_outcomes: (stream.fold.revision_outcomes ?? []).map((outcome) => ({
+      ...outcome,
+      authority_watermark: watermark,
+      legal_next_actions: retryProjection.legalActions.filter((action) =>
+        action.type === "revision_decision" &&
+        action.template_id === outcome.template_id),
+    })),
+    admission: hostRestoreBarrier
+      ? "suspended_host_reconciliation"
+      : suspendedAfterReboot
+      ? "suspended_after_reboot"
+      : stream.fold.phase === "active" ? "admitted" : "released",
+    authority_epoch: admission.authority_epoch,
+    authority_boot_id: admission.boot_id,
+    stream_generation: stream.generation,
+    ...(revalidation === null ? {} : { reboot_revalidation: revalidation }),
+    execution_time: executionProjection.executionTime,
+    legal_actions: retryProjection.legalActions,
+    ...(trackerProgress === undefined ? {} : {
+      tracker_progress: {
+        ...trackerProgress,
+        authority_watermark: watermark,
+        legal_next_actions: retryProjection.legalActions.filter((action) =>
+          action.card_id === trackerProgress.operation_card_id ||
+          trackerEffectIds.has(action.effect_id)),
+      },
+    }),
+  });
+}
+
+function applyRetryTimeObservation(fold, legalActions, currentTime) {
+  const effects = fold.effects.map((effect) => {
+    if (effect.retry?.status !== "waiting") return effect;
+    const due = retryStateIsDue(effect.retry, currentTime);
+    return {
+      ...effect,
+      retry: {
+        ...effect.retry,
+        status: due ? "ready" : "waiting",
+      },
+    };
+  });
+  const effectsById = new Map(effects.map((effect) => [effect.effect_id, effect]));
+  const waitingEffectIds = new Set(effects
+    .filter((effect) => effect.retry?.status === "waiting")
+    .filter((effect) => {
+      const sameClock = currentTime?.schema === "flow.time-fact/v1" &&
+        currentTime.clock_source_id === effect.retry.not_before?.clock_source_id;
+      const canReconcile = effectClassPolicy(effect.classification)
+        ?.requires_observation === true;
+      if (!sameClock && !canReconcile) return false;
+      return !(canReconcile && !sameClock && currentTime !== null);
+    })
+    .map(({ effect_id: effectId }) => effectId));
+  const filteredActions = legalActions.filter((action) =>
+    action.type !== "recovery" || !waitingEffectIds.has(action.effect_id));
+  const attempts = fold.attempts.map((attempt) => {
+    const retry = effectsById.get(attempt.effect_id)?.retry;
+    return retry === undefined ? attempt : { ...attempt, retry };
+  });
+  return { effects, attempts, legalActions: filteredActions };
+}
+
+function assertEffectRunAdmitted(stream, currentBootId) {
+  if (stream.fold.phase === "active" &&
+      !hasCurrentBootAdmission(stream, currentBootId)) {
+    throw new AuthorityFenceError(
+      "run_requires_reboot_admission",
+      "effect authority requires explicit admission after reboot",
+    );
+  }
+}
+
+function hasCurrentBootAdmission(stream, currentBootId) {
+  const crossedBootBoundary = stream.records.some(({ boot_id: recordBootId }) =>
+    recordBootId !== currentBootId);
+  return !crossedBootBoundary || stream.records.some(({ boot_id: recordBootId,
+    payload }) => recordBootId === currentBootId &&
+    payload.type === "run_admitted_after_reboot");
+}
+
+function projectFencedRun(database, stream, fenceRun) {
+  return projectRun({
+    authorityEventStreamDigest: stream.authorityEventStreamDigest,
+    fold: fenceRun(database, stream),
+    events: runEventsFromRecords(stream.records),
+  });
+}
+
+function rebootRevalidation(
+  stream,
+  adapter,
+  currentBootId,
+  authorityCatalogs = null,
+) {
+  const prepared = stream.records[0].payload.prepared;
+  const currentFacts = {
+    resource_claims: stream.fold.resource_claims,
+    limits: stream.fold.limits,
+    elapsed_seconds: stream.fold.elapsed_seconds,
+  };
+  const receipts = new Set(stream.records
+    .filter(({ payload }) => payload.type === "effect_receipt_recorded")
+    .map(({ payload }) => payload.effect_id));
+  const reconstruction = reconstructRebootEffects(stream);
+  const revalidation = buildRebootRevalidation({
+    adapter,
+    currentBootId,
+    currentFacts,
+    prepared,
+    unresolvedEffects: reconstruction.effects.filter((intent) =>
+      intent !== null && typeof intent === "object" &&
+      !receipts.has(intent.effect_id)),
+    unresolvedEffectsValid: reconstruction.valid,
+  });
+  const bindingRevalidation = recheckAuthorityBindings(
+    prepared.required_authorities ?? [],
+    authorityCatalogs?.authorities,
+    { prepared, phase: "reboot" },
+  );
+  return freezeCanonical({
+    ...revalidation,
+    valid: revalidation.base_valid && bindingRevalidation.valid,
+    authority_bindings: bindingRevalidation,
+  });
+}
+
+function reconstructRebootEffects(stream) {
+  const effects = new Map();
+  let valid = true;
+  for (const { payload } of stream.records) {
+    if (!EFFECT_INTENT_EVENT_TYPES.has(payload.type)) continue;
+    const intent = payload.intent;
+    const existing = effects.get(intent?.effect_id);
+    if (existing && !sameEffectIntentIdentity(existing.intent, intent)) {
+      valid = false;
+    }
+    if (!existing || payload.type === "effect_intent_adopted" ||
+        existing.type !== "effect_intent_adopted") {
+      effects.set(intent?.effect_id, { type: payload.type, intent });
+    }
+  }
+  return { effects: [...effects.values()].map(({ intent }) => intent), valid };
+}
+
+function sameEffectIntentIdentity(left, right) {
+  try {
+    return digest(effectIntentIdentity(left)) === digest(effectIntentIdentity(right));
+  } catch {
+    return false;
+  }
+}
+
+function durableProviderObservation(error) {
+  const observation = error?.provider_observation;
+  if (!isPlainRecord(observation) ||
+      typeof observation.schema !== "string" ||
+      observation.schema.length === 0) {
+    return null;
+  }
+  try {
+    digest(observation);
+    return observation;
+  } catch {
+    return null;
+  }
+}
+
+function durableRetryEvent(intent, providerObservation, retryTimeAdapter) {
+  const retry = providerObservation?.retry;
+  if (retry?.schema !== RETRY_DELAY_OBSERVATION_SCHEMA) return null;
+  if (retry.status !== "bounded" ||
+      !Number.isSafeInteger(retry.delay_ms) ||
+      retry.delay_ms < 0 || retry.delay_ms > MAX_RETRY_DELAY_MS) {
+    return {
+      type: "effect_retry_blocked",
+      effect_id: intent.effect_id,
+      attempt_id: intent.attempt_id,
+      reason: "invalid_retry_delay",
+    };
+  }
+  const currentTime = observeRetryTime(retryTimeAdapter);
+  if (currentTime === null ||
+      currentTime.value_ms > Number.MAX_SAFE_INTEGER - retry.delay_ms) {
+    return {
+      type: "effect_retry_blocked",
+      effect_id: intent.effect_id,
+      attempt_id: intent.attempt_id,
+      reason: "retry_time_unavailable",
+      retry_after_ms: retry.delay_ms,
+    };
+  }
+  return {
+    type: "effect_retry_scheduled",
+    effect_id: intent.effect_id,
+    attempt_id: intent.attempt_id,
+    retry_after_ms: retry.delay_ms,
+    retry_not_before: {
+      schema: "flow.time-fact/v1",
+      kind: "wall_clock",
+      value_ms: currentTime.value_ms + retry.delay_ms,
+      uncertainty_ms: 0,
+      clock_source_id: currentTime.clock_source_id,
+    },
+  };
+}
+
+function effectRetryAdmissionFence(
+  records,
+  intent,
+  retryTimeAdapter,
+  { operatorRecovery = false, onRetryEvent = null } = {},
+) {
+  const retry = foldRetryStates(records.map(({ payload }) => payload))
+    .get(intent.effect_id) ?? null;
+  if (retry === null) return null;
+  const repeatSafe = effectClassPolicy(intent.classification)
+    ?.requires_observation !== true;
+  const scheduleOnCurrentClock = (currentTime) => {
+    if (!repeatSafe || !operatorRecovery ||
+        !Number.isSafeInteger(retry.retry_after_ms) ||
+        retry.retry_after_ms < 0 ||
+        currentTime.value_ms > Number.MAX_SAFE_INTEGER - retry.retry_after_ms) {
+      return null;
+    }
+    const retryEvent = {
+      type: "effect_retry_scheduled",
+      effect_id: intent.effect_id,
+      attempt_id: intent.attempt_id,
+      retry_after_ms: retry.retry_after_ms,
+      retry_not_before: {
+        schema: "flow.time-fact/v1",
+        kind: "wall_clock",
+        value_ms: currentTime.value_ms + retry.retry_after_ms,
+        uncertainty_ms: 0,
+        clock_source_id: currentTime.clock_source_id,
+      },
+    };
+    onRetryEvent?.(retryEvent);
+    const error = new AuthorityFenceError(
+      "effect_retry_not_due",
+      "effect retry delay was rebound to the current retry clock",
+    );
+    return error;
+  };
+  if (retry.status === "blocked") {
+    if (retry.reason === "retry_time_unavailable") {
+      const currentTime = observeRetryTime(retryTimeAdapter);
+      if (currentTime !== null) {
+        return scheduleOnCurrentClock(currentTime) ??
+          new AuthorityFenceError(
+            "retry_time_unavailable",
+            "fresh retry time facts are required for effect admission",
+          );
+      }
+    }
+    return new AuthorityFenceError(
+      "effect_retry_blocked",
+      retry.reason ?? "effect retry timing is blocked",
+    );
+  }
+  const currentTime = observeRetryTime(retryTimeAdapter);
+  if (currentTime === null) {
+    return new AuthorityFenceError(
+      "retry_time_unavailable",
+      "fresh retry time facts are required for effect admission",
+    );
+  }
+  if (!retryStateIsDue(retry, currentTime)) {
+    const crossClock = currentTime.clock_source_id !==
+      retry.not_before?.clock_source_id;
+    if (crossClock) {
+      return scheduleOnCurrentClock(currentTime) ?? new AuthorityFenceError(
+        "effect_retry_not_due",
+        "effect retry delay has not elapsed",
+      );
+    }
+    return new AuthorityFenceError(
+      "effect_retry_not_due",
+      "effect retry delay has not elapsed",
+    );
+  }
+  return null;
+}
+
+function providerEffectErrorObservation(intent, providerObservation) {
+  return {
+    schema: "flow.effect-observation/v1",
+    effect_id: intent.effect_id,
+    idempotency_key: intent.idempotency_key,
+    presence: "indeterminate",
+    causation: null,
+    provider_observation: providerObservation,
+  };
+}
+
+function isProvenDelegatePreDispatchAbsence(
+  intent,
+  observation,
+  observedPresence,
+  observationIsFresh,
+) {
+  const providerObservation = observation?.provider_observation;
+  return intent?.effect_kind === "delegate" &&
+    observedPresence === "absent" &&
+    observationIsFresh &&
+    providerObservation?.schema === DELEGATE_FAILURE_OBSERVATION_SCHEMA &&
+    providerObservation.absence_proven === true &&
+    providerObservation.drovr?.classification === "pre_dispatch_validation" &&
+    providerObservation.drovr?.dispatch_proof?.schema ===
+      "drovr.dispatch-proof/v1";
+}
+
+function sanitizeEffectObservation(observation, intent) {
+  if (!isPlainRecord(observation) ||
+      !Object.hasOwn(observation, "provider_observation")) {
+    return observation;
+  }
+  return {
+    ...observation,
+    provider_observation: sanitizeProviderEvidence(
+      observation.provider_observation,
+      intent,
+    ),
+  };
+}
+
+function sanitizeEffectReceipt(receipt, intent) {
+  const sanitized = sanitizeEffectReceiptEnvelope(receipt, intent);
+  const invocationOutcomeAllowed = sanitized?.outcome === "succeeded" ||
+    isProjectCheckAbsenceReceipt(sanitized, intent) ||
+    sanitized?.outcome === "quarantined" && intent.effect_kind === "delegate";
+  if (sanitized === null || !invocationOutcomeAllowed) {
+    throw invalidEffectReceiptError();
+  }
+  return sanitized;
+}
+
+function invalidEffectReceiptError() {
+  const error = new TypeError("effect adapter returned an invalid or unsafe receipt");
+  error.code = "invalid_effect_receipt";
+  Object.defineProperty(error, "provider_observation", {
+    configurable: false,
+    enumerable: false,
+    value: {
+      schema: "flow.provider-observation/v1",
+      status: "invalid_output",
+      code: "invalid_effect_receipt",
+      reason: "invalid_effect_receipt",
+    },
+    writable: false,
+  });
+  return error;
+}
+
+function effectIntentIdentity(intent) {
+  if (intent === null || typeof intent !== "object" || Array.isArray(intent)) {
+    return null;
+  }
+  const {
+    authority_epoch: _authorityEpoch,
+    authority_boot_id: _authorityBootId,
+    ...identity
+  } = intent;
+  return identity;
+}
+
+function durableUnknownRunRejection(operation, runId, database, commandType) {
+  const host = durableHostProjection(database);
+  return createRejection({
+    operation,
+    code: "unknown_run",
+    commandType: commandType ?? null,
+    runId: runId ?? null,
+    authorityWatermark: host.watermark,
+    authorityWatermarkDomain: "host",
+  });
+}
+
+function durableMutationRejection(
+  operation,
+  runId,
+  databasePath,
+  commandType,
+  fenceRun,
+  fallbackBundleDigest = null,
+  rejectionCode = "mutation_authority_unavailable",
+) {
+  let authorityWatermark = EMPTY_WATERMARK;
+  let legalActions = [];
+  let bundleDigest = fallbackBundleDigest;
+  if (databaseExists(databasePath)) {
+    let database = null;
+    try {
+      database = openAuthorityDatabase(databasePath, { readOnly: true });
+      const stream = runId ? readStream(database, runId) : null;
+      const host = durableHostProjection(database);
+      const runFold = stream ? fenceRun(database, stream) : null;
+      authorityWatermark = runFold?.watermark ?? host.watermark ??
+        EMPTY_WATERMARK;
+      legalActions = runFold?.legal_actions ?? [];
+      if (!runId) legalActions = host.legal_actions ?? [];
+      bundleDigest = runFold?.bundle_digest ?? null;
+    } catch (error) {
+      const integrity = authorityIntegrityError(error);
+      if (!integrity) throw error;
+      return authorityIntegrityRejection(operation, integrity.reason, runId);
+    } finally {
+      database?.close();
+    }
+  }
+  return createRejection({
+    operation,
+    code: rejectionCode,
+    commandType: commandType ?? null,
+    runId: runId ?? null,
+    bundleDigest,
+    authorityWatermark,
+    authorityWatermarkDomain: runId ? "run" : "host",
+    legalActions,
+  });
+}
+
+function durableLaunchRejection(
+  code,
+  prepared,
+  databasePath,
+  reason = null,
+) {
+  let authorityWatermark = EMPTY_WATERMARK;
+  if (databaseExists(databasePath)) {
+    let database = null;
+    try {
+      database = openAuthorityDatabase(databasePath, { readOnly: true });
+      authorityWatermark = durableHostProjection(database).watermark;
+    } catch (error) {
+      const integrity = authorityIntegrityError(error);
+      if (!integrity) throw error;
+      return authorityIntegrityRejection("launch", integrity.reason);
+    } finally {
+      database?.close();
+    }
+  }
+  return createRejection({
+    operation: "launch",
+    code,
+    reason,
+    bundleDigest: prepared?.bundle_digest ?? null,
+    authorityWatermark,
+    authorityWatermarkDomain: "host",
+  });
+}
+
+function durableHostProjection(database) {
+  const authoritySchema = readAuthoritySchemaCompatibility(database);
+  if (authoritySchema.status === "incompatible") {
+    return incompatibleHostProjection(authoritySchema);
+  }
+  const host = readStream(database, "host:runs")?.fold ?? freezeCanonical({
+    schema: "flow.run-index-projection/v1",
+    watermark: EMPTY_WATERMARK,
+    runs: [],
+  });
+  const admission = readStream(database, "host:admission")?.fold ?? null;
+  return fencedHostProjection(
+    host,
+    admission,
+    admission?.declared_capacity ?? 0,
+    authoritySchema,
+  );
+}
+
+function assertDurableHostRestoreClear(
+  database,
+  message = "external effects are fenced by the host restore barrier",
+) {
+  if (durableHostProjection(database).restore?.active === true) {
+    throw new AuthorityFenceError("host_reconciliation_required", message);
+  }
+}
+
+function durableHostProjectionFromPath(databasePath) {
+  if (!databaseExists(databasePath)) {
+    return freezeCanonical({
+      schema: "flow.run-index-projection/v1",
+      watermark: EMPTY_WATERMARK,
+      runs: [],
+    });
+  }
+  const database = openAuthorityDatabase(databasePath, { readOnly: true });
+  try {
+    return durableHostProjection(database);
+  } finally {
+    database.close();
+  }
+}
+
+function durableUnresolvedRunEffects(database) {
+  const runIds = readStream(database, "host:runs")?.fold?.runs ?? [];
+  return runIds.flatMap((runId) => {
+    const effects = readStream(database, runId)?.fold?.effects ?? [];
+    return effects
+      .filter(({ receipt, status }) => receipt === null &&
+        !["abandoned", "not_created", "quarantined"].includes(status))
+      .map(({ effect_id: effectId, status }) => ({
+        run_id: runId,
+        effect_id: effectId,
+        status,
+      }));
+  });
+}
+
+function incompatibleHostProjection(authoritySchema) {
+  const watermark = digest({
+    schema: "flow.fenced-host-watermark/v1",
+    run_index_watermark: null,
+    admission_watermark: null,
+    authority_schema_watermark: authoritySchema.watermark,
+  });
+  return freezeCanonical({
+    schema: "flow.run-index-projection/v1",
+    watermark,
+    runs: [],
+    authority_epoch: 0,
+    authority_boot_id: null,
+    admission: { active_runs: 0, declared_capacity: 0 },
+    authority_schema: authoritySchema,
+    legal_actions: [],
+  });
+}
+
+function transitionRequiredRunProjection(projection, authoritySchema) {
+  const watermark = digest({
+    schema: "flow.transition-required-run-watermark/v1",
+    run_watermark: projection.watermark,
+    authority_schema_watermark: authoritySchema.watermark,
+  });
+  const views = Object.fromEntries(Object.entries(projection.views).map(
+    ([name, view]) => [name, {
+      ...view,
+      authority_watermark: watermark,
+      legal_actions: [],
+    }],
+  ));
+  return freezeCanonical({
+    ...projection,
+    watermark,
+    legal_actions: [],
+    views,
+  });
+}
+
+function schemaCompatibilityRejection(
+  operation,
+  compatibility,
+  runId = null,
+  commandType = null,
+  bundleDigest = null,
+) {
+  return createRejection({
+    operation,
+    code: "authority_schema_incompatible",
+    reason: "authority store contract or schema version is incompatible",
+    commandType: commandType ?? null,
+    runId: runId ?? null,
+    bundleDigest: bundleDigest ?? null,
+    authorityWatermark: incompatibleHostProjection(compatibility).watermark,
+    authorityWatermarkDomain: "host",
+  });
+}
+
+function fencedHostProjection(host, admission, fallbackCapacity, authoritySchema) {
+  const watermark = digest({
+    schema: "flow.fenced-host-watermark/v1",
+    run_index_watermark: host.watermark,
+    admission_watermark: admission?.watermark ?? EMPTY_WATERMARK,
+    authority_schema_watermark: authoritySchema.watermark,
+  });
+  const recovery = projectHostRecovery({
+    backup: admission?.backup ?? initialBackupProjection(),
+    restore: admission?.restore ?? initialRestoreBarrier(),
+  }, watermark);
+  return freezeCanonical({
+    ...host,
+    watermark,
+    authority_epoch: admission?.authority_epoch ?? 0,
+    authority_boot_id: admission?.boot_id ?? null,
+    admission: {
+      active_runs: admission?.active_runs.length ?? 0,
+      declared_capacity: admission?.declared_capacity ?? fallbackCapacity,
+    },
+    authority_schema: authoritySchema,
+    ...recovery,
+    legal_actions: authoritySchema.status === "transition_required"
+      ? [{
+          schema: "flow.command/v1",
+          type: "recovery",
+          recovery: "authority_schema_transition",
+          from_version: authoritySchema.version,
+          to_version: CURRENT_AUTHORITY_SCHEMA_VERSION,
+          transition_release: AUTHORITY_SCHEMA_RELEASE,
+          expected_watermark: watermark,
+        }]
+      : admission?.restore?.active === true
+      ? recovery.restore.legal_actions
+      : recovery.legal_actions,
+  });
+}
+
+function schemaTransitionRequiredRejection(
+  operation,
+  databasePath,
+  bundleDigest = null,
+  runId = null,
+  commandType = null,
+) {
+  const database = openAuthorityDatabase(databasePath, { readOnly: true });
+  try {
+    const host = durableHostProjection(database);
+    return createRejection({
+      operation,
+      code: "authority_schema_transition_required",
+      reason: "authority schema must transition before mutation",
+      bundleDigest,
+      runId: stringOrNull(runId),
+      commandType: stringOrNull(commandType),
+      authorityWatermark: host.watermark,
+      authorityWatermarkDomain: "host",
+      legalActions: host.legal_actions,
+    });
+  } finally {
+    database.close();
+  }
+}
+
+function databaseExists(databasePath) {
+  return existsSync(databasePath);
+}
+
+function childLineage(parentRunId, cardId, cardIdentity, revisionOrdinal) {
+  if (typeof parentRunId !== "string" || !parentRunId ||
+      typeof cardId !== "string" || !cardId ||
+      !/^sha256:[0-9a-f]{64}$/.test(cardIdentity ?? "") ||
+      !Number.isInteger(revisionOrdinal) || revisionOrdinal < 0) {
+    throw new TypeError("child run lineage is incomplete");
+  }
+  return freezeCanonical({
+    schema: "flow.child-run-lineage/v1",
+    parent_run_id: parentRunId,
+    card_id: cardId,
+    card_identity: cardIdentity,
+    revision_ordinal: revisionOrdinal,
+  });
+}
+
+function validChildLaunchParent(parent, lineage, launchRequest) {
+  if (!parent) return false;
+  const fold = foldRun(parent);
+  return fold.phase === "active" &&
+    fold.current_revision.ordinal === lineage.revision_ordinal &&
+    fold.active_plan.cards.some(({ executor, id }) =>
+      id === lineage.card_id && executor.kind === "subrun") &&
+    digest(fold.active_plan.cards.find(({ id }) => id === lineage.card_id)) ===
+      lineage.card_identity &&
+    isDeepStrictEqual(fold.active_plan.cards.find(
+      ({ id }) => id === lineage.card_id,
+    ).inputs.child_launch_request, launchRequest) &&
+    fold.subruns.some(({ card_id: cardId, card_identity: cardIdentity,
+      revision_ordinal: revisionOrdinal }) =>
+      cardId === lineage.card_id && cardIdentity === lineage.card_identity &&
+        revisionOrdinal === lineage.revision_ordinal);
+}
+
+function validRecordedSubrunAdmission(parentRun, childRun, lineage) {
+  if (!parentRun || !childRun) return false;
+  const parent = parentRun.schema === "flow.run-projection/v1"
+    ? parentRun
+    : projectInMemoryRun(parentRun);
+  const recordedLineage = childRun.schema === "flow.run-projection/v1"
+    ? childRun.parent
+    : childRun.lineage;
+  const childRunId = deriveChildRunId(lineage);
+  return ["active", "cancelled"].includes(parent.phase) &&
+    parent.admission !== "suspended_after_reboot" &&
+    recordedLineage?.schema === "flow.child-run-lineage/v1" &&
+    recordedLineage.parent_run_id === lineage.parent_run_id &&
+    recordedLineage.card_id === lineage.card_id &&
+    recordedLineage.card_identity === lineage.card_identity &&
+    recordedLineage.revision_ordinal === lineage.revision_ordinal &&
+    (childRun.run_id === childRunId) &&
+    parent.subruns.some(({ card_id: cardId, card_identity: cardIdentity,
+      revision_ordinal: revisionOrdinal, child_run_id: linkedChildId }) =>
+      cardId === lineage.card_id && cardIdentity === lineage.card_identity &&
+      revisionOrdinal === lineage.revision_ordinal &&
+      linkedChildId === childRunId);
+}
+
+function projectInMemoryRun(run) {
+  return projectRun({
+    authorityEventStreamDigest: runWatermark(run),
+    fold: foldRun(run),
+    events: run.events,
+  });
+}
+
+function projectRunWithHostBarrier(projection, hostProjection) {
+  if (hostProjection?.restore?.active !== true) return projection;
+  const marker = freezeCanonical({
+    schema: "flow.host-reconciliation-marker/v1",
+    admission: "required",
+    state: hostProjection.restore.state,
+    active: true,
+    watermark: hostProjection.watermark,
+    legal_actions: hostProjection.legal_actions ??
+      hostProjection.restore.legal_actions ?? [],
+  });
+  const views = Object.fromEntries(Object.entries(projection.views).map(
+    ([name, view]) => [name, {
+      ...view,
+      host_reconciliation: marker,
+      legal_actions: [],
+    }],
+  ));
+  return freezeCanonical({
+    ...projection,
+    host_reconciliation: marker,
+    legal_actions: [],
+    ...(projection.tracker_progress === undefined ? {} : {
+      tracker_progress: {
+        ...projection.tracker_progress,
+        host_reconciliation: marker,
+        legal_next_actions: [],
+      },
+    }),
+    views,
+  });
+}
+
+function authorityIntegrityError(error) {
+  if (error instanceof AuthorityIntegrityError) return error;
+  if (error?.code === "review_authority_integrity_failure") {
+    return new AuthorityIntegrityError(
+      error.reason ?? "review_corrupt_event",
+      error.message,
+    );
+  }
+  if (error?.code !== "ERR_SQLITE_ERROR") return null;
+  return new AuthorityIntegrityError(
+    error.errcode === 26 ? "corrupt_store" : "store_unavailable",
+    error.message,
+  );
+}
+
+function createDatabase(path, options) {
+  databaseConstructor ??= require("node:sqlite").DatabaseSync;
+  return options === undefined
+    ? new databaseConstructor(path)
+    : new databaseConstructor(path, options);
+}
+
+function launchReceipt(run, created) {
+  return freezeCanonical({
+    schema: "flow.launch-receipt/v1",
+    run_id: run.run_id,
+    bundle_digest: run.prepared.bundle_digest,
+    plan_fingerprint: run.prepared.plan_fingerprint,
+    launch_watermark: run.launch_watermark,
+    authority_watermark: runWatermark(run),
+    created,
+  });
+}
+
+function unknownRunRejection(operation, runId, authorityEvents, commandType) {
+  return createRejection({
+    operation,
+    code: "unknown_run",
+    commandType: stringOrNull(commandType),
+    runId: stringOrNull(runId),
+    authorityWatermark: authorityWatermark(authorityEvents),
+    authorityWatermarkDomain: "host",
+  });
+}
+
+/**
+ * Resolve the retained completed run that published one exact review
+ * candidate reference.  The candidate projection intentionally does not
+ * carry source_run_id, so callers must use this RunAuthority-owned index
+ * rather than guessing a run from caller input.
+ */
+export function queryRetainedSourceRunByReviewCandidateReference({
+  reference,
+  hostProjection,
+  readRun,
+} = {}) {
+  const watermark = hostProjection?.watermark ?? EMPTY_WATERMARK;
+  if (!isPlainRecord(reference) ||
+      typeof reference.candidate_id !== "string" ||
+      reference.candidate_id.length === 0 ||
+      !isDigestValue(reference.candidate_fingerprint)) {
+    return createRejection({
+      operation: "query",
+      code: "source_run_missing",
+      reason: "RunAuthority has no exact retained source run reference",
+      authorityWatermark: watermark,
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+  if (typeof readRun !== "function" || !Array.isArray(hostProjection?.runs)) {
+    return createRejection({
+      operation: "query",
+      code: "source_run_unavailable",
+      reason: "RunAuthority cannot inspect retained source runs",
+      authorityWatermark: watermark,
+      authorityWatermarkDomain: "host",
+      legalActions: [],
+    });
+  }
+  const matches = [];
+  for (const runId of hostProjection.runs) {
+    const projection = readRun(runId);
+    const candidateReference = projection?.review_candidate_reference;
+    if (projection?.schema !== "flow.run-projection/v1" ||
+        projection.phase !== "succeeded" ||
+        candidateReference?.candidate_id !== reference.candidate_id ||
+        candidateReference?.candidate_fingerprint !==
+          reference.candidate_fingerprint ||
+        reference.review_authority_watermark !== undefined &&
+          candidateReference.review_authority_watermark !==
+            reference.review_authority_watermark) {
+      continue;
+    }
+    matches.push(projection);
+  }
+  if (matches.length === 1) return matches[0];
+  return createRejection({
+    operation: "query",
+    code: matches.length === 0 ? "source_run_missing" : "source_run_ambiguous",
+    reason: matches.length === 0
+      ? "RunAuthority has no retained completed source run for this candidate"
+      : "RunAuthority retained more than one source run for this candidate",
+    authorityWatermark: watermark,
+    authorityWatermarkDomain: "host",
+    legalActions: [],
+  });
+}
+
+function isDigestValue(value) {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+}
+
+function launchRejection(code, prepared, authorityEvents, reason = null) {
+  return createRejection({
+    operation: "launch",
+    code,
+    reason,
+    bundleDigest: stringOrNull(prepared?.bundle_digest),
+    authorityWatermark: authorityWatermark(authorityEvents),
+    authorityWatermarkDomain: "host",
+  });
+}
+
+function launchAuthorityBindingIssue(runAuthority, prepared) {
+  const catalogs = authorityBindingCatalogs.get(runAuthority);
+  return validateDefinitionAuthorityBindings(
+    prepared,
+    catalogs?.authorities,
+    catalogs?.predefinedDefinitions,
+  );
+}
+
+function launchAuthorityBindingRejection(prepared, issue, watermark) {
+  return createRejection({
+    operation: "launch",
+    code: issue.code,
+    reason: issue.reason,
+    bundleDigest: stringOrNull(prepared?.bundle_digest),
+    authorityWatermark: watermark ?? EMPTY_WATERMARK,
+    authorityWatermarkDomain: "host",
+    legalActions: issue.legal_actions ?? [],
+    authorityFact: authorityFactFromIssue(issue),
+  });
+}
+
+function durableLaunchAuthorityBindingRejection(prepared, databasePath, issue) {
+  let watermark = EMPTY_WATERMARK;
+  let database = null;
+  try {
+    if (databaseExists(databasePath)) {
+      database = openAuthorityDatabase(databasePath, { readOnly: true });
+      watermark = durableHostProjection(database).watermark;
+    }
+    return launchAuthorityBindingRejection(prepared, issue, watermark);
+  } catch (error) {
+    const integrity = authorityIntegrityError(error);
+    if (!integrity) throw error;
+    return authorityIntegrityRejection("launch", integrity.reason);
+  } finally {
+    database?.close();
+  }
+}
+
+function hostCommandRejection(operation, code, reason, hostProjection) {
+  return createRejection({
+    operation,
+    code,
+    reason,
+    authorityWatermark: hostProjection?.watermark ?? EMPTY_WATERMARK,
+    authorityWatermarkDomain: "host",
+    legalActions: hostProjection?.legal_actions ??
+      hostProjection?.restore?.legal_actions ??
+      hostProjection?.backup?.legal_actions ?? [],
+  });
+}
+
+function validateHumanWorkAuthority(database, command, fenceRun) {
+  const authority = command.human_authority;
+  const binding = buildHumanAuthorityBinding(
+    command,
+    command.type === "workspace_risk_acceptance"
+      ? "risk_acceptance"
+      : "destructive_reset",
+  );
+  if (authority?.schema !== "work.human-authority/v1" ||
+      authority.binding_digest !== digest(binding) ||
+      typeof authority.run_id !== "string" ||
+      typeof authority.checkpoint_id !== "string") {
+    return null;
+  }
+  const stream = readStream(database, authority.run_id);
+  const checkpoint = stream?.fold?.active_plan?.cards.find(({ id }) =>
+    id === authority.checkpoint_id);
+  const approved = stream?.records.some(({ payload }) =>
+    payload.type === "checkpoint_decided" &&
+    payload.checkpoint_id === authority.checkpoint_id &&
+    payload.decision === "approve");
+  const valid = stream?.fold?.phase === "succeeded" && approved === true &&
+    fenceRun(database, stream).watermark === authority.run_watermark &&
+    isDeepStrictEqual(checkpoint?.inputs?.human_authority, binding);
+  return freezeCanonical({
+    schema: "work.human-authority-validation/v1",
+    valid,
+    binding_digest: digest(binding),
+    authority_digest: digest(authority),
+    run_id: authority.run_id,
+    checkpoint_id: authority.checkpoint_id,
+    run_watermark: authority.run_watermark,
+  });
+}
+
+function createFailClosedWorkEvidenceAdapter() {
+  return Object.freeze({
+    validate() {
+      return freezeCanonical({
+        schema: "work.taint-disposition-validation/v1",
+        valid: false,
+        subject_id: null,
+        taint_evidence_digest: null,
+        disposition: null,
+        evidence_digest: null,
+      });
+    },
+  });
+}
+
+function stringOrNull(value) {
+  return typeof value === "string" ? value : null;
+}
+function authorityWatermark(events) {
+  if (events.length === 0) return EMPTY_WATERMARK;
+  return digest({
+    schema: "flow.host-run-authority-stream/v1",
+    events,
+  });
+}
+
+
+// This operator-only action has no effect_id, so autonomous effect recovery
+// cannot select it. Historical cancelled folds remain unchanged until the
+// explicit, atomically recorded settlement below.
+function cancelledWorkspaceSettlement(database, stream, fold) {
+  const state = cancelledWorkspaceClaim(database, fold);
+  if (state.code) return state;
+  const { workspace, resource } = state;
+  for (const effect of fold.effects) {
+    if (effect.invocation_started === false && ["not_created", "abandoned"].includes(effect.status)) continue;
+    if (!effect.receipt || !["succeeded", "late_succeeded", "quarantined", "late_quarantined"].includes(effect.status)) return { code: "cancelled_workspace_unsettled_effects" };
+    if (!["delegate", "delegate_cancellation"].includes(effect.effect_kind)) return { code: "cancelled_workspace_external_operation_requires_resolution" };
+    if (!cancelledDelegateRetired(effect, fold)) return { code: "cancelled_workspace_retirement_unproven" };
+  }
+  if (fold.effects.length === 0) return { code: "cancelled_workspace_retirement_unproven" };
+  return { ...state, action: cancelledSettlementAction(fold, workspace, resource, "settle_cancelled_workspace") };
+}
+
+function cancelledWorkspaceClaim(database, fold) {
+  if (fold.phase !== "cancelled") return { code: "run_not_cancelled" };
+  const claims = fold.resource_claims.filter(claim => claim.kind === "workspace");
+  if (claims.length !== 1 || fold.resource_claims.length !== 1) return { code: "cancelled_workspace_scope_unsupported" };
+  const resource = claims[0];
+  const identity = workStreamIdentity("work.workspace/v1", resource.id);
+  const workspace = readStream(database, identity.streamId)?.fold;
+  if (!workspace || workspace.taint !== null || workspace.claims.length !== 1 ||
+      workspace.claims[0].holder !== fold.run_id || workspace.generation !== resource.generation ||
+      workspace.mutation_epoch !== resource.mutation_epoch || digest({ git: workspace.git }) !== resource.fingerprint) {
+    return { code: "cancelled_workspace_claim_mismatch" };
+  }
+  return { workspace, resource, claim: workspace.claims[0] };
+}
+
+function cancelledDelegateRetired(effect, fold) {
+  const evidence = effect.receipt?.provider_receipt;
+  const retirement = evidence?.terminal_disposition;
+  if (retirement?.schema !== "flow.resource-retirement/v1" || retirement.retired !== true ||
+      retirement.proof !== "linux_subreaper_echild" || retirement.resource?.type !== "direct_task" ||
+      typeof evidence.turn_id !== "string" || !evidence.turn_id.startsWith("task:") || evidence.turn_id.length <= 5 ||
+      retirement.resource.id !== evidence.turn_id || !/^sha256:[a-f0-9]{64}$/u.test(retirement.terminal_receipt_digest ?? "")) {
+    return false;
+  }
+  if (effect.effect_kind === "delegate_cancellation") {
+    const original = fold.effects.find(candidate => candidate.effect_id === evidence.delegate_effect_id);
+    if (original?.receipt?.provider_receipt?.turn_id !== evidence.turn_id ||
+        digest(original.receipt.provider_receipt.terminal_disposition) !== digest(retirement)) return false;
+  }
+  return true;
+}
+
+function cancelledSettlementAction(fold, workspace, resource, recovery) {
+  return {
+    schema: "flow.command/v1", type: "recovery", recovery,
+    run_id: fold.run_id, expected_watermark: fold.watermark,
+    workspace_subject_id: resource.id, expected_workspace_watermark: workspace.watermark,
+    claim_id: workspace.claims[0].claim_id, expected_generation: resource.generation,
+    expected_mutation_epoch: resource.mutation_epoch, expected_fingerprint: resource.fingerprint,
+  };
+}
+
+// Accept only the already captured outcome of this exact finite feature graph.
+// This does not turn arbitrary completed operations into workspace-release proof.
+function cancelledCaptureSettlement(database, stream, fold) {
+  const state = cancelledWorkspaceClaim(database, fold);
+  if (state.code) return state;
+  const commits = [], captures = [], checks = [];
+  for (const effect of fold.effects) {
+    if (effect.invocation_started === false && ["not_created", "abandoned"].includes(effect.status)) continue;
+    if (!effect.receipt) return { code: "cancelled_workspace_unsettled_effects" };
+    if (["delegate", "delegate_cancellation"].includes(effect.effect_kind)) {
+      if (!["succeeded", "late_succeeded", "quarantined", "late_quarantined"].includes(effect.status) || !cancelledDelegateRetired(effect, fold)) return { code: "cancelled_workspace_retirement_unproven" };
+    } else if (effect.operation_contract === "flow.operation/feature-direct-commit/v1" && effect.status === "succeeded") commits.push(effect);
+    else if (effect.operation_contract === FEATURE_CAPTURE_OPERATION_CONTRACT && effect.status === "succeeded") captures.push(effect);
+    else if (effect.operation_contract === PROJECT_CHECK_CONTRACT && ["succeeded", "late_succeeded", "not_created"].includes(effect.status)) checks.push(effect);
+    else return { code: "cancelled_workspace_external_operation_requires_resolution" };
+  }
+  if (commits.length !== 1 || captures.length !== 1 || checks.length !== 1) return { code: "cancelled_capture_evidence_missing" };
+  const [commitEffect] = commits, [captureEffect] = captures, [checkEffect] = checks;
+  const intentFor = effect => fold.effect_intents.find(intent => intent.effect_id === effect.effect_id);
+  const commit = commitEffect.receipt.provider_receipt, capture = captureEffect.receipt.provider_receipt;
+  const captureIntent = intentFor(captureEffect), checkIntent = intentFor(checkEffect);
+  const base = state.workspace;
+  const boundToClaim = workspace => workspace?.subject_id === state.resource.id &&
+    workspace.generation === base.generation && workspace.mutation_epoch === base.mutation_epoch &&
+    workspace.fingerprint === state.resource.fingerprint && digest(workspace.git) === digest(base.git);
+  if (!captureIntent || !checkIntent || !validateFeatureCaptureReceipt(capture, captureIntent) ||
+      !boundToClaim(captureIntent.operation_input?.workspace) || !boundToClaim(checkIntent.operation_input?.workspace) ||
+      capture.workspace.subject_id !== state.resource.id || capture.workspace.generation !== base.generation + 1 ||
+      capture.workspace.mutation_epoch !== base.mutation_epoch + 1 ||
+      commit?.schema !== "flow.git-candidate-commit-receipt/v1" || commit.proof !== "exact_local_ref_cas" ||
+      commit.effect_id !== commitEffect.effect_id || commit.attempt_id !== commitEffect.attempt_id || commit.idempotency_key !== commitEffect.idempotency_key ||
+      !boundToClaim(commit.workspace) ||
+      commit.old_commit_sha !== base.git.commit_sha || commit.commit_sha !== capture.git.commit_sha || commit.tree_sha !== capture.git.tree_sha ||
+      commit.ref !== base.git.ref || commit.ref !== capture.git.ref || !/^sha256:[a-f0-9]{64}$/u.test(commit.record_sha256 ?? "") ||
+      !validateProjectCheckReceipt(checkEffect.receipt.provider_receipt, checkIntent)) return { code: "cancelled_capture_evidence_mismatch" };
+  const check = checkEffect.receipt.provider_receipt.record ?? checkEffect.receipt.provider_receipt;
+  if (check.capture_receipt_digest !== capture.receipt_digest || digest(check.candidate) !== digest(capture.git)) return { code: "cancelled_capture_evidence_mismatch" };
+  const evidence = { capture_receipt_digest: capture.receipt_digest, commit_receipt_digest: digest(commit), project_check_receipt_digest: check.self_digest,
+    effect_receipts_digest: digest(fold.effects.map(effect => ({ effect_id: effect.effect_id, receipt: effect.receipt ?? null }))) };
+  return { ...state, acceptedGit: capture.git, evidence, action: {
+    ...cancelledSettlementAction(fold, base, state.resource, "settle_cancelled_capture"),
+    accepted_git: capture.git, ...evidence,
+  } };
+}
+
+function withCancelledWorkspaceSettlement(database, stream, fold) {
+  if (fold.phase !== "cancelled" || fold.admission === "suspended_host_reconciliation") return fold;
+  const baseline = cancelledWorkspaceSettlement(database, stream, fold);
+  const result = baseline.action ? baseline : cancelledCaptureSettlement(database, stream, fold);
+  return result.action ? freezeCanonical({ ...fold, legal_actions: [...fold.legal_actions, result.action] }) : fold;
+}
+
+function settleCancelledWorkspace(database, stream, command, context) {
+  const { fenceRun, gitWorkspaceObservationAdapter, lockDatabase, authorityEpoch, bootId, processIdentity } = context;
+  const reject = code => createRejection({ operation: "command", code, runId: stream.fold.run_id,
+    commandType: "recovery", authorityWatermark: fenceRun(database, stream).watermark, authorityWatermarkDomain: "run", legalActions: [] });
+  const commandDigest = digest(command);
+  const previous = stream.records.find(({ payload }) => ["cancelled_workspace_settled", "cancelled_capture_settled"].includes(payload.type) && payload.command_digest === commandDigest);
+  if (previous) return freezeCanonical({ schema: "flow.command-receipt/v1", command_type: "recovery", run_id: stream.fold.run_id, accepted: true, replayed: true, authority_watermark: fenceRun(database, stream).watermark });
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    assertMutationFence(lockDatabase, database, { authorityEpoch, bootId, processIdentity });
+    assertDurableHostRestoreClear(database);
+    stream = readStream(database, command.run_id);
+    const fold = fenceRun(database, stream);
+    if (command.expected_watermark !== fold.watermark) { database.exec("ROLLBACK"); return reject("stale_authority_watermark"); }
+    const captureSettlement = command.recovery === "settle_cancelled_capture";
+    const state = captureSettlement ? cancelledCaptureSettlement(database, stream, fold) : cancelledWorkspaceSettlement(database, stream, fold);
+    if (!state.action) { database.exec("ROLLBACK"); return reject(state.code); }
+    if (command.expected_workspace_watermark !== state.workspace.watermark) { database.exec("ROLLBACK"); return reject("stale_workspace_observation"); }
+    if (digest(command) !== digest(state.action)) { database.exec("ROLLBACK"); return reject("cancelled_workspace_settlement_mismatch"); }
+    let observation;
+    try { observation = gitWorkspaceObservationAdapter.observe({ repository_id: state.workspace.repository.canonical_id,
+      workspace_path: state.workspace.workspace.canonical_path, ref: state.workspace.git.ref }); } catch { observation = null; }
+    if (observation?.schema !== "work.git-observation/v1" || observation.git?.clean !== true ||
+        digest(observation.git) !== digest(state.acceptedGit ?? state.workspace.git)) { database.exec("ROLLBACK"); return reject("cancelled_workspace_git_changed"); }
+    const fence = { authorityEpoch, bootId, processIdentity };
+    const settlement = { type: captureSettlement ? "cancelled_capture_settled" : "cancelled_workspace_settled", command_digest: commandDigest,
+      workspace_subject_id: state.resource.id, claim_id: state.claim.claim_id,
+      resource_claim: state.resource, workspace_watermark: state.workspace.watermark, git_observation: observation,
+      ...(captureSettlement ? { evidence: state.evidence } : {}) };
+    appendAuthorityEvents(database, { streamId: workStreamIdentity("work.workspace/v1", state.resource.id).streamId,
+      streamKind: "workspace", events: [{ contract: "work.workspace-event/v1", payload: {
+        type: "workspace_claim_released", claim_id: state.claim.claim_id, holder: fold.run_id,
+        reason: captureSettlement ? "cancelled_capture_settlement" : "cancelled_workspace_settlement", settlement_command_digest: commandDigest,
+      } }, ...(captureSettlement ? [{ contract: "work.workspace-event/v1", payload: {
+        type: "workspace_reobserved", generation: state.workspace.generation + 1,
+        mutation_epoch: state.workspace.mutation_epoch + 1, git: observation.git, git_observation: observation,
+        disposition: state.workspace.disposition, settlement_command_digest: commandDigest,
+      } }] : [])], ...fence });
+    appendAuthorityEvents(database, { streamId: fold.run_id, streamKind: "run",
+      events: [{ contract: "flow.run-event/v1", payload: settlement }], ...fence });
+    database.exec("COMMIT");
+    return freezeCanonical({ schema: "flow.command-receipt/v1", command_type: "recovery", run_id: fold.run_id,
+      authority_watermark: fenceRun(database, readStream(database, fold.run_id)).watermark, accepted: true });
+  } catch (error) { if (database.isTransaction) database.exec("ROLLBACK"); throw error; }
+}

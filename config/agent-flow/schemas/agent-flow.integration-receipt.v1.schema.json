@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.integration-receipt.v1.schema.json",
+  "title": "agent-flow.integration-receipt/v1",
+  "description": "Durable evidence that a reviewed head entered an exact target commit and tree.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "receipt_id",
+    "review_run_id",
+    "repository",
+    "reviewed_head_sha",
+    "approved_assembly_sha",
+    "target_ref",
+    "resulting_commit_sha",
+    "resulting_tree_sha",
+    "actor",
+    "integrated_at"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.integration-receipt/v1" },
+    "receipt_id": { "$ref": "#/$defs/identifier" },
+    "review_run_id": { "$ref": "#/$defs/identifier" },
+    "repository": { "$ref": "#/$defs/absolutePath" },
+    "reviewed_head_sha": { "$ref": "#/$defs/gitSha" },
+    "approved_assembly_sha": {
+      "oneOf": [
+        { "$ref": "#/$defs/gitSha" },
+        { "type": "null" }
+      ]
+    },
+    "target_ref": {
+      "type": "string",
+      "pattern": "^refs/heads/[^\\s~^:?*\\[\\]\\\\]+$",
+      "maxLength": 512
+    },
+    "resulting_commit_sha": { "$ref": "#/$defs/gitSha" },
+    "resulting_tree_sha": { "$ref": "#/$defs/gitSha" },
+    "actor": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "integrated_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" }
+  }
+}

@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.delegated-agent-resource-projection.v1.schema.json",
+  "title": "flow.delegated-agent-resource-projection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation",
+    "status",
+    "resource_key",
+    "binding",
+    "binding_digest",
+    "delegation",
+    "watermark",
+    "reason",
+    "legal_next_actions"
+  ],
+  "properties": {
+    "schema": { "const": "flow.delegated-agent-resource-projection/v1" },
+    "operation": { "enum": ["ensure", "retire"] },
+    "status": { "enum": ["ready", "blocked", "proven_absent", "retired"] },
+    "resource_key": {
+      "oneOf": [
+        { "$ref": "#/$defs/digest" },
+        { "type": "null" }
+      ]
+    },
+    "owner": { "type": "object" },
+    "binding": {
+      "oneOf": [
+        { "$ref": "#/$defs/binding" },
+        { "type": "null" }
+      ]
+    },
+    "binding_digest": {
+      "oneOf": [
+        { "$ref": "#/$defs/digest" },
+        { "type": "null" }
+      ]
+    },
+    "delegation": {
+      "oneOf": [
+        { "$ref": "#/$defs/delegation" },
+        { "type": "null" }
+      ]
+    },
+    "watermark": {
+      "oneOf": [
+        { "$ref": "#/$defs/watermark" },
+        { "$ref": "#/$defs/registryWatermark" },
+        { "type": "null" }
+      ]
+    },
+    "workspace": {
+      "$ref": "#/$defs/workspace"
+    },
+    "cleanup_receipt": {
+      "oneOf": [
+        { "type": "object" },
+        { "type": "null" }
+      ]
+    },
+    "resource_keys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["group_key", "task_key", "agent_key"],
+      "properties": {
+        "group_key": { "type": "string", "minLength": 1 },
+        "task_key": { "type": "string", "minLength": 1 },
+        "agent_key": { "type": "string", "minLength": 1 }
+      }
+    },
+    "reason": {
+      "oneOf": [
+        { "$ref": "#/$defs/reason" },
+        { "type": "null" }
+      ]
+    },
+    "legal_next_actions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "delegation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["group_id", "task_id", "agent_id"],
+      "properties": {
+        "group_id": { "type": "string", "minLength": 1 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "agent_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "watermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "authority", "resource_key", "group_id", "task_id", "agent_id", "record_sha256", "authority_watermark"],
+      "properties": {
+        "schema": { "const": "flow.delegated-agent-resource-watermark/v1" },
+        "authority": { "const": "drovr.registry" },
+        "resource_key": { "$ref": "#/$defs/digest" },
+        "group_id": { "type": "string", "minLength": 1 },
+        "task_id": { "type": "string", "minLength": 1 },
+        "agent_id": { "type": "string", "minLength": 1 },
+        "record_sha256": { "$ref": "#/$defs/digest" },
+        "authority_watermark": { "$ref": "#/$defs/registryWatermark" }
+      }
+    },
+    "registryWatermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "authority", "groups_sha256", "groups_count",
+        "tasks_sha256", "tasks_count", "agents_sha256", "agents_count",
+        "turns_sha256", "turns_count", "blocks_sha256", "blocks_count",
+        "generation", "registry_sha256"
+      ],
+      "properties": {
+        "schema": { "const": "drovr.registry-authority-watermark/v1" },
+        "authority": { "const": "drovr.registry" },
+        "groups_sha256": { "$ref": "#/$defs/digest" },
+        "groups_count": { "type": "integer", "minimum": 0 },
+        "tasks_sha256": { "$ref": "#/$defs/digest" },
+        "tasks_count": { "type": "integer", "minimum": 0 },
+        "agents_sha256": { "$ref": "#/$defs/digest" },
+        "agents_count": { "type": "integer", "minimum": 0 },
+        "turns_sha256": { "$ref": "#/$defs/digest" },
+        "turns_count": { "type": "integer", "minimum": 0 },
+        "blocks_sha256": { "$ref": "#/$defs/digest" },
+        "blocks_count": { "type": "integer", "minimum": 0 },
+        "generation": { "$ref": "#/$defs/digest" },
+        "registry_sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject_id", "generation", "mutation_epoch", "fingerprint"],
+      "properties": {
+        "subject_id": { "type": "string", "minLength": 1 },
+        "generation": { "type": "integer", "minimum": 1 },
+        "mutation_epoch": { "type": "integer", "minimum": 1 },
+        "fingerprint": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "resource_key", "owner", "workspace_claim", "launch_binding", "delegation", "native_session", "managed_runtime_evidence_digest", "binding_digest"],
+      "properties": {
+        "schema": { "const": "flow.delegated-agent-resource-binding/v1" },
+        "resource_key": { "$ref": "#/$defs/digest" },
+        "owner": { "type": "object" },
+        "workspace_claim": { "type": "object" },
+        "launch_binding": { "type": "object" },
+        "delegation": { "$ref": "#/$defs/delegation" },
+        "native_session": { "type": ["string", "null"] },
+        "managed_runtime_evidence_digest": { "$ref": "#/$defs/digest" },
+        "binding_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

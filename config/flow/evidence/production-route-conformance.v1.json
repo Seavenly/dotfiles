@@ -1,0 +1,36 @@
+{
+  "schema": "flow.production-route-conformance-evidence/v1",
+  "release_id": "flow-release-1.0-dark/v1",
+  "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e",
+  "candidate_tree_sha": "3271dc082a264db735c93f48af9f2d8f337dcab4",
+  "release_content_digest": "sha256:2af1d7cc986b5bd958161c52a81ce3248dfd2b94dcaa4fc7f21bfe98111c2992",
+  "status": "not_run",
+  "scope": "production_public_route_conformance",
+  "routes": [
+    {
+      "flow": "feature",
+      "mode": "verify"
+    },
+    {
+      "flow": "review",
+      "mode": "local"
+    }
+  ],
+  "assertions": [
+    "real production feature verify mutates and verifies a local candidate through production runtime, gate, composition, workspace authority, and deterministic Drovr-port adapter",
+    "public local review prepares and launches through production runtime, gate, composition, review authority, and inbox projection",
+    "production route cases use isolated local repositories and do not authorize remote mutations"
+  ],
+  "phase1_evidence_sha256": null,
+  "generation_id": null,
+  "generation_binding_sha256": null,
+  "recipe": null,
+  "captured_at": "2026-11-07T17:44:13Z",
+  "environment": {
+    "os": "linux",
+    "architecture": "x64",
+    "node": "v22.23.1",
+    "npm": "10.9.8",
+    "git": "2.53.0"
+  }
+}

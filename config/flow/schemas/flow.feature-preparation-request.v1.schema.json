@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.feature-preparation-request.v1.schema.json",
+  "title": "flow.feature-preparation-request/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "brief", "repository", "mode", "routes"],
+  "properties": {
+    "schema": { "const": "flow.feature-preparation-request/v1" },
+    "dark_opt_in": { "$ref": "flow.dark-opt-in.v1.schema.json" },
+    "execution_trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "acknowledgment"],
+      "properties": {
+        "schema": { "const": "flow.supervised-native-cli/v1" },
+        "acknowledgment": { "const": "trust-official-cli-permissions" }
+      }
+    },
+    "brief": { "$ref": "#/$defs/brief" },
+    "repository": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "mode": { "enum": ["verify", "test"] },
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id"],
+      "properties": {
+        "check_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id"],
+      "properties": { "check_id": { "type": "string", "minLength": 1 } }
+    },
+    "routes": { "$ref": "#/$defs/routes" },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "assertion": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_cards": { "type": "integer", "minimum": 0 },
+        "max_revisions": { "type": "integer", "minimum": 0 },
+        "max_cards_per_revision": { "type": "integer", "minimum": 0 },
+        "max_capabilities": { "type": "integer", "minimum": 0 },
+        "max_resources": { "type": "integer", "minimum": 0 },
+        "max_elapsed_seconds": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "mode": { "const": "test" } },
+        "required": ["mode"]
+      },
+      "then": {
+        "required": ["test"],
+        "properties": { "test": true, "verification": false, "check": false }
+      },
+      "else": { "properties": { "test": false } }
+    }
+  ],
+  "$defs": {
+    "brief": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "summary", "acceptance"],
+      "properties": {
+        "schema": { "const": "flow.feature-brief/v1" },
+        "id": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "acceptance": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apply", "critique"],
+      "properties": {
+        "apply": { "$ref": "#/$defs/route" },
+        "critique": { "$ref": "#/$defs/route" }
+      }
+    },
+    "route": {
+      "oneOf": [
+        { "$ref": "#/$defs/launch" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["launch"],
+          "properties": {
+            "launch": { "$ref": "#/$defs/launch" }
+          }
+        }
+      ]
+    },
+    "launch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "harness": { "enum": ["claude", "codex"] },
+        "role": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "effort": { "enum": ["low", "medium", "high", "xhigh"] },
+        "capability": {
+          "enum": [
+            "read-only",
+            "on-approve",
+            "workspace-write",
+            "workspace-write-denied",
+            "auto",
+            "unrestricted"
+          ]
+        }
+      }
+    }
+  }
+}

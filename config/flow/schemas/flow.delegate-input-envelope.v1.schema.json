@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.delegate-input-envelope.v1.schema.json",
+  "title": "flow.delegate-input-envelope/v1",
+  "description": "The canonical, versioned bytes transmitted to a delegated Flow runtime. Runtime validation binds the envelope digest and exact UTF-8 payload digest.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "attempt_id",
+    "input_key",
+    "sequence",
+    "input_kind",
+    "instructions",
+    "task_inputs",
+    "resource_references",
+    "execution_authority",
+    "output_requirements",
+    "envelope_digest"
+  ],
+  "properties": {
+    "schema": { "const": "flow.delegate-input-envelope/v1" },
+    "attempt_id": { "type": "string", "minLength": 1 },
+    "input_key": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "input_kind": { "enum": ["initial", "steering"] },
+    "instructions": { "type": "string", "minLength": 1 },
+    "task_inputs": {
+      "$ref": "flow.delegate-task-inputs.v1.schema.json"
+    },
+    "resource_references": {
+      "type": "array",
+      "items": {
+        "$ref": "flow.delegate-execution-resource-reference.v1.schema.json"
+      }
+    },
+    "execution_authority": {
+      "$ref": "flow.delegate-execution-authority.v1.schema.json"
+    },
+    "predecessor_evidence": {
+      "$ref": "flow.delegate-predecessor-evidence.v1.schema.json"
+    },
+    "output_requirements": {
+      "$ref": "flow.delegate-output-requirements.v1.schema.json"
+    },
+    "envelope_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

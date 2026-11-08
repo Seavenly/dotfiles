@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.spike.v1.schema.json",
+  "title": "agent-flow.spike/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "run_id", "summary", "question", "repo", "source", "kanban",
+    "external_ref", "mode", "angles", "prototype", "limits"
+  ],
+  "properties": {
+    "schema": { "const": "agent-flow.spike/v1" },
+    "run_id": { "$ref": "#/$defs/runId" },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "question": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "repo": { "$ref": "#/$defs/absolutePath" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "sha"],
+      "properties": {
+        "ref": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "sha": { "$ref": "#/$defs/sha" }
+      }
+    },
+    "kanban": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["board", "task"],
+      "properties": {
+        "board": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+        "task": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "external_ref": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "pattern": "^(github:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*|jira:[A-Za-z][A-Za-z0-9_]*-[1-9][0-9]*)$", "maxLength": 256 }
+      ]
+    },
+    "supersedes": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/runId" }
+      ],
+      "default": null
+    },
+    "mode": { "enum": ["quick", "deep"] },
+    "angles": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" }
+    },
+    "prototype": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["branch", "experiment_path", "slices", "verification"],
+          "properties": {
+            "branch": { "$ref": "#/$defs/branch" },
+            "experiment_path": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$", "maxLength": 512 },
+            "slices": {
+              "type": "array", "minItems": 1, "maxItems": 16,
+              "items": { "$ref": "#/$defs/slice" }
+            },
+            "verification": {
+              "type": "array", "minItems": 1, "maxItems": 32,
+              "items": { "$ref": "#/$defs/command" }
+            }
+          }
+        }
+      ]
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_revisions", "max_prototype_retries", "max_elapsed_seconds"],
+      "properties": {
+        "max_revisions": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "max_prototype_retries": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "max_elapsed_seconds": { "type": "integer", "minimum": 60, "maximum": 604800 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "mode": { "const": "quick" } }, "required": ["mode"] },
+      "then": { "properties": { "angles": { "type": "array", "maxItems": 0 } } },
+      "else": { "properties": { "angles": { "type": "array", "minItems": 1 } } }
+    }
+  ],
+  "$defs": {
+    "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "branch": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^(?!HEAD$)(?![0-9a-f]{40,64}$)(?![-./])(?!.*(?:\\.\\.|@\\{|[~^:?*\\\\\\[\\s]))(?!.*[./]$).+$" },
+    "command": {
+      "type": "object", "additionalProperties": false, "required": ["argv"],
+      "properties": { "argv": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "type": "string", "minLength": 1, "maxLength": 4096 } } }
+    },
+    "slice": {
+      "type": "object", "additionalProperties": false, "required": ["id", "title", "verification"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "verification": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/command" } }
+      }
+    }
+  }
+}

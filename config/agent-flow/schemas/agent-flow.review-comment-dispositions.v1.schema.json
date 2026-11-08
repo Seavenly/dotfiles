@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.review-comment-dispositions.v1.schema.json",
+  "title": "agent-flow.review-comment-dispositions/v1",
+  "description": "Stable tuicr comment IDs and their durable dispositions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "session_slug", "head_sha", "comments"],
+  "properties": {
+    "schema": { "const": "agent-flow.review-comment-dispositions/v1" },
+    "run_id": { "$ref": "#/$defs/identifier" },
+    "session_slug": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "head_sha": { "$ref": "#/$defs/gitSha" },
+    "comments": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2000,
+      "items": { "$ref": "#/$defs/comment" }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "absolutePath": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "comment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "comment_type", "disposition", "reason", "evidence_path"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "comment_type": { "enum": ["issue", "suggestion", "note", "praise"] },
+        "disposition": {
+          "enum": ["implemented", "declined", "answered", "acknowledged", "no_action"]
+        },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "evidence_path": { "$ref": "#/$defs/absolutePath" }
+      }
+    }
+  }
+}

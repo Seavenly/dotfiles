@@ -1,0 +1,10 @@
+schema = "drovr.capability/v1"
+
+[codex]
+sandbox = "read-only"
+approval = "on-request"
+approvals_reviewer = "user"
+search = false
+
+[claude]
+permission_mode = "default"

@@ -1,0 +1,5 @@
+interface:
+  display_name: "Implement Ticket"
+  short_description: "Orchestrate Luna Max ticket implementation"
+policy:
+  allow_implicit_invocation: false

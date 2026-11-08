@@ -1,0 +1,3 @@
+interface:
+  display_name: "Hex Annotate"
+  short_description: "Read Hex Annotate screen captures"

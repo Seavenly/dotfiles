@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.delegate-task-inputs.v1.schema.json",
+  "title": "flow.delegate-task-inputs/v1",
+  "description": "Caller-selected, role-specific task context. Recursive redaction and prepared-bundle exclusion remain runtime invariants.",
+  "type": "object",
+  "required": ["schema"],
+  "properties": {
+    "schema": { "const": "flow.delegate-task-inputs/v1" }
+  },
+  "propertyNames": {
+    "$ref": "#/$defs/transferable-property-name"
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/transferable-value"
+  },
+  "$defs": {
+    "transferable-property-name": {
+      "type": "string",
+      "not": {
+        "enum": [
+          "ambient_transcript",
+          "ambient-transcript",
+          "ambientTranscript",
+          "bundle",
+          "capability_secret",
+          "capability-secret",
+          "capabilitySecret",
+          "credentials",
+          "credential",
+          "credential-store",
+          "credentialStore",
+          "cwd",
+          "environment",
+          "full_bundle",
+          "full-bundle",
+          "fullBundle",
+          "path",
+          "paths",
+          "password",
+          "prepared",
+          "prepared_bundle",
+          "prepared-bundle",
+          "preparedBundle",
+          "private_key",
+          "private-key",
+          "privateKey",
+          "secret",
+          "token",
+          "transcript",
+          "working_directory",
+          "working-directory",
+          "workingDirectory",
+          "workspace_path",
+          "workspace-path",
+          "workspacePath",
+          "api_key",
+          "api-key",
+          "apiKey",
+          "access_key",
+          "access-key",
+          "accessKey"
+        ]
+      }
+    },
+    "transferable-value": {
+      "anyOf": [
+        { "type": "string" },
+        { "type": "number" },
+        { "type": "boolean" },
+        { "type": "null" },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/transferable-value" }
+        },
+        {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/transferable-property-name"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/transferable-value"
+          }
+        }
+      ]
+    }
+  }
+}

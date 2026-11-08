@@ -1,0 +1,136 @@
+TAP version 13
+# Subtest: repeated selection keeps the frozen legacy implementation as the default
+ok 1 - repeated selection keeps the frozen legacy implementation as the default
+  ---
+  duration_ms: 6.812303
+  type: 'test'
+  ...
+# Subtest: explicit dark opt-in selects the exact qualified feature verify route
+ok 2 - explicit dark opt-in selects the exact qualified feature verify route
+  ---
+  duration_ms: 1.213982
+  type: 'test'
+  ...
+# Subtest: dark opt-in returns a typed disabled outcome for feature test
+ok 3 - dark opt-in returns a typed disabled outcome for feature test
+  ---
+  duration_ms: 0.745152
+  type: 'test'
+  ...
+# Subtest: explicit dark opt-in selects the exact local review route
+ok 4 - explicit dark opt-in selects the exact local review route
+  ---
+  duration_ms: 1.788176
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies feature/test as disabled
+ok 5 - dark opt-in classifies feature/test as disabled
+  ---
+  duration_ms: 0.731096
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies feature/mixed as disabled
+ok 6 - dark opt-in classifies feature/mixed as disabled
+  ---
+  duration_ms: 0.479861
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies spike/quick as disabled
+ok 7 - dark opt-in classifies spike/quick as disabled
+  ---
+  duration_ms: 0.623957
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies spike/deep as disabled
+ok 8 - dark opt-in classifies spike/deep as disabled
+  ---
+  duration_ms: 0.680161
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies epic/default as disabled
+ok 9 - dark opt-in classifies epic/default as disabled
+  ---
+  duration_ms: 0.990007
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies review/github as unsupported
+ok 10 - dark opt-in classifies review/github as unsupported
+  ---
+  duration_ms: 0.748198
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies tracker/github as unsupported
+ok 11 - dark opt-in classifies tracker/github as unsupported
+  ---
+  duration_ms: 1.033788
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies tracker/jira as unsupported
+ok 12 - dark opt-in classifies tracker/jira as unsupported
+  ---
+  duration_ms: 2.537916
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies forge/default as unsupported
+ok 13 - dark opt-in classifies forge/default as unsupported
+  ---
+  duration_ms: 0.52353
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies publication/default as unsupported
+ok 14 - dark opt-in classifies publication/default as unsupported
+  ---
+  duration_ms: 1.216927
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies merge/default as unsupported
+ok 15 - dark opt-in classifies merge/default as unsupported
+  ---
+  duration_ms: 1.700013
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies push/default as unsupported
+ok 16 - dark opt-in classifies push/default as unsupported
+  ---
+  duration_ms: 0.516607
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies remote/mutation as unsupported
+ok 17 - dark opt-in classifies remote/mutation as unsupported
+  ---
+  duration_ms: 0.584344
+  type: 'test'
+  ...
+# Subtest: dark opt-in classifies unknown/unknown as unsupported
+ok 18 - dark opt-in classifies unknown/unknown as unsupported
+  ---
+  duration_ms: 0.72822
+  type: 'test'
+  ...
+# Subtest: dark opt-in rejects an unknown release scope
+ok 19 - dark opt-in rejects an unknown release scope
+  ---
+  duration_ms: 0.572261
+  type: 'test'
+  ...
+# Subtest: dark opt-in rejects a malformed route with a schema-valid typed outcome
+ok 20 - dark opt-in rejects a malformed route with a schema-valid typed outcome
+  ---
+  duration_ms: 0.55585
+  type: 'test'
+  ...
+# Subtest: test scope requires its exact new dark manifest and keeps mixed and remote routes closed
+ok 21 - test scope requires its exact new dark manifest and keeps mixed and remote routes closed
+  ---
+  duration_ms: 6.215486
+  type: 'test'
+  ...
+1..21
+# tests 21
+# suites 0
+# pass 21
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 74.911925

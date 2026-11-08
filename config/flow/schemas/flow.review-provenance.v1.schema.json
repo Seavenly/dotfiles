@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.review-provenance.v1.schema.json",
+  "title": "flow.review-provenance/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation_contract",
+    "operation_idempotency_key",
+    "run_id",
+    "operation_effect_id",
+    "operation_attempt_id",
+    "candidate_fingerprint",
+    "lifecycle_generation",
+    "candidate_authority_watermark",
+    "source_authority_watermark",
+    "review_authority_watermark"
+  ],
+  "properties": {
+    "schema": { "const": "flow.review-provenance/v1" },
+    "operation_contract": {
+      "const": "flow.operation/review-record/v1"
+    },
+    "operation_idempotency_key": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "operation_effect_id": { "type": "string", "minLength": 1 },
+    "operation_attempt_id": { "type": "string", "minLength": 1 },
+    "candidate_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "lifecycle_generation": { "type": "integer", "minimum": 1 },
+    "candidate_authority_watermark": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_authority_watermark": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "review_authority_watermark": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

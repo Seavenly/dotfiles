@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.required-authority.v1.schema.json",
+  "title": "flow.required-authority/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "contract", "observation_input"],
+  "properties": {
+    "schema": { "const": "flow.required-authority/v1" },
+    "id": { "type": "string", "minLength": 1 },
+    "contract": { "type": "string", "minLength": 1 },
+    "observation_input": { "type": "object" }
+  }
+}

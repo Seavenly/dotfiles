@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_path="${BASH_SOURCE[0]}"
+while [[ -L "$source_path" ]]; do
+  source_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+  source_path="$(readlink "$source_path")"
+  [[ "$source_path" = /* ]] || source_path="$source_dir/$source_path"
+done
+root="$(cd -P "$(dirname "$source_path")" && pwd)"
+export DOTFILES_ROOT="$root"
+
+usage() {
+  cat <<'EOF'
+Usage: dotfiles <command> [options]
+
+Commands:
+  install   Converge the development environment
+  doctor    Inspect host and bootstrap health
+  check     Validate repository sources and behavior
+  upgrade   Upgrade managed tools and packages
+
+Run `dotfiles <command> --help` for command-specific options.
+EOF
+}
+
+command="${1:-}"
+case "$command" in
+  install|doctor|check|upgrade)
+    shift
+    exec "$root/internal/commands/$command" "$@"
+    ;;
+  help|--help|-h|"") usage ;;
+  *) printf 'Unknown command: %s\n' "$command" >&2; usage >&2; exit 2 ;;
+esac

@@ -1,0 +1,11 @@
+{
+  "name": "dotfiles-flow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ajv": "8.20.0"
+  }
+}

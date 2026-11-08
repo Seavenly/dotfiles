@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/agent-flow.epic-state.v1.schema.json",
+  "title": "agent-flow.epic-state/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "repository", "epic_path", "epic_sha256", "run_manifest_path", "epic_root_task_id", "source_ref", "source_worktree", "recorded_target_sha", "stack_generation", "features", "stack_checkpoints"],
+  "properties": {
+    "schema": { "const": "agent-flow.epic-state/v1" },
+    "run_id": { "$ref": "#/$defs/id" },
+    "repository": { "$ref": "#/$defs/path" },
+    "epic_path": { "$ref": "#/$defs/path" },
+    "epic_sha256": { "$ref": "#/$defs/sha256" },
+    "run_manifest_path": { "$ref": "#/$defs/path" },
+    "epic_root_task_id": { "type": "string", "minLength": 1 },
+    "source_ref": { "type": "string", "pattern": "^refs/heads/", "minLength": 12, "maxLength": 256 },
+    "source_worktree": { "$ref": "#/$defs/path" },
+    "recorded_target_sha": { "$ref": "#/$defs/sha" },
+    "stack_generation": { "type": "integer", "minimum": 0 },
+    "features": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/id" },
+      "additionalProperties": { "$ref": "#/$defs/feature" }
+    },
+    "stack_checkpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["generation", "source_sha", "prior_target_sha", "target_sha", "status"],
+        "properties": {
+          "generation": { "type": "integer", "minimum": 1 },
+          "source_sha": { "$ref": "#/$defs/sha" },
+          "prior_target_sha": { "$ref": "#/$defs/sha" },
+          "target_sha": { "$ref": "#/$defs/sha" },
+          "status": { "enum": ["source_refresh_required", "source_refresh_complete"] },
+          "completed_at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T" },
+          "completed_source_sha": { "$ref": "#/$defs/sha" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "path": { "type": "string", "pattern": "^/", "minLength": 2 },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nullablePath": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/path" }] },
+    "nullableString": { "anyOf": [{ "type": "null" }, { "type": "string" }] },
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "child_run_id", "manifest_path", "root_task_id", "worktree", "error"],
+      "properties": {
+        "status": { "enum": ["pending", "materialized", "running", "review_ready", "blocked", "integrated"] },
+        "child_run_id": { "$ref": "#/$defs/nullableString" },
+        "manifest_path": { "$ref": "#/$defs/nullablePath" },
+        "root_task_id": { "$ref": "#/$defs/nullableString" },
+        "worktree": { "$ref": "#/$defs/nullablePath" },
+        "error": { "$ref": "#/$defs/nullableString" },
+        "integration_receipt": { "$ref": "#/$defs/path" }
+      }
+    }
+  }
+}

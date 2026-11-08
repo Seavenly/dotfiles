@@ -1,0 +1,60 @@
+# Default cap and gate values for agent-teams flows.
+# The flow command merges these with CLI flags before launching the workflow,
+# which reads the merged values from its `args`.
+
+feature_flow:
+  max_slice_retries: 3        # builder retries per slice after a gate failure
+  max_fix_rounds: 2           # repair rounds across both review stages (0-2)
+  final_reviewer: fable       # fable | codex (--codex); codex usage is limited
+  codex_model: latest-sol     # newest listed gpt-<version>-sol; a slug pins it
+  codex_effort: medium
+  gate_timeout_sec: 900       # per gate command (gate.json timeoutSec)
+  plan_gate: false            # true = --gated: approve the plan before building
+
+review_flow:
+  urgency: standard           # hotfix | fast | standard — decides what the
+                              # DRAFT carries; reviewers always produce every
+                              # tier and the local review.md shows everything.
+                              #   hotfix   — draft: criticals only; skips
+                              #              orientation and the HTML overview;
+                              #              critic posture is binary
+                              #              (do_not_merge or
+                              #              merge_ready_with_followups).
+                              #   fast     — draft: criticals + importants.
+                              #   standard — draft: all four tiers (caps apply).
+  depth: full                 # full | quick (--depth). quick = one reviewer
+                              # derived from the lens, critic and verifier
+                              # prompts, reporting criticals + importants only;
+                              # Codex is its only audit, so posting refuses a
+                              # quick set the cross-check didn't apply to.
+  max_comments: 20            # draft budget across inline + general;
+                              # criticals/importants exempt (always posted)
+  per_tier_caps:              # optional fine-grained override
+    critical: null            # null = never cap criticals
+    important: null           # null = never cap important
+    recommended: 10           # ignored when urgency = hotfix or fast
+    nit: 3                    # ignored when urgency = hotfix or fast
+  reviewer_lenses:            # one reviewer subagent spawned per lens
+    - security
+    - correctness
+    - design                  # fit and design: scope vs stated intent, sibling
+                              # house patterns, repo rules, rollout order; also
+                              # surfaces "decisions" for the human. Replaced
+                              # `style` (2 critical/important of 81, 2026-09).
+    - tests
+    - observability           # span/log practices; wide root span, debugging
+                              # dimensions on the root span (see OBSERVABILITY.md).
+                              # Findings are mostly recommended/important, so this
+                              # lens contributes in fast/standard, not hotfix.
+  codex_cross_check: true     # cross-model check after the Claude verifier
+                              # (scripts/codex-cross-check.js: latest Sol,
+                              # medium, read-only). --no-codex disables.
+
+spike_flow:
+  depth: deep                 # quick | deep
+  prototype: false            # if true, the command creates a writable worktree
+  researcher_angles: 3        # number of parallel researcher subagents when depth=deep
+
+epic_flow:
+  concurrency: 2              # max simultaneous story runs (parallel worktrees)
+  continuations: 1            # continuation launches per story for stuck slices before it goes to the owner

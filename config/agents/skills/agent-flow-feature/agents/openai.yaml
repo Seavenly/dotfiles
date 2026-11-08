@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Flow Feature"
+  short_description: "Run a durable local feature implementation flow"
+  default_prompt: "Use $agent-flow-feature to implement this feature as a verified local review candidate."

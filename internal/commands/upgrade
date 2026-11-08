@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="${DOTFILES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# shellcheck source=internal/shell/context.sh
+source "$root/internal/shell/context.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: dotfiles upgrade [component ...]
+
+Components: tools packages shell nvim recorder mise
+With no components, upgrades the normal managed set.
+EOF
+}
+case "${1:-}" in
+  --help|-h) usage; exit 0 ;;
+esac
+dotfiles_context_init "$root" || true
+dotfiles_require_supported_host
+env_name="$DOTFILES_ENV"
+export MISE_TRUSTED_CONFIG_PATHS="$root"
+export MISE_LOCKED=0
+
+upgrade_tools() {
+  mise lock -C "$root" -E "$env_name" --platform macos-arm64,linux-x64,linux-arm64 --minimum-release-age 7d
+  MISE_LOCKED=1 mise install -C "$root" -E "$env_name"
+}
+upgrade_packages() {
+  mise bootstrap packages upgrade -C "$root" -E "$env_name"
+  [[ "$env_name" != macos ]] || "$root/internal/bootstrap/macos-casks"
+}
+upgrade_shell() {
+  mise bootstrap repos apply -C "$root" -E "$env_name"
+  "$root/internal/bootstrap/finalize"
+  echo "Shell repos are commit-pinned; update their refs deliberately in mise.toml/config/zsh/zsh_plugins.txt."
+}
+upgrade_nvim() { nvim --headless '+lua vim.pack.update()' '+qa'; }
+upgrade_recorder() {
+  [[ "$DOTFILES_OS" == Darwin ]] || { echo "Recorder is macOS-only." >&2; return 1; }
+  "$root/internal/bootstrap/macos-casks" --recorder-only
+  export UV_PROJECT_ENVIRONMENT="$DOTFILES_DATA_DIR/recorder-venv"
+  uv lock --project "$root/tools/recorder" --upgrade
+  uv sync --project "$root/tools/recorder" --frozen
+}
+upgrade_mise() {
+  "$root/internal/upgrade-mise"
+}
+
+components=("${@:-all}")
+if [[ ${components[0]} == all ]]; then
+  components=(tools packages shell nvim)
+  [[ -d "$DOTFILES_DATA_DIR/recorder-venv" ]] && components+=(recorder)
+fi
+for component in "${components[@]}"; do
+  echo "==> upgrading $component"
+  case "$component" in
+    mise) upgrade_mise ;;
+    tools) upgrade_tools ;;
+    packages) upgrade_packages ;;
+    shell) upgrade_shell ;;
+    nvim) upgrade_nvim ;;
+    recorder) upgrade_recorder ;;
+    *) echo "Unknown component: $component" >&2; exit 2 ;;
+  esac
+done

@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.query.v1.schema.json",
+  "title": "flow.query/v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "query"],
+      "properties": {
+        "schema": { "const": "flow.query/v1" },
+        "query": { "const": "autonomous_runner_status" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "query"],
+      "properties": {
+        "schema": { "const": "flow.query/v1" },
+        "query": { "const": "legacy_compatibility_inventory" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "query", "launch", "caller_metadata"],
+      "properties": {
+        "schema": { "const": "flow.query/v1" },
+        "query": { "const": "delegated_agent_description" },
+        "launch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "harness": { "enum": ["claude", "codex"] },
+            "role": { "type": "string", "minLength": 1 },
+            "model": { "type": "string", "minLength": 1 },
+            "effort": { "enum": ["low", "medium", "high", "xhigh"] },
+            "capability": {
+              "enum": [
+                "read-only",
+                "on-approve",
+                "workspace-write",
+                "auto",
+                "unrestricted"
+              ]
+            }
+          }
+        },
+        "caller_metadata": {}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "query"],
+      "properties": {
+        "schema": { "const": "flow.query/v1" },
+        "query": { "const": "review_inbox" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "query",
+        "candidate_id",
+        "candidate_fingerprint",
+        "selection"
+      ],
+      "properties": {
+        "schema": { "const": "flow.query/v1" },
+        "query": { "const": "review_preparation_facts" },
+        "candidate_id": { "type": "string", "minLength": 1 },
+        "candidate_fingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "selection": { "$ref": "#/$defs/reviewPreparationSelection" }
+      }
+    }
+  ],
+  "$defs": {
+    "reviewPreparationSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "lenses", "routes"],
+      "properties": {
+        "schema": { "const": "flow.review-preparation-selection/v1" },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["candidate_id", "candidate_fingerprint"],
+          "properties": {
+            "candidate_id": { "type": "string", "minLength": 1 },
+            "candidate_fingerprint": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "lenses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "routes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["lenses", "critic"],
+          "properties": {
+            "lenses": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/reviewRouteChoice"
+              }
+            },
+            "critic": { "$ref": "#/$defs/reviewRouteChoice" }
+          }
+        }
+      }
+    },
+    "reviewRouteChoice": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "launch": { "type": "object" },
+        "description": { "type": "object" }
+      },
+      "anyOf": [
+        {
+          "required": ["launch"],
+          "properties": { "launch": { "type": "object" } }
+        },
+        {
+          "required": ["description"],
+          "properties": { "description": { "type": "object" } }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,211 @@
+{
+  "schema": "flow.transition-ledger/v1",
+  "sequence": 32,
+  "release": {
+    "id": "flow-release-1.1-dark-test/v1",
+    "source_commit": "cffa34f5b8c92e2c2fc398c14c2eb841ac0a82a8",
+    "qualification_base_commit": "c34c6e881ce375691d4f3e4ca626c1af9eef81cc",
+    "content": {
+      "path": "evidence/release-content.v1.json",
+      "sha256": "d78bcab7ef6aa55ef0383007bd3b99eca75ffb0fbf8902d07a5d0b4e4aba2530",
+      "digest": "sha256:2ed9f790c1a5b641ce082ad6ad0c0ef62eb8137e1849bb13d505821d877b6ca0"
+    },
+    "implementation": "flow-runtime/v1"
+  },
+  "environment": {
+    "id": "repository-linux-x64",
+    "kind": "repository",
+    "os": "linux",
+    "architecture": "x64"
+  },
+  "status_vocabulary": [
+    "passed",
+    "failed",
+    "blocked",
+    "not_run"
+  ],
+  "contracts": {
+    "catalog": "flow.contract-catalog/v1@39",
+    "catalog_path": "contracts/catalog.v1.json",
+    "launch_policy": "flow.launch-policy/v1",
+    "launch_selection": "flow.launch-selection/v1",
+    "launch_rejection": "flow.launch-rejection/v1",
+    "release_manifest": "flow.release-manifest/v1",
+    "transition_projection": "flow.transition-projection/v1",
+    "production_route_conformance": "flow.production-route-conformance-evidence/v1"
+  },
+  "routes": {
+    "supported": [
+      {
+        "flow": "feature",
+        "mode": "verify"
+      },
+      {
+        "flow": "review",
+        "mode": "local"
+      },
+      {
+        "flow": "feature",
+        "mode": "test"
+      }
+    ],
+    "scope_expansion": "new_manifest_and_evidence_required"
+  },
+  "capability_manifest": {
+    "path": "release-manifest.v1.json",
+    "sha256": "a6c659694e10344f416a805ba7acc87517d7bd2cd1f3188639d208d82e9a088b",
+    "release_id": "flow-release-1.1-dark-test/v1",
+    "normal_use_authorized": false,
+    "remote_mutations_authorized": false
+  },
+  "legacy_inventory": {
+    "path": "legacy-baselines.v1.json",
+    "sha256": "cfe63b5b40e8359f3e8231d229e274fcf0cc36827e82a896ed99cfd5dc8eff27"
+  },
+  "prerequisites": [
+    {
+      "issue": 80,
+      "short_commit": "cca3158",
+      "commit": "cca3158a3d41bda0064d43366e686b9647863bd7",
+      "status": "integrated"
+    },
+    {
+      "issue": 81,
+      "short_commit": "da66e76",
+      "commit": "da66e76dfd5760388b70d65e46a01ca3d756b614",
+      "status": "integrated"
+    },
+    {
+      "issue": 82,
+      "short_commit": "6935cb2",
+      "commit": "6935cb28b9246785508e6cf11983fbab365eac87",
+      "status": "integrated"
+    },
+    {
+      "issue": 83,
+      "short_commit": "685b075",
+      "commit": "685b075e42ab94e3fb8c2960988e9388dd569337",
+      "status": "integrated"
+    },
+    {
+      "issue": 26,
+      "short_commit": "da95b977",
+      "commit": "da95b9779184868cae679376b36e39a2910993cb",
+      "status": "integrated"
+    },
+    {
+      "issue": 29,
+      "short_commit": "a4a9a88",
+      "commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e",
+      "status": "integrated"
+    }
+  ],
+  "not_run": [
+    {
+      "id": "issue-84",
+      "status": "not_run",
+      "reason": "later sacrificial qualification"
+    },
+    {
+      "id": "issue-44",
+      "status": "not_run",
+      "reason": "later sacrificial qualification"
+    },
+    {
+      "id": "issue-46",
+      "status": "not_run",
+      "reason": "later sacrificial qualification"
+    },
+    {
+      "id": "quick-spike",
+      "status": "not_run",
+      "reason": "deferred and not enabled"
+    }
+  ],
+  "deferred_scope": [
+    "issue-45",
+    "issue-47",
+    "issue-48",
+    "issue-49",
+    "issue-85",
+    "issue-53"
+  ],
+  "environment_fingerprint": {
+    "node": "v22.23.1",
+    "npm": "10.9.8",
+    "git": "2.53.0",
+    "qualification": "two_phase_public_route_conformance"
+  },
+  "evidence": [
+    {
+      "id": "public_contract_catalog",
+      "path": "contracts/catalog.v1.json",
+      "sha256": "aa5566fb02c9fece5963fc55eeb1ac202b5715c01c1dfa948540868523043443",
+      "status": "passed",
+      "recorded_at": "2026-11-07T17:44:07Z"
+    },
+    {
+      "id": "legacy_default_policy",
+      "path": "launch-policy.v1.json",
+      "sha256": "e08f08a0583f3cbe6ff3150a987a54cf5b08668a1c5430d3eddd8197e9f52b53",
+      "status": "passed",
+      "recorded_at": "2026-11-07T17:44:07Z"
+    },
+    {
+      "id": "frozen_legacy_inventory",
+      "path": "legacy-baselines.v1.json",
+      "sha256": "cfe63b5b40e8359f3e8231d229e274fcf0cc36827e82a896ed99cfd5dc8eff27",
+      "status": "passed",
+      "recorded_at": "2026-11-07T17:44:07Z"
+    },
+    {
+      "id": "replacement_runtime_activation",
+      "path": null,
+      "sha256": null,
+      "status": "not_run",
+      "recorded_at": "2026-10-31T01:15:00Z"
+    },
+    {
+      "id": "release_content_binding",
+      "path": "evidence/release-content.v1.json",
+      "sha256": "d78bcab7ef6aa55ef0383007bd3b99eca75ffb0fbf8902d07a5d0b4e4aba2530",
+      "status": "passed",
+      "recorded_at": "2026-11-07T17:44:07Z"
+    },
+    {
+      "id": "deterministic_qualification",
+      "path": null,
+      "sha256": null,
+      "status": "not_run",
+      "recorded_at": "2026-11-07T17:44:07Z"
+    },
+    {
+      "id": "production_route_conformance",
+      "path": "evidence/production-route-conformance.v1.json",
+      "sha256": "f5ca0901bb4d5c48a4b4d31733af3a0f5b8a3d5275549ad0bf042dfa9bf4cca7",
+      "status": "not_run",
+      "recorded_at": "2026-11-07T17:44:07Z"
+    },
+    {
+      "id": "issue_46_host_recovery",
+      "path": null,
+      "sha256": null,
+      "evidence_digest": null,
+      "status": "not_run",
+      "recorded_at": "2026-11-07T17:44:07Z"
+    }
+  ],
+  "defects": [],
+  "exceptions": [],
+  "decision": {
+    "kind": "keep_legacy_default",
+    "selected_implementation": "legacy-claude/v1",
+    "replacement_launch_enabled": false,
+    "dark_opt_in_enabled": true,
+    "dark_opt_in_release_id": "flow-release-1.1-dark-test/v1",
+    "normal_use_authorized": false,
+    "remote_mutations_authorized": false,
+    "decided_at": "2026-10-04T01:07:24Z"
+  },
+  "recorded_at": "2026-11-07T17:44:07Z"
+}

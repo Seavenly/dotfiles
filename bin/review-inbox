@@ -1,0 +1,370 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Personal attention hub. Normal invocation runs the Go TUI; subcommands expose
+# the same data and personal organization state as JSON. The legacy helper
+# flags remain available for existing review integrations.
+
+backend="auto"
+case "${1:-}" in
+  --backend)
+    [[ $# -ge 2 ]] || { echo "review-inbox: --backend requires a value" >&2; exit 2; }
+    backend="$2"
+    shift 2
+    ;;
+  --backend=*)
+    backend="${1#*=}"
+    shift
+    ;;
+esac
+
+if [[ "$backend" == "auto" ]]; then
+  if [[ -n "${HERDR_SOCKET_PATH:-}" || -n "${HERDR_ACTIVE_WORKSPACE_ID:-}" ]]; then
+    backend="herdr"
+  else
+    backend="tmux"
+  fi
+fi
+case "$backend" in
+  tmux | herdr) ;;
+  *) echo "review-inbox: backend must be auto, tmux, or herdr" >&2; exit 2 ;;
+esac
+
+reviews_bin="tuicr-reviews"
+command -v "$reviews_bin" >/dev/null 2>&1 || reviews_bin="$HOME/.local/bin/tuicr-reviews"
+self="$(command -v review-inbox 2>/dev/null || printf '%s' "$0")"
+self_with_backend="$self --backend $backend"
+coworker_file="${COWORKER_PRS_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/dotfiles/coworker-review-prs.jsonl}"
+
+# Arm-file for the two-press delete: the first ctrl-x records the selected
+# review's key here, the second ctrl-x on the same row confirms and removes it.
+# Cleared on every popup launch so a stale arm can't cause a surprise delete.
+armfile="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/review-inbox.arm"
+
+# Copy stdin to the system clipboard, falling back across platforms and finally
+# to a tmux buffer when that backend is active.
+clip() {
+  if command -v pbcopy >/dev/null 2>&1; then pbcopy
+  elif command -v wl-copy >/dev/null 2>&1; then wl-copy
+  elif command -v xclip >/dev/null 2>&1; then xclip -selection clipboard
+  elif [[ "$backend" == "tmux" ]] && command -v tmux >/dev/null 2>&1; then tmux load-buffer -
+  else
+    cat >/dev/null
+    echo "review-inbox: no clipboard available (install pbcopy, wl-copy, or xclip, or use a running tmux session)" >&2
+    return 1
+  fi
+}
+
+# The fzf header line, rebuilt on demand so a transient message (arm/copy) can be
+# swapped back to it via change-header.
+build_header() {
+  local esc=$'\033' legend h
+  legend="${esc}[36m●${esc}[0m open  ${esc}[32m✓${esc}[0m approved  ${esc}[31m✗${esc}[0m changes  ${esc}[33m•${esc}[0m comments"
+  h="enter open · ctrl-a legacy approve · ctrl-y copy id · ctrl-x ctrl-x delete      ${legend}"
+  [[ -s "$coworker_file" ]] && h="$h      feed $(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$coworker_file" 2>/dev/null || echo '?')"
+  printf '%s' "$h"
+}
+
+herdr_panes() {
+  local args=(pane list)
+  [[ -z "${HERDR_ACTIVE_WORKSPACE_ID:-}" ]] \
+    || args+=(--workspace "$HERDR_ACTIVE_WORKSPACE_ID")
+  herdr "${args[@]}"
+}
+
+open_review_rows() {
+  if [[ "$backend" == "tmux" ]]; then
+    tmux list-windows -F '#{@tuicr_wt}'$'\t''#{@tuicr_rev}' 2>/dev/null \
+      | awk -F'\t' '$1 != "" { print "O\t" $1 "\t" $2 }'
+    return
+  fi
+
+  herdr_panes 2>/dev/null \
+    | jq -r '
+        .result.panes[]?
+        | select(.tokens.review_worktree? and .tokens.review_revset?)
+        | ["O", .tokens.review_worktree, .tokens.review_revset]
+        | @tsv
+      ' 2>/dev/null \
+    || true
+}
+
+open_local_review() {
+  local worktree="$1" revset="$2" label="$3"
+  local existing created pane_id workspace_id panes tuicr_command shell_command
+
+  if [[ "$backend" == "tmux" ]]; then
+    existing="$(tmux list-windows -F '#{window_index}'$'\t''#{@tuicr_wt}'$'\t''#{@tuicr_rev}' \
+      | awk -F'\t' -v w="$worktree" -v r="$revset" '$2 == w && $3 == r { print $1; exit }')" || {
+      echo "review-inbox: opening local reviews requires a running tmux session (or --backend herdr)" >&2
+      return 1
+    }
+    if [[ -n "$existing" ]]; then
+      tmux select-window -t ":$existing"
+      return
+    fi
+
+    printf -v tuicr_command 'exec tuicr -r %q' "$revset"
+    printf -v shell_command 'zsh -i -c %q' "$tuicr_command"
+    existing="$(tmux new-window -P -F '#{window_index}' -c "$worktree" -n "tuicr:$label" \
+      "$shell_command")"
+    tmux set-option -w -t ":$existing" @tuicr_wt "$worktree"
+    tmux set-option -w -t ":$existing" @tuicr_rev "$revset"
+    return
+  fi
+
+  panes="$(herdr_panes)"
+  existing="$(
+    jq -r --arg worktree "$worktree" --arg revset "$revset" '
+      first(
+        .result.panes[]?
+        | select(
+            .tokens.review_worktree? == $worktree
+            and .tokens.review_revset? == $revset
+          )
+        | .tab_id
+      ) // empty
+    ' <<<"$panes"
+  )"
+  if [[ -n "$existing" ]]; then
+    herdr tab focus "$existing" >/dev/null
+    return
+  fi
+
+  workspace_id="${HERDR_ACTIVE_WORKSPACE_ID:-}"
+  if [[ -z "$workspace_id" ]]; then
+    workspace_id="$(
+      jq -r '
+        first(
+          .result.panes[]?
+          | select(.focused)
+          | .workspace_id
+        )
+        // empty
+      ' <<<"$panes"
+    )"
+  fi
+  [[ -n "$workspace_id" ]] \
+    || { echo "review-inbox: cannot determine the active Herdr workspace" >&2; return 1; }
+
+  created="$(herdr tab create \
+    --workspace "$workspace_id" \
+    --cwd "$worktree" \
+    --label "tuicr:$label" \
+    --focus)"
+  pane_id="$(jq -r '.result.root_pane.pane_id // empty' <<<"$created")"
+  [[ -n "$pane_id" ]] \
+    || { echo "review-inbox: Herdr did not return a root pane" >&2; return 1; }
+
+  herdr pane report-metadata "$pane_id" \
+    --source dotfiles-review-inbox \
+    --token "review_worktree=$worktree" \
+    --token "review_revset=$revset" >/dev/null
+  printf -v tuicr_command 'exec tuicr -r %q' "$revset"
+  herdr pane run "$pane_id" "$tuicr_command" >/dev/null
+}
+
+# These helpers are called with structured arguments by the Go action adapter.
+if [[ "${1:-}" == "--open-local" ]]; then
+  [[ $# == 5 ]] || { echo "review-inbox: --open-local requires worktree, base, head, and label" >&2; exit 2; }
+  [[ -d "$2" ]] || { printf 'review-inbox: worktree is missing: %s\n' "$2" >&2; exit 1; }
+  open_local_review "$2" "$3...$4" "$5"
+  exit 0
+fi
+if [[ "${1:-}" == "--open-url" ]]; then
+  [[ $# == 2 && ( "$2" == http://* || "$2" == https://* ) ]] || { echo "review-inbox: --open-url requires an HTTP(S) URL" >&2; exit 2; }
+  if command -v xdg-open >/dev/null 2>&1 && [[ "$(uname -s)" != Darwin ]]; then
+    exec xdg-open "$2"
+  fi
+  exec open "$2"
+fi
+if [[ "${1:-}" == "--copy-token" ]]; then
+  [[ $# == 2 ]] || { echo "review-inbox: --copy-token requires a token" >&2; exit 2; }
+  if ! printf '%s' "$2" | clip; then
+    echo "review-inbox: could not copy the token; check the clipboard service or tmux session" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+if [[ "${1:-}" == "--approve" ]]; then
+  shift
+  if [[ "${1:-}" == "local" && "${5:-}" == "legacy" && -n "${2:-}" && -n "${3:-}" && -n "${4:-}" ]]; then
+    "$reviews_bin" toggle-approved --worktree "$2" --base "$3" --branch "$4"
+  fi
+  exit 0
+fi
+
+# ctrl-y (via fzf `transform`): copy the review's handle token to the clipboard
+# and flash a confirmation. The token is the registry slug (falling back to the
+# branch) - a bare string you can paste to an agent: "review <token>". External
+# PR and separator rows carry no token, so this is a no-op there.
+if [[ "${1:-}" == "--copy" ]]; then
+  token="${2:-}"
+  [[ -n "$token" ]] || exit 0
+  printf '%s' "$token" | clip
+  printf 'change-header(copied: %s)' "$token"
+  exit 0
+fi
+
+# ctrl-x (via fzf `transform`): two-press delete. First press on a local review
+# arms it (records its key) and warns; a second press on the same row removes it
+# from the registry and reloads. Any other row (or a different local row) just
+# re-arms/clears - only local reviews can be deleted, and only tuicr-reviews
+# state is touched (persisted tuicr sessions are left alone by design).
+if [[ "${1:-}" == "--maybe-delete" ]]; then
+  daction="${2:-}" dwt="${3:-}" dbase="${4:-}" dbranch="${5:-}" dkind="${6:-}" dmanifest="${7:-}"
+  if [[ "$daction" != "local" ]]; then
+    rm -f "$armfile"
+    printf 'change-header(only local agent reviews can be deleted)'
+    exit 0
+  fi
+  key="$dkind"$'\t'"${dmanifest:-$dwt}"$'\t'"$dbase"$'\t'"$dbranch"
+  if [[ -f "$armfile" && "$(cat "$armfile" 2>/dev/null)" == "$key" ]]; then
+    if [[ "$dkind" == "manifest" && -n "$dmanifest" ]]; then
+      "$reviews_bin" rm --manifest "$dmanifest" >/dev/null 2>&1 || true
+    else
+      "$reviews_bin" rm --worktree "$dwt" --base "$dbase" --branch "$dbranch" >/dev/null 2>&1 || true
+    fi
+    rm -f "$armfile"
+    printf 'reload(%s --lines)+change-header(%s)' "$self_with_backend" "$(build_header)"
+  else
+    printf '%s' "$key" > "$armfile"
+    printf 'change-header(delete %s..%s ? press ctrl-x again to confirm)' "$dbase" "$dbranch"
+  fi
+  exit 0
+fi
+
+# Compose picker rows: display <tab> action <tab> a <tab> b <tab> c
+#   local (agent):  action=local  a=worktree b=base c=branch
+#   external PR:    action=pr     a=url
+#   separator:      action=sep
+# Display columns: status(2) kind repo ref (+ summary/title), aligned widths.
+build_lines() {
+  local local_rows pr_rows
+  local_rows="$("$reviews_bin" list 2>/dev/null || true)"
+  pr_rows=""
+  [[ -s "$coworker_file" ]] && pr_rows="$(jq -r '[.repo,(.number|tostring),.title,.url,(.kind // "review"),(.state // "")] | @tsv' "$coworker_file" 2>/dev/null || true)"
+  {
+    open_review_rows
+    if [[ -n "$local_rows" ]]; then
+      printf '%s\n' "$local_rows" | awk -F'\t' '{ print "L\t" $0 }'
+    fi
+    if [[ -n "$pr_rows" ]]; then
+      printf '%s\n' "$pr_rows" | awk -F'\t' '{ print "P\t" $0 }'
+    fi
+  } | awk -F'\t' -v gap="    " '
+      function pad(s,w) { return sprintf("%-*s", w, s) }
+      # Wrap already-padded text in an ANSI SGR code so alignment (computed on
+      # the raw string) survives; fzf --ansi strips these before matching.
+      function col(code, s) { return "\033[" code "m" s "\033[0m" }
+      function glyph(s) {
+        return (s=="approved") ? col("32","✓") : \
+               (s=="changes_requested" || s=="changes") ? col("31","✗") : \
+               (s=="commented" || s=="comments") ? col("33","•") : " "
+      }
+      function emitrow(st2,kind,repo,ref,text,action,a,b,c,d,e,f,g,h,i,j,k,l,   disp) {
+        disp = st2 " " col("2", pad(kind,wkind)) gap pad(repo,wrepo) gap pad(ref,wref)
+        if (text != "") disp = disp gap text
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", disp, action, a, b, c, d, e, f, g, h, i, j, k, l
+      }
+      $1 == "O" { isopen[$2 SUBSEP $3] = 1; next }
+      $1 == "L" {
+        nl++; Lwt[nl]=$2; Lbase[nl]=$3; Lbranch[nl]=$4; Lslug[nl]=$6; Lsum[nl]=$8; Lappr[nl]=($9=="true")
+        Llife[nl]=$10; Lhealth[nl]=$11; LbaseSha[nl]=$12; LheadSha[nl]=$13
+        Lrun[nl]=$14; Lsession[nl]=$15; LentryKind[nl]=$16; Lmanifest[nl]=$17
+        if (LbaseSha[nl]=="") LbaseSha[nl]=Lbase[nl]
+        if (LheadSha[nl]=="") LheadSha[nl]=Lbranch[nl]
+        m=split($5,p,"/"); Lrepo[nl]=p[m]; Lref[nl]=$3 "..." $4
+        Lopen[nl]=(isopen[$2 SUBSEP (LbaseSha[nl] "..." LheadSha[nl])] ? 1 : 0)
+        if (length(Lrepo[nl])>wrepo) wrepo=length(Lrepo[nl])
+        if (length(Lref[nl])>wref)   wref=length(Lref[nl])
+        if (5>wkind) wkind=5
+        next
+      }
+      $1 == "P" {
+        np++; Pnum[np]=$3; Ptitle[np]=$4; Purl[np]=$5
+        Pkind[np]=($6==""?"review":$6); Pstate[np]=$7
+        m=split($2,p,"/"); Prepo[np]=p[m]; Pref[np]="#" $3
+        if (length(Prepo[np])>wrepo) wrepo=length(Prepo[np])
+        if (length(Pref[np])>wref)   wref=length(Pref[np])
+        if (length(Pkind[np])>wkind) wkind=length(Pkind[np])
+        next
+      }
+      END {
+        for (pass=1; pass<=2; pass++)
+          for (i=1;i<=nl;i++) {
+            if ((pass==1) != (Lopen[i]==1)) continue
+            broken=(Lhealth[i]!="" && Lhealth[i]!="current")
+            st2=(Lopen[i]?col("36","●"):" ") (broken?col("31","✗"):(Lappr[i]?col("32","✓"):" "))
+            meta=Llife[i]
+            if (Lhealth[i]!="" && Lhealth[i]!="current") meta=meta "/" Lhealth[i]
+            if (Lrun[i]!="") meta=meta " run=" Lrun[i]
+            if (Lsession[i]!="") meta=meta " session=" Lsession[i]
+            text=Lsum[i]
+            if (meta!="") text=(text!=""?text "  [" meta "]":"[" meta "]")
+            emitrow(st2,"agent",Lrepo[i],Lref[i],text,"local",Lwt[i],LbaseSha[i],LheadSha[i],(Lslug[i]!=""?Lslug[i]:Lbranch[i]),LentryKind[i],Lbase[i],Lbranch[i],Lmanifest[i],Llife[i],Lhealth[i],Lrun[i],Lsession[i])
+          }
+        if (np>0) {
+          printf "%s\t%s\t\t\t\t\n", col("242","── external ──"), "sep"
+          n=split("reply review", order, " ")
+          for (o=1;o<=n;o++)
+            for (i=1;i<=np;i++) {
+              if (Pkind[i] != order[o]) continue
+              emitrow(" " glyph(Pstate[i]), Pkind[i], Prepo[i], Pref[i], Ptitle[i], "pr", Purl[i], "", "", "")
+            }
+          for (i=1;i<=np;i++) {
+            if (Pkind[i]=="reply" || Pkind[i]=="review") continue
+            emitrow(" " glyph(Pstate[i]), Pkind[i], Prepo[i], Pref[i], Ptitle[i], "pr", Purl[i], "", "", "")
+          }
+        }
+      }
+    '
+}
+
+if [[ "${1:-}" == "--lines" ]]; then build_lines; exit 0; fi
+
+# Resolve the repository through the public symlink in ~/.local/bin.
+script="${BASH_SOURCE[0]}"
+while [[ -L "$script" ]]; do
+  script_dir="$(cd -P "$(dirname "$script")" && pwd)"
+  script="$(readlink "$script")"
+  [[ "$script" == /* ]] || script="$script_dir/$script"
+done
+script_dir="$(cd -P "$(dirname "$script")" && pwd)"
+root="$(cd "$script_dir/.." && pwd)"
+module="$root/tools/review-inbox"
+repo_key="$(printf '%s' "$root" | cksum | awk '{print $1}')"
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles/review-inbox/$repo_key"
+binary="$cache_dir/review-inbox"
+fingerprint_file="$cache_dir/source.cksum"
+# Include names and bytes so removed files and checkouts with older mtimes
+# invalidate the executable just as edits and added files do.
+source_fingerprint="$(
+  for input in "$module"/*.go "$module/go.mod" "$module/go.sum"; do
+    [[ -f "$input" ]] || continue
+    printf '%s\n' "${input##*/}"
+    cksum "$input"
+  done | cksum | awk '{print $1 ":" $2}'
+)"
+cached_fingerprint="$(cat "$fingerprint_file" 2>/dev/null || true)"
+if [[ ! -x "$binary" || "$source_fingerprint" != "$cached_fingerprint" ]]; then
+  command -v go >/dev/null 2>&1 || {
+    echo "review-inbox: Go is required to build the application; run dotfiles install" >&2
+    exit 1
+  }
+  mkdir -p "$cache_dir"
+  build_output="$(mktemp "$cache_dir/.build.XXXXXX")"
+  trap 'rm -f "$build_output"' EXIT
+  (cd "$module" && go build -o "$build_output" .)
+  chmod +x "$build_output"
+  mv -f "$build_output" "$binary"
+  printf '%s\n' "$source_fingerprint" > "$fingerprint_file"
+  trap - EXIT
+fi
+[[ "${1:-}" != "--build" ]] || exit 0
+# A new UI session must not inherit an armed legacy projection deletion.
+[[ $# != 0 ]] || rm -f "$armfile"
+export REVIEW_INBOX_LAUNCHER="$script_dir/review-inbox"
+export REVIEW_INBOX_BACKEND="$backend"
+exec "$binary" "$@"
