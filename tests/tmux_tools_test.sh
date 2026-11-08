@@ -92,7 +92,8 @@ chmod +x \
 
 projects="$tmp/projects"
 project="$projects/owner/project"
-mkdir -p "$project/.git"
+mkdir -p "$project"
+git init --quiet "$project"
 project_switch_log="$tmp/project-switch.log"
 : > "$project_switch_log"
 PATH="$fake_bin:$PATH" PROJECTS_DIR="$projects" \

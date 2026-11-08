@@ -36,6 +36,12 @@ test("raw run/index CLI queries inspect a stopped authority without starting its
   const index = JSON.parse(stdout);
   assert.equal(index.schema, "flow.run-index-projection/v1");
   assert.deepEqual(index.runs, []);
+  stdout = ""; stderr = "";
+  const runId = "run:" + "b".repeat(64);
+  assert.equal(await runCli(["query", "--input", JSON.stringify({ run_id: runId }), "--json"], { env,
+    stdout: { write: value => { stdout += value; } }, stderr: { write: value => { stderr += value; } } }), 1);
+  assert.equal(stdout, "");
+  assert.equal(JSON.parse(stderr).code, "unknown_run");
   const after = await snapshot();
   // Existing inspect access may create SQLite's read coordination sidecars.
   // Authoritative database/lock bytes and event history remain unchanged.
@@ -44,6 +50,21 @@ test("raw run/index CLI queries inspect a stopped authority without starting its
   assert.equal((await stat(join(paths.authorityDirectory, "authority.sqlite-wal"))).size, 0);
   assert.equal((await stat(join(paths.authorityDirectory, "authority.sqlite-shm"))).size, 32768);
   await assert.rejects(access(paths.endpointPath), { code: "ENOENT" });
+});
+
+test("malformed raw queries retain transport failure without creating an offline authority", async t => {
+  const scratch = await mkdtemp(join(tmpdir(), "flow-cli-invalid-raw-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const env = { ...process.env, HOME: scratch, XDG_STATE_HOME: join(scratch, "state"),
+    FLOW_AUTHORITY_DIRECTORY: join(scratch, "authority") };
+  for (const request of [null, [], 42, "index", { run_id: null }, { run_id: "" }, { run_id: "run:one", extra: true }]) {
+    let stdout = "", stderr = "";
+    assert.equal(await runCli(["query", "--input", JSON.stringify(request), "--json"], { env,
+      stdout: { write: value => { stdout += value; } }, stderr: { write: value => { stderr += value; } } }), 1, JSON.stringify(request));
+    assert.equal(stdout, "");
+    assert.equal(JSON.parse(stderr).code, "transport_unavailable");
+    await assert.rejects(access(flowOwnerPaths({ env }).authorityDirectory), { code: "ENOENT" });
+  }
 });
 
 test("flow CLI exposes the watermarked legacy inventory query", async (t) => {

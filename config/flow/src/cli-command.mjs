@@ -130,7 +130,12 @@ export async function runCli(
   let directRuntime = runtime;
   let ownsDirectRuntime = false;
   const ownerPaths = flowOwnerPaths({ env, ...ownerOptions });
-  const inspectionQuery = operation === "query";
+  const rawRunInspection = operation === "query" && request !== null &&
+    typeof request === "object" && !Array.isArray(request) &&
+    (Object.keys(request).length === 0 ||
+      Object.keys(request).length === 1 && typeof request.run_id === "string" && request.run_id.trim().length > 0);
+  const inspectionQuery = operation === "query" &&
+    (request?.schema === "flow.query/v1" || rawRunInspection);
   const namedQueryOwner = inspectionQuery &&
     await ownerIsAvailable(ownerPaths);
   if (directRuntime === undefined && inspectionQuery && !namedQueryOwner) {
