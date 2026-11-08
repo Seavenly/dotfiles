@@ -17,8 +17,9 @@ Init does not install anything or run the project tests, collect pytest tests,
 start an owner, contact a provider or launch model work. Discovery reads installed
 metadata and uses trusted Git/readelf parsers without executing selected shims or
 toolchains. Confirmed setup retains the existing bounded official Codex version
-check. The subsequent run still needs its own prepared confirmation and explicit
-launch. This is supervised CLI trust, not strict native qualification; Mac native
+check. Use [`flow-supervised run`](guided-run.md) next to inspect the prepared
+task, confirm it and follow implementation, checks and critique. This is
+supervised CLI trust, not strict native qualification; Mac native
 execution remains unsupported.
 
 ## Plain flags for scripts
@@ -58,7 +59,8 @@ The preview preserves aliases such as `/bin/sh`. The optional client link must
 stay outside the project so it does not make the workspace dirty.
 
 After confirmation, private mode-0600 brief, recipe and registration files are
-retained outside the repository. The normal local client prints four commands:
+retained outside the repository. Run `flow-supervised run` from that project for
+guided preparation and launch. The normal local client also prints four manual commands:
 start, prepare by file, inspect the confirmation, and accept the prepared file.
 The last command materializes a launch request and prints its explicit launch
 command; it starts no provider. Keep those returned paths instead of assembling

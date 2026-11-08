@@ -2,7 +2,8 @@
 
 Start with [`flow-supervised init`](guided-setup.md) for guided installed-tool
 selection, a plain-text brief and a concrete confirmation. The manual path below
-remains available for custom recipes.
+remains available for custom recipes. Continue with
+[`flow-supervised run`](guided-run.md) for confirmed launch and live results.
 
 Issue [#93](https://github.com/Seavenly/dotfiles/issues/93) adds GREEN-only project
 commands to explicitly supervised Linux `feature verify`. Plain `verify` still

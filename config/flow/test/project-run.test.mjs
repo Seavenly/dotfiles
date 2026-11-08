@@ -234,6 +234,8 @@ test("old pinned client with no offline query support starts only its known stop
   };
   const result = await invoke(f, runtime, [], { callClient: call });
   assert.equal(result.exit, 1); assert.match(result.stderr, /Existing work/u);
+  assert.match(result.stderr, /no matching guided receipt/u);
+  assert.ok(result.stderr.includes(f.selection.client)); assert.match(result.stderr, /watch --input/u);
   assert.equal(runtime.preparations, 0); assert.equal(runtime.launches, 0);
   assert.equal(result.records[0].schema, "flow.project-run-owner/v1");
 });

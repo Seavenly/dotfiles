@@ -443,7 +443,10 @@ direct route described below remains withheld.
 Run [`flow-supervised init`](docs/flow/guided-setup.md) inside an existing clean
 project for guided npm, Python or Go test selection, a plain-text feature brief,
 and a concrete setup preview before confirmation. It installs nothing and starts
-no tests, owner or model work.
+no tests, owner or model work. Continue with
+[`flow-supervised run`](docs/flow/guided-run.md) to inspect and confirm the exact
+task, follow implementation/check/critique progress, and act on fresh authority
+decisions without assembling JSON.
 
 `flow local setup --execution-trust supervised-native-cli --repository PATH
 --brief JSON_FILE --codex-executable PATH` creates a private, reusable client for

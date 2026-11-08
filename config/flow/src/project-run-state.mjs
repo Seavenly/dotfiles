@@ -95,7 +95,10 @@ function digestBytes(path) {
 /** A process-lifetime submission mutex, not a lifecycle store or authority. */
 export function lockProjectSubmission(selection) {
   const directory = dirname(selection.retained_directory);
-  const db = new DatabaseSync(join(directory, "guided-submit.lock.sqlite"));
+  const lock = join(directory, "guided-submit.lock.sqlite");
+  if (existsSync(lock) && (!lstatSync(lock).isFile() || realpathSync(lock) !== resolve(lock))) failRun("Submission lock must remain a regular file in the original private request directory.", "submission_lock_changed", 1);
+  if (existsSync(selection.retained_directory) && (!lstatSync(selection.retained_directory).isDirectory() || realpathSync(selection.retained_directory) !== resolve(selection.retained_directory))) failRun("Retained guided-run directory changed; preserve the original request layout.", "retained_directory_changed", 1);
+  const db = new DatabaseSync(lock);
   try { db.exec("BEGIN EXCLUSIVE"); }
   catch { db.close(); failRun("Another frontend is preparing or submitting this exact request. Attach to its retained run or retry when it finishes.", "submission_busy", 1); }
   return () => { db.close(); };

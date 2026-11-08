@@ -71,6 +71,10 @@ function requireRun(value, runId) {
 const runIdFor = prepared => `run:${prepared.bundle_digest.slice(7)}`;
 const noReceipt = effect => !effect.receipt && !["not_created", "abandoned"].includes(effect.status);
 const beforeAdmissionCodes = new Set(["closed_facts_changed", "facts_changed", "source_run_changed", "workspace_fingerprint_changed", "feature_git_identity_drift", "feature_test_check_drift", "project_check_input_drift"]);
+function manualRunInspection(selection, runId) {
+  const client = quoteShell(selection.client), request = quoteShell(JSON.stringify({ run_id: runId }));
+  return `This retained run has no matching guided receipt for the selected request. Preserve its original client and history; inspect it with:\n${client} status --json\n${client} query --input ${request} --json\n${client} watch --input ${request} --json\nIf its owner is stopped, ${client} start --json starts that exact owner and may recover previously accepted work.`;
+}
 
 async function ownerStart(selection, call, emit) {
   const before = requirePublic(await call(selection, ["status", "--json"]), "Owner status");
@@ -116,7 +120,7 @@ async function preparePreview(selection, { refresh, call, emit }) {
       const run = requireRun(await call(selection, input("query", { run_id: id })), id);
       if (run.phase === "active" || run.effects?.some(noReceipt)) existing.push(id);
     }
-    if (existing.length) failRun(`Existing work needs attachment before a new task: ${existing.join(", ")}. Use run --attach RUN_ID with its original --request.`, "existing_work", 1);
+    if (existing.length) failRun(`Existing work needs inspection before a new task: ${existing.join(", ")}. ${manualRunInspection(selection, existing[0])}`, "existing_work", 1);
     const ownerStarted = await ownerStart(selection, call, emit);
     const prepared = requirePublic(await call(selection, ["prepare", "--input-file", selection.request, "--json"]), "Preparation");
     mkdirSync(selection.retained_directory, { mode: 0o700 });
@@ -220,7 +224,7 @@ export async function runProject(args, { env = process.env, cwd = process.cwd(),
     let runId = options["--attach"] ?? options["--cancel"];
     if (runId) {
       const retained = loadRetainedPreview(selection);
-      if (!retained || retained.preview.run_id !== runId) failRun("This request does not own that retained run. Choose its original --request; no owner was started.", "run_request_mismatch", 1);
+      if (!retained || retained.preview.run_id !== runId) failRun(`This request does not own that retained run. Choose its original --request; no owner was started. ${manualRunInspection(selection, runId)}`, "run_request_mismatch", 1);
       intendedRunId = runId;
       currentRun = requireRun(await call(selection, input("query", { run_id: runId })), runId);
       if (currentRun.bundle_digest !== retained.preview.bundle_digest) failRun("Public run bundle differs from the retained preparation. Preserve all evidence.", "run_request_mismatch", 1);
