@@ -121,7 +121,7 @@ const load=p=>JSON.parse(readFileSync(p)),save=(p,v)=>writeFileSync(p,JSON.strin
 const input=()=>args.includes('--input-file')?load(args[args.indexOf('--input-file')+1]):JSON.parse(args[args.indexOf('--input')+1]??'{}');
 const producer='run:'+'1'.repeat(64),reviewRun='run:'+'b'.repeat(64),candidateId='candidate:'+'3'.repeat(64),fingerprint='sha256:'+'d'.repeat(64),watermark='sha256:'+'e'.repeat(64);
 const git={clean:true,commit_sha:${JSON.stringify(f.head)},tree_sha:${JSON.stringify(f.tree)},ref:'refs/heads/main'};
-const candidate={schema:'work.review-candidate/v1',candidate_id:candidateId,candidate_fingerprint:fingerprint,git,source_run_id:producer};
+const candidate={schema:'work.review-candidate/v1',candidate_id:candidateId,candidate_fingerprint:fingerprint,git};
 const candidateProjection={schema:'work.review-candidate-projection/v1',contract:'work.review/v1',subject_id:candidateId,status:'sealed',candidate,candidate_fingerprint:fingerprint,watermark,generation:1,workspace:{subject_id:'workspace:fixture',generation:1,mutation_epoch:1,fingerprint:'sha256:'+'a'.repeat(64)}};
 const description=role=>({schema:'flow.execution-description/v1',launch:{harness:'codex',role,capability:'read-only',model:'gpt-6.1-sol',effort:'high'},backend:{executable:{path:'/fixture/official-codex',version:'codex-cli 0.166.0',sha256:'sha256:'+'f'.repeat(64)}},effective_authority:{workspace:'read-only',approval:'never'}});
 const graph={cards:[{id:'review-lens-security',executor:{kind:'delegate'},inputs:{description:description('lens:security')}},{id:'review-critic',executor:{kind:'delegate'},inputs:{description:description('critic')}},{id:'review-record',executor:{kind:'operation',contract:'flow.operation/review-record/v1'}}]};
@@ -154,7 +154,7 @@ case 'query':{
  const q=input();
  if(q.query==='review_preparation_facts'){result={schema:'flow.review-preparation-facts/v1',candidate:{candidate_id:candidateId,candidate_fingerprint:fingerprint}};break;}
  if(q.contract==='work.review/v1'){
-  result=q.subject_id===candidateId?candidateProjection:{schema:'flow.review-projection/v1',contract:'work.review/v1',subject_id:receipt.review_id,review_id:receipt.review_id,status:'current',current:true,candidate,candidate_fingerprint:fingerprint,source_run_id:reviewRun,operation_contract:'flow.operation/review-record/v1',operation_effect_id:'effect:review-record',operation_attempt_id:reviewRun+':review-record:attempt:1',operation_idempotency_key:'operation:review-record',summary,coverage:summary.coverage,findings:summary.findings,approval:'not_requested',merge_ready:false};break;
+  result=q.subject_id===candidateId?candidateProjection:{schema:'flow.review-projection/v1',contract:'work.review/v1',subject_id:receipt.review_id,review_id:receipt.review_id,status:'current',current:true,candidate,candidate_fingerprint:fingerprint,lifecycle_generation:1,candidate_authority_watermark:watermark,source_run_id:reviewRun,operation_contract:'flow.operation/review-record/v1',operation_effect_id:'effect:review-record',operation_attempt_id:reviewRun+':review-record:attempt:1',operation_idempotency_key:'operation:review-record',summary,coverage:summary.coverage,findings:summary.findings,approval:'not_requested',merge_ready:false};break;
  }
  if(!q.run_id){result={schema:'flow.run-index-projection/v1',authority_schema:{status:'compatible'},runs:[producer,...(state.launched?[reviewRun]:[])]};break;}
  if(q.run_id===producer){result=producerProjection;break;}
