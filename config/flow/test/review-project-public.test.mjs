@@ -138,7 +138,7 @@ case 'stop':state.started=false;result={schema:'flow.owner-status/v1',state:'sto
 case 'local':{
  if(args[1]==='review-request'){
   state.review_requests++;
-  const folder=mkdtempSync(join(directory,'receipts','controlled-review-'));
+  const folder=mkdtempSync(join(directory,'receipts','review-controlled-'));
   const facts={schema:'flow.review-preparation-facts/v1',candidate:{candidate_id:candidateId,candidate_fingerprint:fingerprint},source_run:{run_id:producer,watermark:producerProjection.watermark},route:{bindings:graph.cards.filter(c=>c.executor.kind==='delegate').map(c=>({card_id:c.id,description:c.inputs.description,route:{schema:'flow.delegate-route-binding/v1',agent_id:'agent:'+c.id}}))}};
   const request={schema:'flow.predefined-flow-selection/v1',definition:'review/v1',inputs:{schema:'flow.review-request/v1',target:{schema:'flow.review-local-candidate/v1',candidate,candidate_fingerprint:fingerprint,candidate_authority_watermark:watermark,lifecycle_generation:1},lenses:['security'],preparation_facts:facts,delegation:{schema:'flow.review-delegation-bindings/v1'}},execution_trust:load(join(directory,'pilot.json')).execution_trust};
   for(const [name,value] of Object.entries({'completed-run':producerProjection,candidate:candidateProjection,'preparation-facts':facts,'prepare-request':request}))save(join(folder,name+'.json'),value);
@@ -160,7 +160,7 @@ case 'query':{
  if(q.run_id===producer){result=producerProjection;break;}
  if(!state.launched){result={schema:'flow.rejection/v1',code:'unknown_run'};break;}
  if(state.mode==='transport_failure'){save(stateFile,state);process.exit(99);}
- const done=state.mode==='complete';result={schema:'flow.run-projection/v1',run_id:reviewRun,bundle_digest:'sha256:'+'b'.repeat(64),definition_id:'review/v1',phase:done?'succeeded':'active',progress:done?'completed':'executing',watermark:'sha256:'+'7'.repeat(64),sequence:done?20:10,active_plan:graph,cards:graph.cards.map(c=>({id:c.id,status:done?'completed':c.executor.kind==='delegate'?'executing':'pending'})),effects:done?[{effect_id:'effect:review-record',card_id:'review-record',status:'completed',operation_contract:'flow.operation/review-record/v1',receipt:{provider_receipt:receipt}}]:[],blocks:[],legal_actions:[],resource_dispositions:[]};break;
+ const done=state.mode==='complete';result={schema:'flow.run-projection/v1',run_id:reviewRun,bundle_digest:'sha256:'+'b'.repeat(64),definition_id:'review/v1',phase:done?'succeeded':'active',progress:done?'completed':'executing',watermark:'sha256:'+'7'.repeat(64),sequence:done?20:10,active_plan:graph,cards:graph.cards.map(c=>({id:c.id,status:done?'completed':c.executor.kind==='delegate'?'executing':'pending'})),effects:done?[{effect_id:'effect:review-record',run_id:reviewRun,card_id:'review-record',attempt_id:reviewRun+':review-record:attempt:1',idempotency_key:'operation:review-record',status:'succeeded',operation_contract:'flow.operation/review-record/v1',receipt:{provider_receipt:receipt}}]:[],blocks:[],legal_actions:[],resource_dispositions:[]};break;
 }
 default:throw Error('Unexpected controlled transport '+args[0]);
 }
