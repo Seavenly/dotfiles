@@ -32,10 +32,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "7632e057b03bd58b9e17f9a784696ac33318b6f4",
+    "candidate_tree_sha": "7b2347495bbd33c43035769db1bbaa42d31a4709",
     "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"
   },
-  "content_digest": "sha256:a0ebc17654f0c621d487a7a21cae86fb9ba16f5efedcc8eafffa930228a7e0ee",
+  "content_digest": "sha256:fceed795675c6b8b74b0080459babd9635480bf680c2443aacd401901f4c4632",
   "files": [
     {
       "path": "GLOSSARY.md",
@@ -658,8 +658,8 @@
     {
       "path": "config/flow/src/cli-command.mjs",
       "mode": "100644",
-      "git_blob_sha": "004f37f6fd340a933e65cae5b968d07ae48e7b03",
-      "sha256": "a829ee3c85571531f17e5802cf7e15202b3d48f92a9a78d5159667143361e29f"
+      "git_blob_sha": "8e0ce7d7308213702cbf0a64b487c7e6cb9bd4c8",
+      "sha256": "a727b19d90d01a9edce74bf0ba56fd811b18b157752cd0cafef126109b069fdf"
     },
     {
       "path": "config/flow/src/cli.mjs",
@@ -946,8 +946,8 @@
     {
       "path": "config/flow/test/cli.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "c33e0b281bbb13fb5001e99c18c65ca2c41e11c5",
-      "sha256": "66638b3b36c3c94955d008e4cae58918c87b4588c8d19e9fe5d574e0f7b50fb0"
+      "git_blob_sha": "d93aa338dfe1ab8b6061bbc6735445d0ef5d8d74",
+      "sha256": "d3e067a5cb733e1e461db1c2a7c0556b2e9a5d331e8b8431614d5d618ae7e555"
     },
     {
       "path": "config/flow/test/dark-test-release.test.mjs",
