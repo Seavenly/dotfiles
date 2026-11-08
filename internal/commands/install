@@ -134,6 +134,9 @@ if ((dry_run)) && [[ ! -x "$mise_cmd" ]]; then
   exit 0
 fi
 
+# Pinned mise reads early settings before applying -C. Start in the checkout so
+# first-time installs see the same settings as already-converged hosts.
+cd "$ROOT"
 "$mise_cmd" "${args[@]}"
 
 ((dry_run)) && "$ROOT/internal/migrate" --dry-run
