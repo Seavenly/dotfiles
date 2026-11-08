@@ -161,6 +161,8 @@ async function submitPrepared(selection, retained, confirmation, { call, emit })
       flushRetainedRunFile(launchPath);
       retainRunJson(intentFile, { run_id: runId, prepared_digest: digest(current.prepared), launch_file: launchPath, launch_digest: digest(launch) });
     }
+    const exactLaunch = readRunJson(launchPath);
+    if (digest(exactLaunch.prepared) !== digest(current.prepared) || exactLaunch.confirmation?.confirmation_digest !== confirmation) failRun("Saved launch does not contain the exact confirmed prepared task. No command was sent.", "launch_identity_changed", 1);
     let receipt;
     try { receipt = await call(selection, ["launch", "--input-file", launchPath, "--json"]); }
     catch (error) {

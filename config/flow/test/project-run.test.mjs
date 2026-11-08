@@ -336,3 +336,17 @@ test("compatible running owner reuse goes through public start rather than spawn
   assert.equal(preview.exit, 0, preview.stderr); assert.equal(starts, 1);
   assert.equal(preview.records.at(-1).owner_started, false); assert.equal(runtime.launches, 0);
 });
+
+test("retry refuses a consistently rehashed saved launch carrying another prepared task under the old confirmation", async t => {
+  const f = fixture(t), runtime = publicRuntime(f);
+  const preview = await invoke(f, runtime);
+  let launchCalls = 0;
+  const call = async (selection, args) => { if (args[0] === "launch") { launchCalls++; throw new Error("transport lost before known admission"); } return runtime.call(selection, args); };
+  assert.equal((await invoke(f, runtime, ["--confirm", preview.records.at(-1).confirmation_digest], { callClient: call })).exit, 1);
+  const path = join(f.selection.retained_directory, "accepted.json"), intent = readRunJson(path), launch = readRunJson(intent.launch_file);
+  launch.prepared = { ...launch.prepared, bundle_digest: "sha256:" + "e".repeat(64) };
+  save(intent.launch_file, launch); intent.launch_digest = digest(launch); save(path, intent);
+  const refused = await invoke(f, runtime, ["--confirm", preview.records.at(-1).confirmation_digest], { callClient: call });
+  assert.equal(refused.exit, 1); assert.match(refused.stderr, /exact confirmed prepared task/u);
+  assert.equal(launchCalls, 1); assert.equal(runtime.preparations, 1);
+});
