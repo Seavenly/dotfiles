@@ -132,6 +132,10 @@ test("exact confirmation, lost response and repeat attach consume one bridge and
   const result = await invoke(f, runtime, ["--confirm", preview.confirmation_digest]);
   assert.equal(result.exit, 0, result.stderr); assert.equal(result.records.at(-1).review_id, runtime.receipt.review_id);
   assert.equal(result.records.at(-1).posture, "findings");
+  const rendered = renderReviewResult(result.records.at(-1));
+  assert.match(rendered, /Candidate: candidate:one/u); assert.ok(rendered.includes(fingerprint));
+  assert.match(rendered, /Coverage: complete/u); assert.match(rendered, /Lens security: produced/u); assert.match(rendered, /Critic: produced/u);
+  assert.match(rendered, /test count: unknown/u); assert.equal(rendered.includes('"evidence":'), false); assert.equal(rendered.includes('"claim":'), false);
   await invoke(f, runtime, ["--confirm", preview.confirmation_digest]);
   const attached = await invoke(f, runtime, ["--attach", runId]);
   assert.equal(attached.exit, 0, attached.stderr); assert.equal(runtime.launches, 1); assert.equal(runtime.bridges, 1); assert.equal(runtime.preparations, 1);
@@ -161,6 +165,8 @@ test("stale or incomplete review records remain blocked with cap reasons and obs
   const result = await invoke(f, runtime, ["--confirm", preview.confirmation_digest]);
   assert.equal(result.exit, 1, result.stderr); assert.equal(result.records.at(-1).review_status, "review_incomplete");
   assert.match(renderReviewResult(result.records.at(-1)), /critic_evidence_missing/u);
+  assert.match(renderReviewResult(result.records.at(-1)), /Coverage: incomplete/u);
+  assert.match(renderReviewResult(result.records.at(-1)), /Critic: missing/u);
   runtime.record.coverage = runtime.summary.coverage; runtime.record.current = false; runtime.record.approval = "ineligible";
   const stale = await invoke(f, runtime, ["--attach", runId]);
   assert.equal(stale.exit, 1); assert.equal(stale.records.at(-1).review_status, "stale");

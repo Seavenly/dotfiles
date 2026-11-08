@@ -93,18 +93,28 @@ export async function summarizeProjectReview(run, { selection, status, projectio
 }
 
 export function renderReviewResult(result) {
+  const coverage = result.coverage, checks = result.inherited_checks ?? {};
+  const withReason = source => `${source?.status ?? "not observed"}${source?.reason ? ` (${typeof source.reason === "string" ? source.reason : JSON.stringify(source.reason)})` : ""}`;
+  const workspace = result.workspace_settlement ?? [];
   return [`Review result: ${result.status} (run phase ${result.phase})`, `Run: ${result.run_id}`, `Producer: ${result.producer_run_id}`,
+    `Candidate: ${result.target.candidate_id}`, `Fingerprint: ${result.target.candidate_fingerprint}`,
     `Review record: ${result.review_id ?? "not recorded"}`, `Review posture: ${result.posture ?? result.review_status}`,
-    `Coverage: ${JSON.stringify(result.coverage)}`, `Authority cap reasons: ${JSON.stringify(result.cap_reasons)}`, ...result.findings.slice(0, 100).flatMap(finding => [
+    `Coverage: ${coverage?.complete === true ? "complete" : coverage?.complete === false ? "incomplete" : "not observed"}`,
+    ...(coverage?.lenses ?? []).map(lens => `  Lens ${lens.lens}: ${withReason(lens)}`),
+    `  Critic: ${withReason(coverage?.critic)}`,
+    `Authority cap reasons: ${result.cap_reasons.length ? result.cap_reasons.map(reason => typeof reason === "string" ? reason : JSON.stringify(reason)).join("; ") : "none observed"}`,
+    ...result.findings.slice(0, 100).flatMap(finding => [
       `Finding (${finding.urgency ?? "unspecified urgency"}, ${finding.lens ?? finding.source ?? "review"}, ${finding.classification ?? "see record"}): ${finding.summary ?? "See exact record"}`,
       `  Location: ${JSON.stringify(finding.location ?? null)}`, `  ${finding.detail ?? ""}`]),
     ...(result.findings.length > 100 ? ["Finding display truncated. Inspect the exact public record below."] : []),
-    `Inherited producer checks (not rerun): ${JSON.stringify(result.inherited_checks)}`,
+    `Inherited producer checks (not rerun): ${checks.kind ?? "not observed"}`,
+    `  Status: ${checks.status ?? checks.project_checks ?? "not observed"}; outcome: ${checks.outcome ?? "not observed"}; exit: ${checks.exit_code ?? "unknown"}; test count: ${checks.test_count ?? "unknown"}`,
     `Observed human approval: ${JSON.stringify(result.approval)}; human status: ${JSON.stringify(result.human_status)}; integration: ${JSON.stringify(result.integration)}`,
     `This guided command grants no human approval or Git publication. Automated merge_ready: ${result.merge_ready}`,
     ...(result.status === "detached" ? ["Frontend detached. Durable work continues and has not been cancelled. Reattach below."] : []),
     ...(result.unresolved_effects.length ? [`Unresolved effects: ${result.unresolved_effects.join(", ")}. Completion is not established.`] : []),
     ...(result.quarantined_effects.length ? [`Quarantined effects: ${result.quarantined_effects.join(", ")}`] : []),
-    `Workspace dispositions: ${JSON.stringify(result.workspace_settlement)}`,
+    workspace.length ? "Workspace dispositions:" : "Workspace dispositions: none observed; workspace reuse is not inferred.",
+    ...workspace.map(item => `  ${item.disposition ?? "not observed"}: ${item.claim?.id ?? "resource identity not supplied"}${item.claim?.generation !== undefined ? `; generation ${item.claim.generation}` : ""}${item.claim?.mutation_epoch !== undefined ? `; epoch ${item.claim.mutation_epoch}` : ""}${item.reason ? `; ${typeof item.reason === "string" ? item.reason : JSON.stringify(item.reason)}` : ""}`),
     `Retained evidence: ${result.retained_directory}`, "Next commands:", ...result.next_commands.map(command => `  ${command}`), ""].map(terminalText).join("\n");
 }
