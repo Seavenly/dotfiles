@@ -16,7 +16,8 @@ is unadmitted; Mac native execution remains unsupported.
 For installed npm, Python or Go suites, start with
 [`flow-supervised init`](guided-setup.md), then use
 [`flow-supervised run`](guided-run.md) for task confirmation, live progress and
-authority-derived decisions. [Manual registered project checks](project-checks.md)
+authority-derived decisions. Use [`flow-supervised review`](guided-review.md)
+for an independent review of an exact retained candidate. [Manual registered project checks](project-checks.md)
 remain available.
 The additive v2 check runs in `verify` mode and reports GREEN-only command
 evidence; the v1 test-first contract and plain content-only `verify` remain distinct.

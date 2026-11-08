@@ -198,3 +198,75 @@ test("terminal control characters in provider findings stay escaped and never be
   assert.equal(rendered.includes("\u001b"), false); assert.equal(rendered.includes("\r"), false);
   assert.equal(existsSync(join(f.state, "authority.sqlite")), false);
 });
+
+test("concurrent confirmations coordinate the same saved launch without a second dispatch", async t => {
+  const f = fixture(t), runtime = publicRuntime(f), preview = previewOf(await invoke(f, runtime));
+  let entered, release;
+  const enteredLaunch = new Promise(resolve => { entered = resolve; });
+  const hold = new Promise(resolve => { release = resolve; });
+  const call = async (selection, args) => { if (args[0] === "launch") { entered(); await hold; } return runtime.call(selection, args); };
+  const first = invoke(f, runtime, ["--confirm", preview.confirmation_digest], { callClient: call });
+  await enteredLaunch;
+  const concurrent = await invoke(f, runtime, ["--confirm", preview.confirmation_digest]);
+  assert.equal(concurrent.exit, 1); assert.match(concurrent.stderr, /Another frontend/u);
+  release(); assert.equal((await first).exit, 0); assert.equal(runtime.launches, 1); assert.equal(runtime.bridges, 1);
+});
+
+test("uncertain accepted launch holds its saved intent and refuses refresh without creating new facts", async t => {
+  const f = fixture(t), runtime = publicRuntime(f), preview = previewOf(await invoke(f, runtime));
+  let attempted = false;
+  const call = async (selection, args) => {
+    if (args[0] === "launch") { attempted = true; throw new Error("response unavailable"); }
+    if (attempted && args[0] === "query" && JSON.parse(args[2]).run_id === runId) return { schema: "flow.rejection/v1", code: "transport_unavailable" };
+    return runtime.call(selection, args);
+  };
+  const unknown = await invoke(f, runtime, ["--confirm", preview.confirmation_digest], { callClient: call });
+  assert.equal(unknown.exit, 1); assert.match(unknown.stderr, /--attach/u);
+  const refreshed = await invoke(f, runtime, ["--refresh"]);
+  assert.equal(refreshed.exit, 1); assert.match(refreshed.stderr, /accepted launch intent/u);
+  assert.equal(runtime.preparations, 1); assert.equal(runtime.bridges, 1);
+});
+
+test("fresh facts after explicit refresh have a new confirmation and the previous yes is refused", async t => {
+  const f = fixture(t), runtime = publicRuntime(f), preview = previewOf(await invoke(f, runtime));
+  runtime.failBeforeAdmission = true;
+  await invoke(f, runtime, ["--confirm", preview.confirmation_digest]);
+  runtime.prepared.confirmation = { ...runtime.prepared.confirmation, observed_host_epoch: 2 };
+  runtime.prepared.confirmation_digest = digest(runtime.prepared.confirmation);
+  const next = previewOf(await invoke(f, runtime, ["--refresh"]));
+  assert.notEqual(next.confirmation_digest, preview.confirmation_digest);
+  const refused = await invoke(f, runtime, ["--confirm", preview.confirmation_digest]);
+  assert.equal(refused.exit, 1); assert.equal(runtime.launches, 1); assert.equal(runtime.bridges, 2);
+});
+
+test("a running incompatible owner refuses through the existing public start fence before preparation", async t => {
+  const f = fixture(t), runtime = publicRuntime(f);
+  const call = (selection, args) => args[0] === "start" ? { schema: "flow.rejection/v1", code: "owner_runtime_binding_changed" } : runtime.call(selection, args);
+  const result = await invoke(f, runtime, [], { callClient: call });
+  assert.equal(result.exit, 1); assert.match(result.stderr, /owner_runtime_binding_changed/u);
+  assert.equal(runtime.bridges, 0); assert.equal(runtime.preparations, 0); assert.equal(runtime.launches, 0);
+});
+
+test("saved policy is used on attachment regardless new-command defaults and no facts are regenerated", async t => {
+  const f = fixture(t), runtime = publicRuntime(f);
+  const preview = previewOf(await invoke(f, runtime, ["--timeout-seconds", "120", "--max-revisions", "1"]));
+  const confirmed = await invoke(f, runtime, ["--timeout-seconds", "120", "--max-revisions", "1", "--confirm", preview.confirmation_digest]);
+  assert.equal(confirmed.exit, 0, confirmed.stderr);
+  const attached = await invoke(f, runtime, ["--attach", runId]);
+  assert.equal(attached.exit, 0, attached.stderr); assert.equal(runtime.bridges, 1); assert.equal(runtime.launches, 1);
+  assert.deepEqual(runtime.selectedRequest.inputs.limits, { max_elapsed_seconds: 120, max_revisions: 1 });
+});
+
+test("incomplete preview retains its bridge evidence and requires explicit unlaunched refresh", async t => {
+  const f = fixture(t), runtime = publicRuntime(f);
+  let once = true;
+  const call = (selection, args) => {
+    if (args[0] === "prepare" && once) { once = false; throw new Error("prepare response unavailable before any launch"); }
+    return runtime.call(selection, args);
+  };
+  assert.equal((await invoke(f, runtime, [], { callClient: call })).exit, 1);
+  const retry = await invoke(f, runtime);
+  assert.equal(retry.exit, 1); assert.match(retry.stderr, /incomplete owned preview/u); assert.equal(runtime.bridges, 1);
+  const next = await invoke(f, runtime, ["--refresh"]);
+  assert.equal(next.exit, 0, next.stderr); assert.equal(runtime.bridges, 2); assert.equal(runtime.launches, 0);
+});

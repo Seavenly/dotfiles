@@ -117,3 +117,8 @@ work; 2 for arguments/task selection; and 130 for Ctrl-C detach.
 
 Run `flow-supervised run --help` for all options. Manual preparation/lifecycle
 commands remain available in the [operator guide](operator-guide.md).
+
+After a candidate is sealed, use [`flow-supervised review`](guided-review.md)
+for an independently prepared local review of that exact candidate. Producer
+checks are inherited rather than rerun, and automated findings do not grant
+human approval or Git publication authority.

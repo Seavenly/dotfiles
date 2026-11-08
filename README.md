@@ -447,6 +447,8 @@ no tests, owner or model work. Continue with
 [`flow-supervised run`](docs/flow/guided-run.md) to inspect and confirm the exact
 task, follow implementation/check/critique progress, and act on fresh authority
 decisions without assembling JSON.
+Use [`flow-supervised review`](docs/flow/guided-review.md) for a separately
+confirmed independent review of the exact retained candidate.
 
 `flow local setup --execution-trust supervised-native-cli --repository PATH
 --brief JSON_FILE --codex-executable PATH` creates a private, reusable client for
