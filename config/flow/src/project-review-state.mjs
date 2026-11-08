@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { digest } from "../../../tools/flow/src/canonical.mjs";
 import { discoverProjectRuns, failRun, loadRetainedPreview, readRunJson, retainRunJson } from "./project-run-state.mjs";
@@ -30,15 +30,26 @@ function selectionIdentity(client, producerId, target, policy) {
     producer_run_id: producerId, target, policy };
 }
 
+// Inspect existing ancestors before recursive mkdir, including broken symlinks.
+// Refusal must not create even an empty directory outside the retained client.
+function assertCanonicalReviewPath(path) {
+  for (let current = resolve(path); ; current = dirname(current)) {
+    let stat;
+    try { stat = lstatSync(current); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (stat && (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(current) !== current)) failRun("Retained review paths must remain in their original canonical client directory; aliases are unsupported.", "review_intent_changed", 1);
+    if (dirname(current) === current) break;
+  }
+}
+
 export function reviewSelection(client, producerId, target, policy, { create = false } = {}) {
   const identity = selectionIdentity(client, producerId, target, policy);
   const key = digest(identity).slice(7);
   const intentDirectory = join(client.directory, "receipts", "guided-review", key);
   const intentPath = join(intentDirectory, "intent.json");
-  if (create) mkdirSync(intentDirectory, { recursive: true, mode: 0o700 });
-  if (existsSync(intentDirectory) && realpathSync(intentDirectory) !== resolve(intentDirectory)) failRun("Retained review intent must remain in its original canonical client directory.", "review_intent_changed", 1);
+  assertCanonicalReviewPath(intentDirectory);
   if (create) {
-    if (realpathSync(intentDirectory) !== resolve(intentDirectory)) failRun("Retained review intent must remain in its original canonical client directory.", "review_intent_changed", 1);
+    mkdirSync(intentDirectory, { recursive: true, mode: 0o700 });
     if (existsSync(intentPath)) {
       if (digest(readRunJson(intentPath)) !== digest(identity)) failRun("Retained review intent changed; preserve its evidence.", "review_intent_changed", 1);
     } else retainRunJson(intentPath, identity);

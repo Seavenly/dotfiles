@@ -49,7 +49,7 @@ export async function boundedCandidateDiff(repository, producer, candidate) {
   text = Buffer.from(lines.slice(0, 100).join("\n")).subarray(0, 16384).toString("utf8");
   return { base_commit_sha: base, commit_sha: head, tree_sha: git.tree_sha, ref: git.ref,
     diff: text, truncated, preview_limits: { lines: 100, bytes: 16384, process_ms: 10000 },
-    full_inspection_command: ["env", ...Object.entries(env).filter(([key]) => key !== "PATH").map(([key, value]) => `${key}=${quoteShell(value)}`), "/usr/bin/git", ...prefix.map(quoteShell), ...args.map(quoteShell)].join(" ") };
+    full_inspection_command: ["env", "-i", ...Object.entries(env).map(([key, value]) => `${key}=${quoteShell(value)}`), "/usr/bin/git", ...prefix.map(quoteShell), ...args.map(quoteShell)].join(" ") };
 }
 
 /** The existing public bridge owns every candidate/facts/route field. */

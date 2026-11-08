@@ -7,19 +7,41 @@ export function reviewAttachCommand(selection, runId) {
   return `flow-supervised review --repository ${quoteShell(selection.repository)} --client ${quoteShell(selection.directory)} --attach ${quoteShell(runId)}`;
 }
 
+function structuredLines(label, value, indent = "  ") {
+  if (value === null || typeof value !== "object") return [`${label}: ${value ?? "not supplied; inspect full confirmation"}`];
+  return [`${label}:`, ...JSON.stringify(value, null, 2).split("\n").map(line => indent + line)];
+}
+
 export function renderReviewPreview(preview) {
-  const inspection = preview.inspection;
+  const inspection = preview.inspection, trust = inspection.trust_posture ?? {};
+  const roles = (inspection.routes ?? []).flatMap(route => {
+    const launch = route.launch ?? {}, executable = route.executable ?? {};
+    return [`  ${launch.role ?? route.card_id}`,
+      `    Harness: ${launch.harness ?? "see full confirmation"}; model: ${launch.model ?? "see full confirmation"}; effort: ${launch.effort ?? "see full confirmation"}`,
+      `    Capability: ${launch.capability ?? "see full confirmation"}`,
+      `    Executable: ${executable.path ?? "see full confirmation"}`,
+      `    Version: ${executable.version ?? "see full confirmation"}; SHA-256: ${executable.sha256 ?? "see full confirmation"}`,
+      ...structuredLines("    Requested permissions", route.requested_permissions, "      ")];
+  });
   return ["Prepared independent local review", `Project: ${preview.repository}`, `Client runtime: ${preview.runtime_root}`,
-    `Producer: ${preview.producer_run_id}`, `Current sealed target: ${JSON.stringify(preview.target)}`,
+    `Producer: ${preview.producer_run_id}`, `Candidate: ${preview.target.candidate_id}`,
+    `Fingerprint: ${preview.target.candidate_fingerprint}`,
+    `Lifecycle: ${preview.target.lifecycle_generation}; sealed authority watermark: ${preview.target.candidate_authority_watermark}`,
     `Exact comparison: ${preview.comparison.base_commit_sha} -> ${preview.comparison.commit_sha}`,
     ...preview.comparison.diff.split("\n"),
     ...(preview.comparison.truncated ? ["Diff preview truncated; inspect the full exact comparison with:"] : ["Full exact comparison:"]),
     preview.comparison.full_inspection_command,
-    `Inherited producer checks (not rerun by review): ${JSON.stringify(preview.inherited_checks)}`,
-    `Trust: ${JSON.stringify(inspection.trust_posture)}`, `Overall prepared-run limits: ${JSON.stringify(inspection.limits)}`,
+    `Inherited producer check: ${preview.inherited_checks.kind}; outcome: ${preview.inherited_checks.outcome ?? preview.inherited_checks.status ?? preview.inherited_checks.project_checks ?? "see producer evidence"} (not rerun by review)`,
+    `Trust contract: ${trust.execution_contract ?? "see full confirmation"}`,
+    `Operator supervision: ${trust.operator_supervision ?? "see full confirmation"}`,
+    `Permission enforcement: ${trust.permissions ?? "see full confirmation"}`,
+    `Ambient startup: ${trust.ambient_startup ?? "see full confirmation"}`,
+    `Independent workspace/tool-network enforcement: ${trust.independent_workspace_and_tool_network_enforcement ?? "not established"}`,
+    `Strict qualification: ${trust.qualification ?? "not claimed"}`,
+    `Overall prepared-run budget: ${inspection.limits?.max_elapsed_seconds ?? "see full confirmation"} seconds; revisions: ${inspection.limits?.max_revisions ?? "see full confirmation"}`,
     "These are overall run limits, not independent per-role timers.",
-    `Requested authority: ${JSON.stringify(inspection.requested_authority)}`, `Review roles: ${JSON.stringify(inspection.routes)}`,
-    `Authority: ${preview.authority_directory}`, `Prepared confirmation: ${preview.prepared_file}`,
+    ...structuredLines("Requested authority", inspection.requested_authority), "Review roles:", ...roles,
+    `Authority: ${preview.authority_directory}`, `Full exact confirmation: ${preview.prepared_file}`,
     `Confirmation digest: ${preview.confirmation_digest}`, preview.recovery_disclosure,
     "This command grants no human approval and performs no Git publication.", ""].map(terminalText).join("\n");
 }
@@ -73,7 +95,9 @@ export async function summarizeProjectReview(run, { selection, status, projectio
 export function renderReviewResult(result) {
   return [`Review result: ${result.status} (run phase ${result.phase})`, `Run: ${result.run_id}`, `Producer: ${result.producer_run_id}`,
     `Review record: ${result.review_id ?? "not recorded"}`, `Review posture: ${result.posture ?? result.review_status}`,
-    `Coverage: ${JSON.stringify(result.coverage)}`, `Authority cap reasons: ${JSON.stringify(result.cap_reasons)}`, ...result.findings.slice(0, 100).map(finding => `Finding: ${JSON.stringify(finding)}`),
+    `Coverage: ${JSON.stringify(result.coverage)}`, `Authority cap reasons: ${JSON.stringify(result.cap_reasons)}`, ...result.findings.slice(0, 100).flatMap(finding => [
+      `Finding (${finding.urgency ?? "unspecified urgency"}, ${finding.lens ?? finding.source ?? "review"}, ${finding.classification ?? "see record"}): ${finding.summary ?? "See exact record"}`,
+      `  Location: ${JSON.stringify(finding.location ?? null)}`, `  ${finding.detail ?? ""}`]),
     ...(result.findings.length > 100 ? ["Finding display truncated. Inspect the exact public record below."] : []),
     `Inherited producer checks (not rerun): ${JSON.stringify(result.inherited_checks)}`,
     `Observed human approval: ${JSON.stringify(result.approval)}; human status: ${JSON.stringify(result.human_status)}; integration: ${JSON.stringify(result.integration)}`,

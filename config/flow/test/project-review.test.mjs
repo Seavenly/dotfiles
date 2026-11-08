@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -282,4 +282,20 @@ test("review owner-epoch launch rejection permits only exact unknown-run refresh
   assert.equal(refreshed.exit, 0, refreshed.stderr);
   assert.notEqual(previewOf(refreshed).confirmation_digest, preview.confirmation_digest);
   assert.equal(runtime.bridges, 2); assert.equal(runtime.launches, 1); assert.equal(runtime.launched, false);
+});
+
+
+test("an aliased review journal parent is refused before any outside directory is created", async t => {
+  const f = fixture(t), runtime = publicRuntime(f), outside = join(f.root, "outside");
+  mkdirSync(outside);
+  symlinkSync(outside, join(f.directory, "receipts", "guided-review"));
+  const result = await invoke(f, runtime);
+  assert.equal(result.exit, 1); assert.match(result.stderr, /canonical|alias|original/u);
+  assert.deepEqual(readdirSync(outside), []);
+  rmSync(join(f.directory, "receipts", "guided-review"));
+  symlinkSync(join(f.root, "missing-outside"), join(f.directory, "receipts", "guided-review"));
+  const broken = await invoke(f, runtime);
+  assert.equal(broken.exit, 1); assert.match(broken.stderr, /canonical|alias|original/u);
+  assert.equal(existsSync(join(f.root, "missing-outside")), false);
+  assert.equal(runtime.bridges, 0); assert.equal(runtime.preparations, 0); assert.equal(runtime.launches, 0);
 });
