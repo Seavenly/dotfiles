@@ -34,9 +34,12 @@ function fixture(t) {
   const args = [cli, "init", "--repository", repository, "--summary", "Improve the existing sum utility", "--acceptance", "Existing sum tests pass"];
   const run = extra => spawnSync(process.execPath, [...args, ...extra], { env, encoding: "utf8", timeout: 45000, maxBuffer: 2 * 1024 * 1024 });
   const success = extra => { const result = run(extra); assert.equal(result.status, 0, result.stdout + result.stderr); return JSON.parse(result.stdout); };
-  const supported = () => {
+  // Mandatory discovery cases use a small ELF as metadata only. They never
+  // confirm that sentinel or claim it is compatible with the native protocol.
+  const native = join(root, "native-format-sentinel"); copyFileSync("/usr/bin/true", native); chmodSync(native, 0o700);
+  const supported = (target = native) => {
     const path = join(env.CODEX_HOME, "packages/standalone/releases", `0.166.0-${nativeTriple}`, "bin/codex");
-    mkdirSync(dirname(path), { recursive: true }); symlinkSync(installedSupported, path); return path;
+    mkdirSync(dirname(path), { recursive: true }); symlinkSync(target, path); return path;
   };
   const upgradedMise = () => {
     const mise = join(root, "mise"); writeFileSync(mise, '#!/bin/sh\ntouch "$HOME/shim-executed"\nexit 98\n', { mode: 0o700 });
@@ -54,48 +57,45 @@ function fixture(t) {
     for (const marker of markers) assert.equal(existsSync(marker), false, marker);
     assert.equal(git(["status", "--porcelain"]), "");
   };
-  return { root, repository, env, git, run, success, supported, upgradedMise, noActivity };
+  return { root, repository, env, git, run, success, supported, upgradedMise, noActivity, native };
 }
 
-test("public init bypasses an upgraded Mise default for an already installed supported native Codex", linux, t => {
-  if (!installedSupported || !existsSync(installedSupported)) return t.skip("Retained official Codex 0.166 native binary is not installed; no binary is downloaded");
+test("public init previews a known native layout instead of an upgraded Mise launcher without executing either", linux, t => {
   const f = fixture(t); f.upgradedMise(); f.supported();
   const preview = f.success(["--json"]);
   assert.equal(preview.status, "confirmation_required");
   assert.equal(preview.writes_performed, false);
-  assert.equal(preview.plan.codex_executable.path, realpathSync(installedSupported));
-  assert.equal(preview.plan.codex_executable.sha256, hash(readFileSync(installedSupported)));
+  assert.equal(preview.plan.codex_executable.path, f.native);
+  assert.equal(preview.plan.codex_executable.sha256, hash(readFileSync(f.native)));
   assert.equal(preview.plan.codex_executable.expected_version, "codex-cli 0.166.0");
   assert.equal(preview.plan.codex_executable.provenance.kind, "standalone_release");
   assert.equal(typeof preview.plan.codex_executable.provenance.location, "string");
   assert.equal(typeof preview.plan.codex_executable.bypass_reason, "string");
+  const rendered = f.run([]); assert.equal(rendered.status, 0, rendered.stdout + rendered.stderr);
+  assert.ok(rendered.stdout.includes(f.native)); assert.match(rendered.stdout, /Expected CLI version.*not observed.*0\.166\.0/u);
+  assert.match(rendered.stdout, /CLI selection: standalone_release/u); assert.match(rendered.stdout, /bypassed/u);
   f.noActivity(); assert.equal(existsSync(join(f.env.XDG_STATE_HOME, "flow-local")), false);
-  const accepted = f.success(["--confirm", preview.confirmation_digest, "--json"]);
-  assert.equal(accepted.status, "request_only"); assert.equal(accepted.owner_started, false); assert.equal(accepted.provider_execution, "not_run");
-  const metadata = JSON.parse(readFileSync(join(accepted.directory, "pilot.json"), "utf8"));
-  assert.equal(metadata.local_client.executable.path, realpathSync(installedSupported));
-  assert.equal(metadata.local_client.executable.version, "codex-cli 0.166.0");
-  assert.equal(existsSync(join(metadata.environment.FLOW_AUTHORITY_DIRECTORY, "authority.sqlite")), false);
-  assert.equal(existsSync(join(metadata.environment.FLOW_AUTHORITY_DIRECTORY, "direct-tasks")), false);
-  f.noActivity();
 });
 
-test("public init preserves the initialized project's exact supported executable despite a new default", linux, t => {
-  if (!installedSupported || !existsSync(installedSupported)) return t.skip("Retained official Codex 0.166 native binary is not installed");
+test("public init preserves original profile pins and rejects drift without repairing declared fixture metadata", linux, t => {
   const f = fixture(t); const selected = f.supported();
   const original = f.success(["--codex-executable", selected, "--json"]);
-  const created = f.success(["--codex-executable", selected, "--confirm", original.confirmation_digest, "--json"]);
-  const profile = join(created.directory, "../../profile.json");
-  const preserved = [profile, created.client, join(created.directory, "pilot.json"), join(created.directory, "trusted-owner.mjs")].map(path => [path, readFileSync(path)]);
+  const plan = original.plan;
+  const profile = join(dirname(plan.setup.authority_directory), "profile.json");
+  mkdirSync(dirname(profile), { recursive: true });
+  // This is owned declarative profile metadata, not a generated client or a
+  // successful native setup. Public confirmation of the sentinel is forbidden.
+  writeFileSync(profile, JSON.stringify({ identity: { schema: "flow.local-client/v1", repository: f.repository,
+    runtime_root: plan.runtime_root, node: plan.node, git_identity: plan.git_identity,
+    execution_trust: { schema: "flow.supervised-native-cli/v1", acknowledgment: "trust-official-cli-permissions" },
+    executable: { path: f.native, version: "codex-cli 0.166.0", sha256: hash(readFileSync(f.native)) } }, initial_check_digest: plan.registration_digest }));
+  const preserved = readFileSync(profile);
   f.upgradedMise();
   const preview = f.success(["--json"]);
-  assert.equal(preview.plan.codex_executable.path, realpathSync(installedSupported));
+  assert.equal(preview.plan.codex_executable.path, f.native);
   assert.equal(preview.plan.codex_executable.provenance.kind, "original_profile");
-  const reused = f.success(["--confirm", preview.confirmation_digest, "--json"]);
-  assert.equal(reused.client, created.client); assert.equal(reused.profile_reused, true);
-  for (const [path, bytes] of preserved) assert.deepEqual(readFileSync(path), bytes);
-  const metadata = JSON.parse(readFileSync(join(created.directory, "pilot.json"), "utf8"));
-  assert.equal(existsSync(join(metadata.environment.FLOW_AUTHORITY_DIRECTORY, "authority.sqlite")), false);
+  assert.deepEqual(readFileSync(profile), preserved);
+  assert.equal(existsSync(plan.setup.authority_directory), false);
   f.noActivity();
   // Corrupt only this owned fixture's declarative profile pin. Discovery must
   // not repair it by selecting a different installation or rewriting clients.
@@ -105,12 +105,10 @@ test("public init preserves the initialized project's exact supported executable
   const invalid = f.run(["--json"]);
   assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
   assert.match(invalid.stderr, /profile|pin|changed|identity/iu);
-  for (const [path, bytes] of preserved.slice(1)) assert.deepEqual(readFileSync(path), bytes);
   assert.deepEqual(JSON.parse(readFileSync(profile, "utf8")), altered); f.noActivity();
 });
 
 test("an explicit unsupported Codex is never substituted by the installed supported default", linux, t => {
-  if (!installedSupported || !existsSync(installedSupported)) return t.skip("Retained official Codex 0.166 native binary is not installed");
   const f = fixture(t); const explicit = f.upgradedMise(); f.supported();
   const preview = f.success(["--codex-executable", explicit, "--json"]);
   assert.equal(preview.plan.codex_executable.path, realpathSync(explicit)); f.noActivity();
@@ -146,30 +144,26 @@ test("exact explicit aliases are canonical and changed bytes invalidate their pu
 });
 
 test("a supported Mise npm layout pins its native payload instead of executing its JS launcher", linux, t => {
-  if (!installedSupported || !existsSync(installedSupported)) return t.skip("Retained official Codex 0.166 native binary is not installed");
   const f = fixture(t); f.upgradedMise();
   const release = join(f.env.MISE_DATA_DIR, "installs/codex/0.166.0");
   const npm = join(release, "lib/node_modules/@openai/codex");
   const native = join(npm, "node_modules", `@openai/codex-linux-${process.arch}`, "vendor", nativeTriple, "bin/codex");
-  mkdirSync(dirname(native), { recursive: true }); symlinkSync(installedSupported, native);
+  mkdirSync(dirname(native), { recursive: true }); symlinkSync(f.native, native);
   mkdirSync(join(npm, "bin"));
   writeFileSync(join(npm, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.166.0", bin: { codex: "bin/codex.js" } }));
   writeFileSync(join(npm, "bin/codex.js"), 'require("node:fs").writeFileSync(process.env.HOME + "/npm-launcher-executed", "unexpected");\n', { mode: 0o700 });
   mkdirSync(join(release, "bin")); symlinkSync(join(npm, "bin/codex.js"), join(release, "bin/codex"));
   const preview = f.success(["--json"]);
-  assert.equal(preview.plan.codex_executable.path, realpathSync(installedSupported));
+  assert.equal(preview.plan.codex_executable.path, f.native);
   assert.equal(preview.plan.codex_executable.provenance.kind, "mise_release");
   assert.equal(preview.plan.codex_executable.expected_version, "codex-cli 0.166.0");
-  assert.equal(existsSync(join(f.env.HOME, "npm-launcher-executed")), false); f.noActivity();
-  const accepted = f.success(["--confirm", preview.confirmation_digest, "--json"]);
-  assert.equal(accepted.status, "request_only"); assert.equal(accepted.owner_started, false);
   assert.equal(existsSync(join(f.env.HOME, "npm-launcher-executed")), false); f.noActivity();
 });
 
 test("selected Codex and Mise roots isolate discovery from other HOME installations and malformed candidates", linux, t => {
   const f = fixture(t); f.upgradedMise();
   const ignored = join(f.env.HOME, ".codex/packages/standalone/releases", `0.166.0-${nativeTriple}`, "bin/codex");
-  mkdirSync(dirname(ignored), { recursive: true }); symlinkSync(installedSupported ?? "/missing/codex", ignored);
+  mkdirSync(dirname(ignored), { recursive: true }); symlinkSync(f.native, ignored);
   const candidate = join(f.env.CODEX_HOME, "packages/standalone/releases", `0.166.0-${nativeTriple}`, "bin/codex");
   mkdirSync(dirname(candidate), { recursive: true });
   const refused = () => {
@@ -180,4 +174,24 @@ test("selected Codex and Mise roots isolate discovery from other HOME installati
   symlinkSync(join(f.root, "missing-native"), candidate); refused(); unlinkSync(candidate);
   mkdirSync(candidate); refused(); rmSync(candidate, { recursive: true });
   copyFileSync("/usr/bin/true", candidate); chmodSync(candidate, 0o600); refused();
+});
+
+test("real installed Codex 0.166 confirms default setup and reuses exact clients without starting work", linux, t => {
+  if (!installedSupported || !existsSync(installedSupported)) return t.skip("Optional real-version confirmation: retained official Codex 0.166 native binary is not installed in selected process HOME/CODEX_HOME; mandatory discovery tests still run");
+  const f = fixture(t); f.upgradedMise(); f.supported(installedSupported);
+  const preview = f.success(["--json"]);
+  assert.equal(preview.plan.codex_executable.path, realpathSync(installedSupported)); f.noActivity();
+  const accepted = f.success(["--confirm", preview.confirmation_digest, "--json"]);
+  assert.equal(accepted.status, "request_only"); assert.equal(accepted.owner_started, false); assert.equal(accepted.provider_execution, "not_run");
+  const preserved = [accepted.client, join(accepted.directory, "pilot.json"), join(accepted.directory, "trusted-owner.mjs"), join(accepted.directory, "../../profile.json")].map(path => [path, readFileSync(path)]);
+  const metadata = JSON.parse(readFileSync(join(accepted.directory, "pilot.json"), "utf8"));
+  assert.equal(metadata.local_client.executable.path, realpathSync(installedSupported));
+  assert.equal(metadata.local_client.executable.version, "codex-cli 0.166.0");
+  const repeat = f.success(["--json"]);
+  assert.equal(repeat.plan.codex_executable.provenance.kind, "original_profile");
+  const reused = f.success(["--confirm", repeat.confirmation_digest, "--json"]);
+  assert.equal(reused.client, accepted.client); assert.equal(reused.profile_reused, true);
+  for (const [path, bytes] of preserved) assert.deepEqual(readFileSync(path), bytes);
+  assert.equal(existsSync(join(metadata.environment.FLOW_AUTHORITY_DIRECTORY, "authority.sqlite")), false);
+  assert.equal(existsSync(join(metadata.environment.FLOW_AUTHORITY_DIRECTORY, "direct-tasks")), false); f.noActivity();
 });
