@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import test from "node:test";
 import { digest } from "../../../tools/flow/src/canonical.mjs";
-import { createProjectInitPlan, parseInitArguments, renderProjectInitPlan } from "../src/project-init.mjs";
+import { createProjectInitPlan, parseInitArguments, renderProjectInitPlan, runProjectInit } from "../src/project-init.mjs";
 import { installedExecutableMounts, projectCheckPreset, projectSignals } from "../src/project-check-presets.mjs";
 import { fileURLToPath } from "node:url";
 
@@ -173,4 +174,19 @@ test("public init forwards explicit check changes while preserving the same auth
   for (const file of retained) assert.deepEqual(readFileSync(file.path), file.bytes);
   assert.equal(existsSync(join(first.plan.plan.setup.authority_directory, "authority.sqlite")), false);
   assert.equal(f.git(["status", "--porcelain"]), "");
+});
+
+
+test("TTY refuses a malformed original profile rather than offering an alternate executable", linux, async t => {
+  const f = fixture(t);
+  const parent = join(f.state, "flow-local", digest(f.repository).slice(7, 31)); mkdirSync(parent, { recursive: true });
+  writeFileSync(join(parent, "profile.json"), "{}");
+  const stdin = new PassThrough(), stdout = new PassThrough(); stdin.isTTY = true; stdout.isTTY = true;
+  let rendered = "", diagnostic = ""; stdout.on("data", value => { rendered += value; });
+  const code = await runProjectInit(["--summary", "Keep useful behavior", "--acceptance", "Existing suite passes", "--kind", "npm"], {
+    env: f.env, cwd: f.repository, stdin, stdout, stderr: { write: value => { diagnostic += value; } },
+  });
+  assert.equal(code, 1); assert.match(diagnostic, /Existing project Codex profile.*malformed/u);
+  assert.doesNotMatch(rendered, /absolute path|Create this supervised setup/u);
+  assert.deepEqual(readFileSync(join(parent, "profile.json"), "utf8"), "{}");
 });

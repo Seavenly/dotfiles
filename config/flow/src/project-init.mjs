@@ -211,7 +211,10 @@ export async function runProjectInit(args, { env = process.env, cwd = process.cw
           const state = env.FLOW_LOCAL_CLIENT_STATE_HOME ?? env.XDG_STATE_HOME ?? join(env.HOME ?? homedir(), ".local/state");
           selectInitCodex({ repository: realpathSync(repository), profilePath: join(state, "flow-local", digest(realpathSync(repository)).slice(7, 31), "profile.json"), env });
         }
-        catch { options["--codex-executable"] = (await prompts.question("Installed official Codex absolute path: ")).trim(); }
+        catch (error) {
+          if (error.code !== "supported_codex_not_found") throw error;
+          options["--codex-executable"] = (await prompts.question("Installed supported official Codex absolute path: ")).trim();
+        }
       }
     }
     const plan = createProjectInitPlan(options, { env, cwd });

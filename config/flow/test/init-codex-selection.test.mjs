@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -80,4 +81,24 @@ test("known Mise payload and canonical aliases select once without invoking npm 
   assert.equal(f.select().path, native); assert.equal(f.select().provenance.kind, "mise_release"); assert.equal(f.select().bypass_reason, null);
   mkdirSync(dirname(f.standalone), { recursive: true }); symlinkSync(native, f.standalone);
   assert.equal(f.select().path, native); assert.equal(f.select().provenance.kind, "standalone_release");
+});
+
+test("original profile aliases are refused before reading unrelated file bytes", linux, t => {
+  const f = fixture(t); const native = f.native(join(f.root, "original-native")); f.profile(native);
+  const unrelated = join(f.root, "unrelated-owned-file"); writeFileSync(unrelated, readFileSync(f.profilePath));
+  unlinkSync(f.profilePath); symlinkSync(unrelated, f.profilePath);
+  assert.throws(() => f.select(), /profile.*regular|profile.*alias|profile.*malformed/iu);
+});
+
+
+test("original profile directories, FIFOs, oversized files and ancestor aliases refuse without a fallback", linux, t => {
+  const f = fixture(t); f.native(f.standalone); mkdirSync(dirname(f.profilePath), { recursive: true });
+  mkdirSync(f.profilePath); assert.throws(() => f.select(), /profile.*malformed/iu); rmSync(f.profilePath, { recursive: true });
+  execFileSync("/usr/bin/mkfifo", [f.profilePath]); assert.throws(() => f.select(), /profile.*malformed/iu); unlinkSync(f.profilePath);
+  writeFileSync(f.profilePath, Buffer.alloc(4 * 1024 * 1024 + 1, 32)); assert.throws(() => f.select(), /profile.*malformed/iu); unlinkSync(f.profilePath);
+  const original = f.native(join(f.root, "original")); f.profile(original);
+  const alias = join(f.root, "profile-parent"); symlinkSync(dirname(f.profilePath), alias);
+  assert.throws(() => f.select({ profilePath: join(alias, "profile.json") }), /profile.*malformed/iu);
+  unlinkSync(f.profilePath); symlinkSync(join(f.root, "missing"), f.profilePath);
+  assert.throws(() => f.select(), /profile.*unreadable/iu);
 });

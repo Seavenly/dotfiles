@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { accessSync, closeSync, constants, existsSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { codexExecutionAdapter } from "../../../tools/flow/src/codex-execution-adapter.mjs";
@@ -7,7 +7,7 @@ import { codexExecutionAdapter } from "../../../tools/flow/src/codex-execution-a
 const expectedVersion = codexExecutionAdapter.supportedVersionForTrust("supervised-native-cli");
 const release = /^codex-cli (\d+\.\d+\.\d+)$/u.exec(expectedVersion)?.[1];
 const hash = path => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
-const fail = message => { throw new Error(message); };
+const fail = (message, code) => { const error = new Error(message); if (code) error.code = code; throw error; };
 
 function executable(path, native = false) {
   if (!isAbsolute(path)) fail("Select an absolute --codex-executable path");
@@ -38,7 +38,15 @@ function originalSelection(profilePath, repository) {
     fail("Existing project profile is unreadable; retain its authority and repair the original selection separately");
   }
   try {
-    const profile = JSON.parse(readFileSync(profilePath, "utf8"));
+    const stat = lstatSync(profilePath);
+    if (!stat.isFile() || stat.size > 4 * 1024 * 1024 || realpathSync(profilePath) !== resolve(profilePath)) throw new Error("Expected a canonical regular profile of at most 4 MiB");
+    const fd = openSync(profilePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let profile;
+    try {
+      const opened = fstatSync(fd);
+      if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size > 4 * 1024 * 1024) throw new Error("Profile changed before reading");
+      profile = JSON.parse(readFileSync(fd, "utf8"));
+    } finally { closeSync(fd); }
     const identity = profile.identity, pinned = identity?.executable;
     if (identity?.schema !== "flow.local-client/v1" || identity.repository !== repository ||
         typeof identity.runtime_root !== "string" || !isAbsolute(identity.runtime_root) ||
@@ -99,7 +107,7 @@ export function selectInitCodex({ repository, profilePath, explicitPath, env = p
   let defaultCanonical;
   try { if (pathDefault) defaultCanonical = executable(pathDefault); } catch { /* Diagnostic only. */ }
   const chosen = available.find(candidate => candidate.path === defaultCanonical) ?? available[0];
-  if (!chosen) fail(`No supported native ${expectedVersion} installation was found in the selected CODEX_HOME or MISE_DATA_DIR. Install it separately or provide --codex-executable ABSOLUTE_PATH to an existing supported official binary. Init installs nothing and does not execute discovery candidates.`);
+  if (!chosen) fail(`No supported native ${expectedVersion} installation was found in the selected CODEX_HOME or MISE_DATA_DIR. Install it separately or provide --codex-executable ABSOLUTE_PATH to an existing supported official binary. Init installs nothing and does not execute discovery candidates.`, "supported_codex_not_found");
   const bypass = pathDefault && defaultCanonical !== chosen.path
     ? `PATH entry ${pathDefault} was bypassed: it is not a selected known supported native ${expectedVersion} payload.` : null;
   return selection(chosen.path, chosen.kind, chosen.location, bypass);
