@@ -39,11 +39,32 @@ project, tool, dependency, checker, output or Git identity drift changes the
 digest and requires another preview. A supplied `--brief JSON_FILE` is optional
 compatibility with manual setup, rather than a prerequisite.
 
+Codex selection follows the existing supervised adapter's exact supported version
+(currently `codex-cli 0.166.0`). An initialized project retains its original
+executable path, bytes and version; malformed or changed pins refuse setup. For a
+fresh project, init reads the known standalone release layout under `CODEX_HOME`
+(default `HOME/.codex`) and supported Mise native payload layouts under
+`MISE_DATA_DIR` (default `HOME/.local/share/mise`). It does not search arbitrary
+host directories. Custom roots replace these defaults. PATH aliases can identify
+these payloads; a newer npm launcher or shim does not replace the supported native
+binary. Missing supported installations require a separately installed binary or
+an explicit `--codex-executable` selection.
+
+The preview shows the canonical path, SHA-256, expected policy version,
+provenance and why a PATH default was bypassed. Expected version is metadata,
+not a measured compatibility claim. Default discovery checks the native ELF
+header and executes nothing. Confirmed setup still performs the existing bounded
+real `--version` check and hashes the selected executable. Explicit paths are
+never substituted, including native binaries in other installation layouts;
+unsupported versions still fail the central check. This does not admit Codex
+0.167 or change any existing execution contract. Init reads no authentication
+files and installs nothing.
+
 Useful selections are:
 
 ```text
 --repository PATH                 default: current Git project, including from a subdirectory
---codex-executable ABSOLUTE_PATH   default: an installed PATH entry, never an executed shim
+--codex-executable ABSOLUTE_PATH   exact override; default: supported installed native Codex
 --tool-executable ABSOLUTE_PATH    select an existing Python or Go installation
 --test-directory tests --test-pattern '*_test.py'
 --python-runner unittest|pytest
