@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -7,14 +6,14 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { digest } from "../../../tools/flow/src/canonical.mjs";
-import { findInstalledExecutable, projectCheckPreset, projectGit, projectSignals } from "./project-check-presets.mjs";
+import { projectCheckPreset, projectGit, projectSignals } from "./project-check-presets.mjs";
+import { selectInitCodex } from "./init-codex-selection.mjs";
 import { createProjectCheckRegistration } from "./project-check-registration.mjs";
 import { assertProductionGitFiltersAbsent, resolveProductionGitIdentity } from "./production-direct-commit.mjs";
 
 const runtimeRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../.."));
 const fail = message => { throw new Error(message); };
 const text = path => readFileSync(path, "utf8");
-const hash = path => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
 const save = (path, data) => writeFileSync(path, JSON.stringify(data, null, 2) + "\n", { flag: "wx", mode: 0o600 });
 const valueFlags = new Set(["--repository", "--kind", "--summary", "--acceptance", "--id", "--brief", "--codex-executable", "--tool-executable", "--test-directory", "--test-pattern", "--python-runner", "--read-executable", "--pin", "--timeout-seconds", "--client-link", "--upgrade-runtime", "--reconfigure-check", "--confirm"]);
 function canonicalDestination(path) {
@@ -35,7 +34,7 @@ Options:
   --acceptance TEXT            acceptance criterion, repeatable
   --id TEXT                    optional stable feature brief identifier
   --brief JSON_FILE            optional existing brief instead of plain text
-  --codex-executable PATH      installed official Codex (default: installed PATH entry)
+  --codex-executable PATH      installed official Codex (default: supported installed native binary)
   --tool-executable PATH       installed Python/Go; npm uses this CLI's Node 22
   --python-runner unittest|pytest
   --test-directory DIRECTORY   Python discovery root
@@ -99,7 +98,6 @@ export function createProjectInitPlan(options, { env = process.env, cwd = proces
   if (!brief || Object.keys(brief).sort().join(",") !== "acceptance,id,schema,summary" || brief.schema !== "flow.feature-brief/v1" ||
       !Array.isArray(brief.acceptance) || !brief.acceptance.length || new Set(brief.acceptance).size !== brief.acceptance.length ||
       [brief.id, brief.summary, ...brief.acceptance].some(value => typeof value !== "string" || !value.trim() || value.length > 8192)) fail("Provide a valid brief with unique non-empty acceptance criteria");
-  const codex = findInstalledExecutable("codex", { env, selected: options["--codex-executable"] });
   let gitIdentity;
   try { gitIdentity = resolveProductionGitIdentity(repository, env); }
   catch (error) {
@@ -111,6 +109,7 @@ export function createProjectInitPlan(options, { env = process.env, cwd = proces
   const actualStateHome = canonicalDestination(stateHome);
   if (actualStateHome === repository || actualStateHome.startsWith(repository + "/")) fail("Choose a machine-local state directory outside the project");
   const profile = join(stateHome, "flow-local", digest(repository).slice(7, 31));
+  const codex = selectInitCodex({ repository, profilePath: join(profile, "profile.json"), explicitPath: options["--codex-executable"], env });
   const authorityDirectory = canonicalDestination(join(profile, "authority"));
   const configurationParent = canonicalDestination(join(stateHome, "flow-init"));
   if (configurationParent === repository || configurationParent.startsWith(repository + "/")) fail("Choose a private configuration directory outside the project");
@@ -136,7 +135,7 @@ export function createProjectInitPlan(options, { env = process.env, cwd = proces
   }
   return { schema: "flow.project-init-selection/v1", repository, git_head: projectGit(repository, ["rev-parse", "HEAD"]).trim(),
     kind: preset.kind, brief, runtime_root: runtimeRoot, node: realpathSync(process.execPath), git_identity: gitIdentity,
-    codex_executable: { path: codex, sha256: hash(codex) }, recipe: preset.recipe, project_check: registration.config,
+    codex_executable: codex, recipe: preset.recipe, project_check: registration.config,
     registration_digest: registration.registration_digest, binding_fingerprint: registration.binding_fingerprint, scope: registration.scope,
     setup: { authority_directory: join(profile, "authority"), canonical_authority_directory: authorityDirectory,
       state_home: stateHome, canonical_state_home: actualStateHome, configuration_parent: configurationParent,
@@ -153,6 +152,9 @@ export function renderProjectInitPlan(plan) {
   return ["Flow project setup - preview", `Project: ${plan.repository}`, `Feature: ${plan.brief.summary}`,
     ...plan.brief.acceptance.map(value => `  Acceptance: ${value}`), `Preset: ${plan.kind} (GREEN-only verify)`,
     `Official CLI: ${plan.codex_executable.path} (${plan.codex_executable.sha256})`,
+    `Expected CLI version (required policy, not observed): ${plan.codex_executable.expected_version}`,
+    `CLI selection: ${plan.codex_executable.provenance.kind} (${plan.codex_executable.provenance.location})`,
+    ...(plan.codex_executable.bypass_reason ? [`CLI selection note: ${plan.codex_executable.bypass_reason}`] : []),
     `Command: ${JSON.stringify([check.executable.path, ...check.argv])}`, `Version probe: ${JSON.stringify(check.version_argv)} -> ${check.version}`,
     `Timeout: ${check.limits.timeout_ms / 1000}s + bounded 5s version probe; output: ${check.limits.max_output_bytes} bytes`,
     "Read-only inputs:", ...check.read_mounts.flatMap(input => [`  ${input.source} -> ${input.target}`, `    ${input.sha256}`]),
@@ -205,7 +207,10 @@ export async function runProjectInit(args, { env = process.env, cwd = process.cw
       const signals = projectSignals(repository);
       if (!options["--kind"] && signals.kinds.length !== 1) options["--kind"] = (await prompts.question(`Project type (${signals.kinds.join(", ") || "npm, python, go"}): `)).trim();
       if (!options["--codex-executable"]) {
-        try { findInstalledExecutable("codex", { env }); }
+        try {
+          const state = env.FLOW_LOCAL_CLIENT_STATE_HOME ?? env.XDG_STATE_HOME ?? join(env.HOME ?? homedir(), ".local/state");
+          selectInitCodex({ repository: realpathSync(repository), profilePath: join(state, "flow-local", digest(realpathSync(repository)).slice(7, 31), "profile.json"), env });
+        }
         catch { options["--codex-executable"] = (await prompts.question("Installed official Codex absolute path: ")).trim(); }
       }
     }
