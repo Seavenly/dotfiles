@@ -102,3 +102,10 @@ test("original profile directories, FIFOs, oversized files and ancestor aliases 
   unlinkSync(f.profilePath); symlinkSync(join(f.root, "missing"), f.profilePath);
   assert.throws(() => f.select(), /profile.*unreadable/iu);
 });
+
+test("a broken original profile directory is incomplete rather than a fresh default", linux, t => {
+  const f = fixture(t); f.native(f.standalone);
+  mkdirSync(dirname(dirname(f.profilePath)), { recursive: true });
+  symlinkSync(join(f.root, "missing-original-profile"), dirname(f.profilePath));
+  assert.throws(() => f.select(), /profile.*incomplete|profile.*unreadable/iu);
+});

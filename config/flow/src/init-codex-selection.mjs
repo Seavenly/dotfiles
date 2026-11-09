@@ -34,7 +34,13 @@ function selection(path, kind, location, bypassReason = null, sha256 = hash(path
 function originalSelection(profilePath, repository) {
   if (!existsSync(profilePath)) {
     // A partial or broken profile must not become a fresh installation selection.
-    try { lstatSync(profilePath); } catch (error) { if (error.code === "ENOENT" && !existsSync(dirname(profilePath))) return null; if (error.code === "ENOENT") fail("Existing project profile is incomplete; retain its authority and original executable selection"); throw error; }
+    try { lstatSync(profilePath); }
+    catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      try { lstatSync(dirname(profilePath)); }
+      catch (parentError) { if (parentError.code === "ENOENT") return null; throw parentError; }
+      fail("Existing project profile is incomplete; retain its authority and original executable selection");
+    }
     fail("Existing project profile is unreadable; retain its authority and repair the original selection separately");
   }
   try {
