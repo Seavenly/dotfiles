@@ -32,10 +32,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "f91025d2e2e93c9528e7c348b9a97b402aa8cd09",
+    "candidate_tree_sha": "27b299dda846fffb2995c813cf35db0395e55329",
     "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"
   },
-  "content_digest": "sha256:6e0f8877f1cd0e68e59944cf06690279b578bd8d9dc14cb30878900da23f8943",
+  "content_digest": "sha256:2e4424cb83a8be654128b0a81b59de1c483695a2d2f9ff449e3548bb1a4aa8ef",
   "files": [
     {
       "path": "GLOSSARY.md",
@@ -46,8 +46,8 @@
     {
       "path": "README.md",
       "mode": "100644",
-      "git_blob_sha": "2e437143f85d0342240d61b4827b0501850972ca",
-      "sha256": "52d4fe56b9cfffe5ccbd0b70afbd9cdf704c5b84b622e15e083e9462e1bee334"
+      "git_blob_sha": "d90004dd12ce075cf51f2f53c1dd95b6b997797c",
+      "sha256": "1f7a28d3df3e582a457ee30ff94a37417ef0758f9653796a913d92d2329a90ee"
     },
     {
       "path": "bin/flow",
@@ -734,6 +734,12 @@
       "sha256": "b8ae8c99441736a916a85d5a2af404c9edf6a515b4d64a6df747480679eaa3bd"
     },
     {
+      "path": "config/flow/src/init-codex-selection.mjs",
+      "mode": "100644",
+      "git_blob_sha": "2c9375b66a8dfc057b75a6e2a5c63318b4a3febb",
+      "sha256": "378264c9dc5643a1f5aea510dc3761737f23bb9bab0edc09988016d2ff0922c8"
+    },
+    {
       "path": "config/flow/src/legacy-compatibility-adapter.mjs",
       "mode": "100644",
       "git_blob_sha": "2f2b6fb7c84564941c044c2fd8c123058b0c0120",
@@ -844,8 +850,8 @@
     {
       "path": "config/flow/src/project-init.mjs",
       "mode": "100644",
-      "git_blob_sha": "c543fde7a7b7c3ffb8b7c6bc2b17f1077d5e7e2b",
-      "sha256": "17cbf4ebd66a13554044a7e476c9d242ecc80876f026cd5a3dfec6b1a9f07a5f"
+      "git_blob_sha": "e26f30f31813f0ef0b999ba141490f35dcde7a29",
+      "sha256": "7b1a0322b6f224ff0c0e97c92b635525163d221b7dac81479f2a01faeae68c79"
     },
     {
       "path": "config/flow/src/project-review-preparation.mjs",
@@ -1082,6 +1088,18 @@
       "sha256": "3f6565c89af6441f6ce96030c86d9f9ff4050bc4231f355402e2c8b382aa1bb9"
     },
     {
+      "path": "config/flow/test/init-codex-selection-public.test.mjs",
+      "mode": "100644",
+      "git_blob_sha": "916e2535edf25ae931345bda817a48596cb76c66",
+      "sha256": "0dd38474e2f7fcd89f4d6118f62a21a9cdd383225897584fe35166e1cbbac56f"
+    },
+    {
+      "path": "config/flow/test/init-codex-selection.test.mjs",
+      "mode": "100644",
+      "git_blob_sha": "8fb3d0953acf45f7053723f6dde759dd192abf80",
+      "sha256": "5081df189eef32ddcaed41f0105bd35c9bfa82be019124be4887ad5b4c91af82"
+    },
+    {
       "path": "config/flow/test/init-project-public.test.mjs",
       "mode": "100644",
       "git_blob_sha": "f0e98a47ecb4a4d299034a70c3260e23b6f98c3d",
@@ -1126,8 +1144,8 @@
     {
       "path": "config/flow/test/project-init.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "7c03b41e0d079a337a1b45c02f2774a43788ec01",
-      "sha256": "cca3ca984fd628183c0c29b4b11e8aaa4bc48c378947690584806963d705c9c3"
+      "git_blob_sha": "4cbe7cb517139543aef121301b38da22f76fde0f",
+      "sha256": "565bb917f9fb1db3ff5b0265464b72047a55e4f68649ab3344fb39978c43a0a0"
     },
     {
       "path": "config/flow/test/project-review.test.mjs",
