@@ -37,9 +37,19 @@ function originalSelection(profilePath, repository) {
     try { lstatSync(profilePath); }
     catch (error) {
       if (error.code !== "ENOENT") throw error;
-      try { lstatSync(dirname(profilePath)); }
-      catch (parentError) { if (parentError.code === "ENOENT") return null; throw parentError; }
-      fail("Existing project profile is incomplete; retain its authority and original executable selection");
+      let ancestor = dirname(profilePath);
+      for (;;) {
+        try { lstatSync(ancestor); }
+        catch (parentError) {
+          if (parentError.code !== "ENOENT") throw parentError;
+          ancestor = dirname(ancestor); continue;
+        }
+        // A missing whole profile is fresh, but broken/non-directory ancestors are not.
+        let directory = false;
+        try { directory = statSync(ancestor).isDirectory(); } catch { /* Broken alias. */ }
+        if (ancestor === dirname(profilePath) || !directory) fail("Existing project profile is incomplete; retain its authority and original executable selection");
+        return null;
+      }
     }
     fail("Existing project profile is unreadable; retain its authority and repair the original selection separately");
   }

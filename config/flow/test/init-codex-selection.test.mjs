@@ -109,3 +109,10 @@ test("a broken original profile directory is incomplete rather than a fresh defa
   symlinkSync(join(f.root, "missing-original-profile"), dirname(f.profilePath));
   assert.throws(() => f.select(), /profile.*incomplete|profile.*unreadable/iu);
 });
+
+
+test("a broken higher profile ancestor is not a fresh installation", linux, t => {
+  const f = fixture(t); f.native(f.standalone);
+  symlinkSync(join(f.root, "missing-original-state"), dirname(dirname(f.profilePath)));
+  assert.throws(() => f.select(), /profile.*incomplete|profile.*unreadable/iu);
+});
