@@ -11,7 +11,7 @@ const cli = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
 const linux = { skip: process.platform !== "linux" && "Guided native setup currently requires Linux" };
 const nativeTriple = { x64: "x86_64-unknown-linux-musl", arm64: "aarch64-unknown-linux-musl" }[process.arch];
 const installedSupported = nativeTriple && join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "packages/standalone/releases", `0.166.0-${nativeTriple}`, "bin/codex");
-const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+const hash = bytes => "sha256:" + createHash("sha256").update(bytes).digest("hex");
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "flow-init-codex-public-"));
