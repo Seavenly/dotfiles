@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -48,8 +48,10 @@ function fixture(t) {
     writeFileSync(launcher, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/new-cli-invocations"\n[ "$1" = "--version" ] && { echo "codex-cli 0.167.0"; exit 0; }\nexit 99\n', { mode: 0o700 });
     symlinkSync("0.167.0", join(env.MISE_DATA_DIR, "installs/codex/latest")); return launcher;
   };
-  const noActivity = () => {
-    for (const marker of [join(env.HOME, "shim-executed"), join(env.HOME, "new-cli-invocations"), join(repository, "project-test-executed")]) assert.equal(existsSync(marker), false, marker);
+  const noActivity = ({ versionProbe = false } = {}) => {
+    const markers = [join(env.HOME, "shim-executed"), join(repository, "project-test-executed")];
+    if (!versionProbe) markers.push(join(env.HOME, "new-cli-invocations"));
+    for (const marker of markers) assert.equal(existsSync(marker), false, marker);
     assert.equal(git(["status", "--porcelain"]), "");
   };
   return { root, repository, env, git, run, success, supported, upgradedMise, noActivity };
@@ -63,6 +65,10 @@ test("public init bypasses an upgraded Mise default for an already installed sup
   assert.equal(preview.writes_performed, false);
   assert.equal(preview.plan.codex_executable.path, realpathSync(installedSupported));
   assert.equal(preview.plan.codex_executable.sha256, hash(readFileSync(installedSupported)));
+  assert.equal(preview.plan.codex_executable.expected_version, "codex-cli 0.166.0");
+  assert.equal(preview.plan.codex_executable.provenance.kind, "standalone_release");
+  assert.equal(typeof preview.plan.codex_executable.provenance.location, "string");
+  assert.equal(typeof preview.plan.codex_executable.bypass_reason, "string");
   f.noActivity(); assert.equal(existsSync(join(f.env.XDG_STATE_HOME, "flow-local")), false);
   const accepted = f.success(["--confirm", preview.confirmation_digest, "--json"]);
   assert.equal(accepted.status, "request_only"); assert.equal(accepted.owner_started, false); assert.equal(accepted.provider_execution, "not_run");
@@ -72,4 +78,106 @@ test("public init bypasses an upgraded Mise default for an already installed sup
   assert.equal(existsSync(join(metadata.environment.FLOW_AUTHORITY_DIRECTORY, "authority.sqlite")), false);
   assert.equal(existsSync(join(metadata.environment.FLOW_AUTHORITY_DIRECTORY, "direct-tasks")), false);
   f.noActivity();
+});
+
+test("public init preserves the initialized project's exact supported executable despite a new default", linux, t => {
+  if (!installedSupported || !existsSync(installedSupported)) return t.skip("Retained official Codex 0.166 native binary is not installed");
+  const f = fixture(t); const selected = f.supported();
+  const original = f.success(["--codex-executable", selected, "--json"]);
+  const created = f.success(["--codex-executable", selected, "--confirm", original.confirmation_digest, "--json"]);
+  const profile = join(created.directory, "../../profile.json");
+  const preserved = [profile, created.client, join(created.directory, "pilot.json"), join(created.directory, "trusted-owner.mjs")].map(path => [path, readFileSync(path)]);
+  f.upgradedMise();
+  const preview = f.success(["--json"]);
+  assert.equal(preview.plan.codex_executable.path, realpathSync(installedSupported));
+  assert.equal(preview.plan.codex_executable.provenance.kind, "original_profile");
+  const reused = f.success(["--confirm", preview.confirmation_digest, "--json"]);
+  assert.equal(reused.client, created.client); assert.equal(reused.profile_reused, true);
+  for (const [path, bytes] of preserved) assert.deepEqual(readFileSync(path), bytes);
+  const metadata = JSON.parse(readFileSync(join(created.directory, "pilot.json"), "utf8"));
+  assert.equal(existsSync(join(metadata.environment.FLOW_AUTHORITY_DIRECTORY, "authority.sqlite")), false);
+  f.noActivity();
+  // Corrupt only this owned fixture's declarative profile pin. Discovery must
+  // not repair it by selecting a different installation or rewriting clients.
+  const altered = JSON.parse(readFileSync(profile, "utf8"));
+  altered.identity.executable.sha256 = `sha256:${"0".repeat(64)}`;
+  writeFileSync(profile, JSON.stringify(altered));
+  const invalid = f.run(["--json"]);
+  assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
+  assert.match(invalid.stderr, /profile|pin|changed|identity/iu);
+  for (const [path, bytes] of preserved.slice(1)) assert.deepEqual(readFileSync(path), bytes);
+  assert.deepEqual(JSON.parse(readFileSync(profile, "utf8")), altered); f.noActivity();
+});
+
+test("an explicit unsupported Codex is never substituted by the installed supported default", linux, t => {
+  if (!installedSupported || !existsSync(installedSupported)) return t.skip("Retained official Codex 0.166 native binary is not installed");
+  const f = fixture(t); const explicit = f.upgradedMise(); f.supported();
+  const preview = f.success(["--codex-executable", explicit, "--json"]);
+  assert.equal(preview.plan.codex_executable.path, realpathSync(explicit)); f.noActivity();
+  assert.equal(preview.plan.codex_executable.provenance.kind, "explicit");
+  const rejected = f.run(["--codex-executable", explicit, "--confirm", preview.confirmation_digest, "--json"]);
+  assert.equal(rejected.status, 1, rejected.stdout + rejected.stderr);
+  assert.match(rejected.stderr, /unsupported_executable_version|supported.*0\.166|0\.166.*supported/u);
+  assert.match(readFileSync(join(f.env.HOME, "new-cli-invocations"), "utf8"), /^(?:--version\n)+$/u);
+  assert.equal(existsSync(join(f.env.XDG_STATE_HOME, "flow-local")), false);
+  f.noActivity({ versionProbe: true });
+});
+
+test("no supported installation in the selected roots gives guidance without running candidate code", linux, t => {
+  const f = fixture(t); f.upgradedMise();
+  const result = f.run(["--json"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /0\.166\.0/u); assert.match(result.stderr, /--codex-executable|absolute.*path/iu);
+  assert.equal(existsSync(join(f.env.XDG_STATE_HOME, "flow-init")), false);
+  assert.equal(existsSync(join(f.env.XDG_STATE_HOME, "flow-local")), false); f.noActivity();
+});
+
+test("exact explicit aliases are canonical and changed bytes invalidate their public preview", linux, t => {
+  const f = fixture(t), executable = join(f.root, "selected-native"), alias = join(f.root, "selected-alias");
+  copyFileSync("/usr/bin/true", executable); chmodSync(executable, 0o700); symlinkSync(executable, alias);
+  const preview = f.success(["--codex-executable", alias, "--json"]);
+  assert.equal(preview.plan.codex_executable.path, executable);
+  writeFileSync(executable, Buffer.concat([readFileSync(executable), Buffer.from("changed after preview")]));
+  const rejected = f.run(["--codex-executable", alias, "--confirm", preview.confirmation_digest, "--json"]);
+  assert.equal(rejected.status, 1, rejected.stdout + rejected.stderr);
+  assert.match(rejected.stderr, /changed|fresh.*plan|confirmation.*match/iu);
+  assert.equal(existsSync(join(f.env.XDG_STATE_HOME, "flow-init")), false);
+  assert.equal(existsSync(join(f.env.XDG_STATE_HOME, "flow-local")), false); f.noActivity();
+});
+
+test("a supported Mise npm layout pins its native payload instead of executing its JS launcher", linux, t => {
+  if (!installedSupported || !existsSync(installedSupported)) return t.skip("Retained official Codex 0.166 native binary is not installed");
+  const f = fixture(t); f.upgradedMise();
+  const release = join(f.env.MISE_DATA_DIR, "installs/codex/0.166.0");
+  const npm = join(release, "lib/node_modules/@openai/codex");
+  const native = join(npm, "node_modules", `@openai/codex-linux-${process.arch}`, "vendor", nativeTriple, "bin/codex");
+  mkdirSync(dirname(native), { recursive: true }); symlinkSync(installedSupported, native);
+  mkdirSync(join(npm, "bin"));
+  writeFileSync(join(npm, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.166.0", bin: { codex: "bin/codex.js" } }));
+  writeFileSync(join(npm, "bin/codex.js"), 'require("node:fs").writeFileSync(process.env.HOME + "/npm-launcher-executed", "unexpected");\n', { mode: 0o700 });
+  mkdirSync(join(release, "bin")); symlinkSync(join(npm, "bin/codex.js"), join(release, "bin/codex"));
+  const preview = f.success(["--json"]);
+  assert.equal(preview.plan.codex_executable.path, realpathSync(installedSupported));
+  assert.equal(preview.plan.codex_executable.provenance.kind, "mise_release");
+  assert.equal(preview.plan.codex_executable.expected_version, "codex-cli 0.166.0");
+  assert.equal(existsSync(join(f.env.HOME, "npm-launcher-executed")), false); f.noActivity();
+  const accepted = f.success(["--confirm", preview.confirmation_digest, "--json"]);
+  assert.equal(accepted.status, "request_only"); assert.equal(accepted.owner_started, false);
+  assert.equal(existsSync(join(f.env.HOME, "npm-launcher-executed")), false); f.noActivity();
+});
+
+test("selected Codex and Mise roots isolate discovery from other HOME installations and malformed candidates", linux, t => {
+  const f = fixture(t); f.upgradedMise();
+  const ignored = join(f.env.HOME, ".codex/packages/standalone/releases", `0.166.0-${nativeTriple}`, "bin/codex");
+  mkdirSync(dirname(ignored), { recursive: true }); symlinkSync(installedSupported ?? "/missing/codex", ignored);
+  const candidate = join(f.env.CODEX_HOME, "packages/standalone/releases", `0.166.0-${nativeTriple}`, "bin/codex");
+  mkdirSync(dirname(candidate), { recursive: true });
+  const refused = () => {
+    const result = f.run(["--json"]); assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /0\.166\.0/u); assert.match(result.stderr, /--codex-executable|absolute.*path/iu);
+    assert.equal(existsSync(join(f.env.XDG_STATE_HOME, "flow-init")), false); f.noActivity();
+  };
+  symlinkSync(join(f.root, "missing-native"), candidate); refused(); unlinkSync(candidate);
+  mkdirSync(candidate); refused(); rmSync(candidate, { recursive: true });
+  copyFileSync("/usr/bin/true", candidate); chmodSync(candidate, 0o600); refused();
 });
