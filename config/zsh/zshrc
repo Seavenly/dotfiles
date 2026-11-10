@@ -64,6 +64,11 @@ bindkey '^a' sesh-connect
 
 source "$HOME/.local/bin/nvim-remote-shell"
 source "$DOTFILES_ROOT/config/zsh/aliases.zsh"
+
+codex() {
+  TZ=America/New_York command codex "$@"
+}
+
 [[ -r "$XDG_CONFIG_HOME/dotfiles/aliases.local.zsh" ]] && source "$XDG_CONFIG_HOME/dotfiles/aliases.local.zsh"
 [[ -r "$XDG_CONFIG_HOME/dotfiles/private.zsh" ]] && source "$XDG_CONFIG_HOME/dotfiles/private.zsh"
 

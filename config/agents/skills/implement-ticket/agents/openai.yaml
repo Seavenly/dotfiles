@@ -1,5 +1,5 @@
 interface:
   display_name: "Implement Ticket"
-  short_description: "Orchestrate Luna Max ticket implementation"
+  short_description: "Orchestrate Sol tickets; --luna selects Luna"
 policy:
   allow_implicit_invocation: false

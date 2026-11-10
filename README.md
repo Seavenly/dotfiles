@@ -156,8 +156,16 @@ versioned request contracts.
 
 Available upgrade components are `tools`, `packages`, `shell`, `nvim`,
 `recorder`, and `mise`. Normal upgrades fail fast, ignore Git state, and leave
-lock or configuration changes uncommitted for review. Tool resolution observes
-a seven-day minimum release age.
+lock or configuration changes uncommitted for review. New releases are available
+immediately; the lockfile keeps installations reproducible between upgrades.
+
+Update a single mise-managed tool, such as Codex, through mise so the selected
+installation and lockfile move together:
+
+```sh
+cd ~/.dotfiles
+MISE_LOCKED=0 mise upgrade codex
+```
 
 CI runs `dotfiles check` and validates the dotfile plan against isolated home
 directories on macOS, Ubuntu x86_64, and Ubuntu arm64.
