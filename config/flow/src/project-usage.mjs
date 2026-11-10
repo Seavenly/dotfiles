@@ -13,14 +13,14 @@ export function renderProjectUsage(report) {
   const lines = ["Flow recorded usage", `Project: ${report.repository ?? "unavailable"}`, `Run: ${report.root_run_id}`, `Observation: ${report.observation}; collected ${report.observed_at}`, `Inspection: ${report.complete ? "complete" : "incomplete"}`];
   if (report.observation === "inspect_only") lines.push("Historical inspect-only evidence; no owner started. Usage does not prove success, retirement, approval or workspace reuse.");
   for (const attempt of report.attempts) {
-    lines.push("", `${attempt.card_id}: ${attempt.status}`, `  Attempt: ${attempt.attempt_id}`, `  ${attempt.harness ?? "provider unknown"}; requested model ${attempt.model.requested ?? "unknown"}; reported model ${attempt.model.reported ?? "unknown"}; CLI ${attempt.cli_version ?? "unknown"}`);
+    lines.push("", `${attempt.card_id}: ${attempt.status}; authority status: ${attempt.authority_status ?? "unknown"}`, `  Attempt: ${attempt.attempt_id}`, `  ${attempt.harness ?? "provider unknown"}; requested model ${attempt.model.requested ?? "unknown"}; reported model ${attempt.model.reported ?? "unknown"}; CLI ${attempt.cli_version ?? "unknown"}`);
     for (const [name, value] of Object.entries(attempt.metrics)) lines.push(`  ${name}: ${value ?? "unknown"}`);
     if (attempt.token_semantics) lines.push(`  Token meaning: ${attempt.token_semantics}`);
     if (attempt.turn_semantics) lines.push(`  Turn meaning: ${attempt.turn_semantics}`);
     lines.push(`  CLI estimate: ${attempt.cost.usd === null ? "unknown" : `$${attempt.cost.usd} (${attempt.cost.basis})`}`);
     for (const code of attempt.diagnostics) lines.push(`  Unavailable: ${code}`);
   }
-  lines.push("", `Distinct attempts: ${report.attempts.length}; adopted/replayed duplicates omitted: ${report.deduplicated_attempts}`, `Known CLI list-cost subtotal: ${report.cost.known_list_cost_usd === null ? "unknown" : `$${report.cost.known_list_cost_usd}`}; unknown-cost attempts: ${report.cost.unknown_attempts}`, "Actual billing: unknown. Pricing date/rate-table version: unknown; no external price lookup.");
+  lines.push("", `Distinct attempts observed: ${report.attempt_count}; displayed ${report.attempts.length}; omitted ${report.omitted_attempts}; adopted/replayed duplicates omitted: ${report.deduplicated_attempts}`, `Known CLI list-cost subtotal: ${report.cost.known_list_cost_usd === null ? "unknown" : `$${report.cost.known_list_cost_usd}`}; unknown-cost attempts: ${report.cost.unknown_attempts}`, "Actual billing: unknown. Pricing date/rate-table version: unknown; no external price lookup.");
   for (const item of report.diagnostics) lines.push(`Unavailable: ${item.run_id} ${item.code}`);
   return lines.map(terminalText).join("\n") + "\n";
 }

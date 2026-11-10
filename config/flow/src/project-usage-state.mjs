@@ -29,21 +29,23 @@ function selectedClients(options, { env, cwd, io }) {
 }
 
 function totals(attempts) {
-  const groups = new Map(); let knownCost = null, unknownCost = 0;
+  const groups = new Map(); let knownCost = null, unknownCost = 0, costOverflow = false;
   for (const attempt of attempts) {
-    if (attempt.cost.basis === "cli_reported_list_estimate" && attempt.cost.usd !== null) knownCost = (knownCost ?? 0) + attempt.cost.usd;
+    if (attempt.cost.basis === "cli_reported_list_estimate" && attempt.cost.usd !== null) {
+      if (!costOverflow) { const sum = (knownCost ?? 0) + attempt.cost.usd; if (Number.isFinite(sum)) knownCost = sum; else { knownCost = null; costOverflow = true; } }
+    }
     else unknownCost++;
     const key = digest({ harness: attempt.harness, model: attempt.model, token_semantics: attempt.token_semantics, turn_semantics: attempt.turn_semantics });
     if (!groups.has(key)) groups.set(key, { harness: attempt.harness, model: attempt.model, token_semantics: attempt.token_semantics, turn_semantics: attempt.turn_semantics,
-      attempts: 0, metrics: Object.fromEntries(metricKeys.map(name => [name, null])), unknown_metric_attempts: Object.fromEntries(metricKeys.map(name => [name, 0])) });
+      attempts: 0, overflow_metrics: [], metrics: Object.fromEntries(metricKeys.map(name => [name, null])), unknown_metric_attempts: Object.fromEntries(metricKeys.map(name => [name, 0])) });
     const group = groups.get(key); group.attempts++;
     for (const name of metricKeys) {
       const value = attempt.metrics[name];
       if (value === null) group.unknown_metric_attempts[name]++;
-      else { const sum = (group.metrics[name] ?? 0) + value; if (Number.isSafeInteger(sum)) group.metrics[name] = sum; else { group.metrics[name] = null; group.unknown_metric_attempts[name]++; } }
+      else if (!group.overflow_metrics.includes(name)) { const sum = (group.metrics[name] ?? 0) + value; if (Number.isSafeInteger(sum)) group.metrics[name] = sum; else { group.metrics[name] = null; group.overflow_metrics.push(name); } }
     }
   }
-  return { provider_totals: [...groups.values()], cost: { known_list_cost_usd: knownCost, unknown_attempts: unknownCost, subtotal_complete: unknownCost === 0 && attempts.length > 0,
+  return { provider_totals: [...groups.values()], cost: { known_list_cost_usd: knownCost, unknown_attempts: unknownCost, subtotal_complete: !costOverflow && unknownCost === 0 && attempts.length > 0, subtotal_overflow: costOverflow,
     basis: "CLI-reported list estimates only; not actual billing", billing: null, pricing_date: null, pricing_table_version: null } };
 }
 
@@ -85,7 +87,7 @@ export async function collectProjectUsage(options, { env = process.env, cwd = pr
         seenTasks.set(key, binding);
         const attempt = !effect.invocation_started && !effect.receipt ? { run_id: id, card_id: effect.card_id, effect_id: effect.effect_id, attempt_id: effect.attempt_id,
           task_id: null, descriptor_digest: null, harness: null, model: { requested: null, reported: null }, cli_version: null, authority_status: effect.status,
-          status: "pending", metrics: Object.fromEntries(metricKeys.map(name => [name, null])), token_semantics: null, turn_semantics: null,
+          status: ["not_created", "abandoned"].includes(effect.status) ? effect.status : ["unresolved", "reserved", "pending"].includes(effect.status) ? "pending" : "unavailable", metrics: Object.fromEntries(metricKeys.map(name => [name, null])), token_semantics: null, turn_semantics: null,
           cost: { usd: null, basis: "unknown", raw_field: null }, provenance: null, diagnostics: [] }
           : readTask({ authorityDirectory: selection.authority_directory, runId: id, effect, remaining: io.remaining });
         report.attempts.push(attempt);
@@ -106,6 +108,14 @@ export async function collectProjectUsage(options, { env = process.env, cwd = pr
     report.observation = "unavailable"; diagnostic(error.code);
   }
   Object.assign(report, totals(report.attempts));
-  while (Buffer.byteLength(JSON.stringify(report)) > limits.output_bytes && report.attempts.length) { report.attempts.pop(); diagnostic("usage_output_limit"); Object.assign(report, totals(report.attempts)); }
+  if (report.cost.subtotal_overflow || report.provider_totals.some(group => group.overflow_metrics.length)) diagnostic("usage_total_overflow");
+  report.attempt_count = report.attempts.length; report.omitted_attempts = 0; report.omitted_runs = 0;
+  if (Buffer.byteLength(JSON.stringify(report)) > limits.output_bytes) diagnostic("usage_output_limit");
+  while (Buffer.byteLength(JSON.stringify(report)) > limits.output_bytes && (report.attempts.length || report.runs.length || report.diagnostics.some(item => item.code !== "usage_output_limit"))) {
+    if (report.attempts.length) { report.attempts.pop(); report.omitted_attempts++; Object.assign(report, totals(report.attempts)); report.cost.unknown_attempts += report.omitted_attempts; report.cost.subtotal_complete = false; }
+    else if (report.runs.length) { report.runs.pop(); report.omitted_runs++; }
+    else report.diagnostics.splice(report.diagnostics.findIndex(item => item.code !== "usage_output_limit"), 1);
+  }
+  if (Buffer.byteLength(JSON.stringify(report)) > limits.output_bytes) fail("usage_output_unrepresentable");
   return report;
 }
