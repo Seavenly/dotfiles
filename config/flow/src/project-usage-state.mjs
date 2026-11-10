@@ -35,8 +35,8 @@ function totals(attempts) {
       if (!costOverflow) { const sum = (knownCost ?? 0) + attempt.cost.usd; if (Number.isFinite(sum)) knownCost = sum; else { knownCost = null; costOverflow = true; } }
     }
     else unknownCost++;
-    const key = digest({ harness: attempt.harness, model: attempt.model, token_semantics: attempt.token_semantics, turn_semantics: attempt.turn_semantics });
-    if (!groups.has(key)) groups.set(key, { harness: attempt.harness, model: attempt.model, token_semantics: attempt.token_semantics, turn_semantics: attempt.turn_semantics,
+    const key = digest({ harness: attempt.harness, provider_reported: attempt.provider_reported ?? null, model: attempt.model, token_semantics: attempt.token_semantics, turn_semantics: attempt.turn_semantics });
+    if (!groups.has(key)) groups.set(key, { harness: attempt.harness, provider_reported: attempt.provider_reported ?? null, model: attempt.model, token_semantics: attempt.token_semantics, turn_semantics: attempt.turn_semantics,
       attempts: 0, overflow_metrics: [], metrics: Object.fromEntries(metricKeys.map(name => [name, null])), unknown_metric_attempts: Object.fromEntries(metricKeys.map(name => [name, 0])) });
     const group = groups.get(key); group.attempts++;
     for (const name of metricKeys) {

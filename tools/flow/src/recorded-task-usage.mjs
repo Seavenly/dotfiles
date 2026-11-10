@@ -35,7 +35,7 @@ export function parseRecordedUsage(stdout, { harness, nativeSession = null, limi
   if (typeof session !== "string" || !session || session.length > 256 || nativeSession !== null && session !== nativeSession || harness === "claude" && event.session_id !== session) throw issue("usage_session_conflict");
   const usage = event.usage;
   if (!usage || typeof usage !== "object" || Array.isArray(usage)) throw issue("usage_metrics_missing");
-  let cost = { usd: null, basis: "unknown", raw_field: null }, reportedModel = null;
+  let cost = { usd: null, basis: "unknown", raw_field: null }, reportedModel = null, reportedProvider = null;
   if (harness === "codex") {
     integer("input_tokens", usage.input_tokens, "turn.completed.usage.input_tokens");
     integer("cached_input_tokens", usage.cached_input_tokens, "turn.completed.usage.cached_input_tokens");
@@ -53,15 +53,27 @@ export function parseRecordedUsage(stdout, { harness, nativeSession = null, limi
     integer("reasoning_output_tokens", usage.output_tokens_details?.thinking_tokens, "result.usage.output_tokens_details.thinking_tokens");
     integer("turns", event.num_turns, "result.num_turns");
     const models = event.modelUsage && typeof event.modelUsage === "object" && !Array.isArray(event.modelUsage) ? Object.keys(event.modelUsage) : [];
-    if (models.length === 1) reportedModel = safeName(models[0]);
+    if (models.length === 1) {
+      reportedModel = safeName(models[0]);
+      const provider = event.modelUsage[models[0]]?.provider;
+      if (["firstParty", "bedrock", "vertex", "foundry"].includes(provider)) reportedProvider = provider;
+    }
     if (event.total_cost_usd !== undefined && event.total_cost_usd !== null) {
       if (typeof event.total_cost_usd !== "number" || !Number.isFinite(event.total_cost_usd) || event.total_cost_usd < 0) diagnostics.push("invalid_reported_cost");
       else cost = { usd: event.total_cost_usd, basis: models.length && models.every(model => event.modelUsage[model]?.costBasis === "list") ? "cli_reported_list_estimate" : "cli_reported_estimate", raw_field: "result.total_cost_usd" };
     }
+    // Model-level costs corroborate the cumulative final result, never add to it.
+    if (cost.usd !== null && models.length && models.every(model => event.modelUsage[model]?.costUSD !== undefined)) {
+      const values = models.map(model => event.modelUsage[model].costUSD);
+      const sum = values.reduce((total, value) => total + value, 0);
+      if (values.some(value => typeof value !== "number" || !Number.isFinite(value) || value < 0) || !Number.isFinite(sum) || Math.abs(sum - cost.usd) > Math.max(1e-12, Math.abs(cost.usd) * 1e-9)) {
+        cost = { usd: null, basis: "unknown", raw_field: null }; diagnostics.push("usage_cost_source_conflict");
+      }
+    }
   }
   if (metrics.reasoning_output_tokens !== null && metrics.output_tokens !== null && metrics.reasoning_output_tokens > metrics.output_tokens) { metrics.reasoning_output_tokens = null; diagnostics.push("invalid_reasoning_subset"); }
   if (metrics.input_tokens === null && metrics.output_tokens === null) diagnostics.push("usage_token_counts_unknown");
-  return { metrics, model_reported: reportedModel, cost,
+  return { metrics, model_reported: reportedModel, provider_reported: reportedProvider, cost,
     token_semantics: harness === "codex" ? "codex_input_includes_cached_input; reasoning_is_output_subset; do_not_add_subsets" : "claude_input_excludes_cache_read_and_creation; reasoning_is_output_subset; final_result_cumulative_once",
     turn_semantics: harness === "codex" ? "completed_native_turn_events" : "cli_result_num_turns",
     provenance: { event_type: terminalType, event_index: index, metric_fields: fields }, diagnostics };
@@ -86,7 +98,7 @@ function readCanonical(path, maxBytes, remaining) {
 /** Read one exact projected delegate's retained bytes. Never constructs a task port. */
 export function readRecordedTaskUsage({ authorityDirectory, runId, effect, limits = RECORDED_USAGE_LIMITS, remaining = () => {} }) {
   const row = { run_id: runId, card_id: effect.card_id, effect_id: effect.effect_id, attempt_id: effect.attempt_id, task_id: null,
-    descriptor_digest: null, harness: null, model: { requested: null, reported: null }, cli_version: null,
+    descriptor_digest: null, harness: null, provider_reported: null, model: { requested: null, reported: null }, cli_version: null,
     authority_status: effect.status, status: "unavailable", metrics: emptyMetrics(), token_semantics: null, turn_semantics: null,
     cost: { usd: null, basis: "unknown", raw_field: null }, provenance: null, diagnostics: [] };
   try {
@@ -118,7 +130,7 @@ export function readRecordedTaskUsage({ authorityDirectory, runId, effect, limit
     const version = descriptor.description?.backend?.executable?.version;
     row.cli_version = typeof version === "string" && /^(?:codex-cli \d+\.\d+\.\d+|\d+\.\d+\.\d+ \(Claude Code\))$/u.test(version) ? version : null;
     const parsed = parseRecordedUsage(stdout, { harness, nativeSession: proof?.native_session ?? null, limits });
-    Object.assign(row, { metrics: parsed.metrics, token_semantics: parsed.token_semantics, turn_semantics: parsed.turn_semantics, cost: parsed.cost,
+    Object.assign(row, { metrics: parsed.metrics, provider_reported: parsed.provider_reported, token_semantics: parsed.token_semantics, turn_semantics: parsed.turn_semantics, cost: parsed.cost,
       provenance: { ...parsed.provenance, stdout_sha256: receipt.stdout_sha256, terminal_receipt_digest: terminalDigest } });
     row.model.reported = parsed.model_reported; row.diagnostics.push(...parsed.diagnostics);
     row.status = row.diagnostics.length || receipt.cancelled || receipt.exit_code !== 0 || !proof ? "partial" : "reported";
