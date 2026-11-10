@@ -77,6 +77,14 @@ test("accepted-before-send intent with readable empty index remains uncertain an
   const before = snapshot(f.root), report = await f.collect(), row = report.attempts[0];
   assert.equal(report.complete, true); assert.equal(report.status, "attention"); assert.equal(row.state, "accepted_unknown"); assert.equal(row.run_id, null);
   assert.equal(row.intended_run_id, retained.id); assert(row.next_commands.some(command => command.kind === "resume_exact_attempt")); assert.deepEqual(snapshot(f.root), before);
+  f.observer.query = async (_selection, request) => request.run_id
+    ? { schema: "flow.run-projection/v1", run_id: retained.id, bundle_digest: retained.preview.bundle_digest, phase: "succeeded", cards: [], effects: [] }
+    : { schema: "flow.run-index-projection/v1", authority_schema: { status: "compatible" }, runs: [retained.id] };
+  const admitted = await f.collect();
+  assert.equal(admitted.attempts[0].state, "admitted");
+  assert.equal(admitted.status, "ok");
+  assert.doesNotMatch(renderProjectRuns(admitted), /admission must be observed/u);
+  assert.deepEqual(snapshot(f.root), before);
 });
 
 test("exact admitted attempt preserves object facts and reports every unresolved count", linux, async t => {

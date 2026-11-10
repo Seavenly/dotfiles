@@ -13,6 +13,7 @@ import { reviewSelection } from "./project-review-state.mjs";
 export const RUNS_LIMITS = Object.freeze({ clients: 32, attempts: 128, queries: 64, directory_entries: 128, file_bytes: 4 * 1024 * 1024, output_bytes: 1024 * 1024, elapsed_ms: 15000 });
 const clientName = /^(?:verify|[a-f0-9]{64})(?:\.runtime-[a-f0-9]{64})?$/u;
 const runId = /^run:[a-f0-9]{64}$/u;
+const acceptedWarning = "Accepted launch intent is retained; admission must be observed independently.";
 const failure = (code, message) => Object.assign(new Error(message), { code });
 
 /** Bounded reads only. Missing, broken and redirected paths remain different facts. */
@@ -82,7 +83,7 @@ function journal(selection, io, { archived = false } = {}) {
       preview.runtime_root !== selection.runtime_root || preview.authority_directory !== selection.authority_directory) throw failure("preview_changed", "Retained preview paths or run identity changed.");
   const accepted = validateAccepted(selection, retained, io);
   return { state: accepted ? "accepted_unknown" : "prepared", selection, retained, intended_run_id: preview.run_id,
-    attention: accepted ? ["Accepted launch intent is retained; admission must be observed independently."] : [] };
+    attention: accepted ? [acceptedWarning] : [] };
 }
 
 function selectionEnvironment(selection, env) {
@@ -214,7 +215,9 @@ async function inspectAuthorities(result, io, observer, diagnostic, env) {
         if (run.schema !== "flow.run-projection/v1" || run.run_id !== id) throw failure("invalid_projection", "Public run projection did not bind the exact requested run.");
         row.run_ids.push(id);
         const attempts = result.attempts.filter(attempt => attempt.selection.authority_directory === authority && attempt.intended_run_id === id && attempt.retained?.preview.bundle_digest === run.bundle_digest);
-        if (attempts.length) for (const attempt of attempts) { attempt.state = "admitted"; attempt.run = run; attempt.observation = row.observation; attempt.query = query; }
+        if (attempts.length) for (const attempt of attempts) {
+          if (attempt.state === "accepted_unknown") attempt.attention = (attempt.attention ?? []).filter(reason => reason !== acceptedWarning);
+          attempt.state = "admitted"; attempt.run = run; attempt.observation = row.observation; attempt.query = query; }
         else if (result.attempts.length < result.limits.attempts) result.attempts.push({ kind: "manual", state: "admitted", selection: selected, run, observation: row.observation, query, attention: ["No matching validated guided receipt; use the original client's inspection commands."] });
         else throw failure("attempt_limit", "Attempt limit reached; some authority work was not displayed.");
       }
