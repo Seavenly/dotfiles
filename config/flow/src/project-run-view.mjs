@@ -49,7 +49,8 @@ export function projectRunBlocked(run) {
       ["failed", "timeout", "output_limit", "cancelled", "environment_failure"].includes(effect.receipt.provider_receipt.record?.outcome));
 }
 
-export function summarizeProjectRun(run, { selection, candidate = null, status, projectionFile } = {}) {
+/** Pure observed check/resource facts, independent of guided command ownership. */
+export function projectRunFacts(run) {
   const effects = run.effects ?? [];
   const configuredCheck = contract => (run.active_plan?.cards ?? []).find(card => card.executor?.contract === contract);
   const checkCard = configuredCheck("flow.operation/project-check/v2");
@@ -62,6 +63,21 @@ export function summarizeProjectRun(run, { selection, candidate = null, status, 
   const critique = (run.cards ?? []).find(card => /critique/u.test(card.id));
   const unresolved = effects.filter(effect => !effect.receipt && !["not_created", "abandoned"].includes(effect.status));
   const quarantined = effects.filter(effect => /quarantin/u.test(effect.status));
+  return {
+    checks: check || checkCard ? { kind: "registered_green_only", status: check?.status ?? cardStatus(checkCard), outcome: checkReceipt?.outcome ?? null,
+      exit_code: checkReceipt?.exit_code ?? null, test_count: checkReceipt?.test_count ?? "unknown", evidence: checkReceipt ?? null }
+      : tests.length ? { kind: "registered_expected_red_then_green", evidence: tests.map(effect => effect.receipt?.provider_receipt ?? null) }
+        : testCard ? { kind: "registered_expected_red_then_green", status: cardStatus(testCard), evidence: [] }
+        : { kind: "content_only", project_checks: "not_run", scope: (run.trust_posture ?? run.views?.trust?.trust_posture)?.verification_scope ?? null },
+    critique: critique?.status ?? "not_observed",
+    unresolved_effects: unresolved.map(effect => effect.effect_id), quarantined_effects: quarantined.map(effect => effect.effect_id),
+    workspace_settlement: (run.resource_dispositions ?? []).map(disposition => ({ ...disposition })),
+  };
+}
+
+export function summarizeProjectRun(run, { selection, candidate = null, status, projectionFile } = {}) {
+  const effects = run.effects ?? [], facts = projectRunFacts(run);
+  const checkReceipt = facts.checks.kind === "registered_green_only" ? facts.checks.evidence : null;
   const retained = candidate?.candidate ?? candidate?.capture ?? null;
   const git = retained?.git ?? candidate?.git ?? null;
   const capture = effects.find(effect => effect.operation_contract === "flow.operation/feature-capture/v1")?.receipt?.provider_receipt;
@@ -75,14 +91,10 @@ export function summarizeProjectRun(run, { selection, candidate = null, status, 
     request: selection.request, client: selection.client, retained_directory: selection.retained_directory,
     projection_file: projectionFile, candidate: candidate === null ? null : { id: candidate.subject_id ?? run.review_candidate_reference?.candidate_id,
       status: candidate.status, fingerprint: candidate.candidate_fingerprint ?? run.review_candidate_reference?.candidate_fingerprint, commit, ref },
-    checks: check || checkCard ? { kind: "registered_green_only", status: check?.status ?? cardStatus(checkCard), outcome: checkReceipt?.outcome ?? null,
-      exit_code: checkReceipt?.exit_code ?? null, test_count: checkReceipt?.test_count ?? "unknown", evidence: checkReceipt ?? null }
-      : tests.length ? { kind: "registered_expected_red_then_green", evidence: tests.map(effect => effect.receipt?.provider_receipt ?? null) }
-        : testCard ? { kind: "registered_expected_red_then_green", status: cardStatus(testCard), evidence: [] }
-        : { kind: "content_only", project_checks: "not_run", scope: (run.trust_posture ?? run.views?.trust?.trust_posture)?.verification_scope ?? null },
-    critique: critique?.status ?? "not_observed", separate_review: "not_requested", human_approval: "not_requested",
-    unresolved_effects: unresolved.map(effect => effect.effect_id), quarantined_effects: quarantined.map(effect => effect.effect_id),
-    workspace_settlement: (run.resource_dispositions ?? []).map(disposition => ({ ...disposition })),
+    checks: facts.checks,
+    critique: facts.critique, separate_review: "not_requested", human_approval: "not_requested",
+    unresolved_effects: facts.unresolved_effects, quarantined_effects: facts.quarantined_effects,
+    workspace_settlement: facts.workspace_settlement,
     legal_actions: actions.map(({ command: _command, ...action }) => action), next_commands: next,
   };
 }

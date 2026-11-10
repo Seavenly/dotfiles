@@ -1,14 +1,27 @@
 import { quoteShell } from "../scripts/feature-client-files.mjs";
-import { projectRunBlocked, summarizeProjectRun, terminalText } from "./project-run-view.mjs";
+import { projectRunBlocked, projectRunFacts, terminalText } from "./project-run-view.mjs";
 import { reviewAttachCommand } from "./project-review-view.mjs";
 
 const text = value => typeof value === "string" ? value.slice(0, 1024) : value === null || value === undefined ? null : String(value).slice(0, 1024);
 const strings = values => Array.isArray(values) ? values.slice(0, 32).map(text) : [];
+const display = value => value !== null && typeof value === "object" ? JSON.stringify(value) : value ?? "not observed";
+function boundedJson(value, truncated, field) {
+  let nodes = 0;
+  function visit(item, depth) {
+    if (++nodes > 256 || depth > 6) { truncated.add(field); return "[truncated]"; }
+    if (typeof item === "string") { if (item.length > 1024) truncated.add(field); return item.slice(0, 1024); }
+    if (item === null || item === undefined) return null;
+    if (Array.isArray(item)) { if (item.length > 32) truncated.add(field); return item.slice(0, 32).map(child => visit(child, depth + 1)); }
+    if (typeof item === "object") { const keys = Object.keys(item).sort(); if (keys.length > 32) truncated.add(field); return Object.fromEntries(keys.slice(0, 32).map(key => [key, visit(item[key], depth + 1)])); }
+    return item;
+  }
+  return visit(value, 0);
+}
 const queryCommand = (client, request) => `${quoteShell(client)} query --input ${quoteShell(JSON.stringify(request))} --json`;
 const previewCommand = selection => `flow-supervised run --repository ${quoteShell(selection.repository)} --request ${quoteShell(selection.request)}`;
 const attachCommand = (attempt, id) => attempt.kind === "review" ? reviewAttachCommand(attempt.selection, id) : `${previewCommand(attempt.selection)} --attach ${quoteShell(id)}`;
 
-function reviewFacts(record) {
+function reviewFacts(record, copy) {
   if (!record) return null;
   const coverage = record.coverage ?? record.summary?.coverage;
   const findings = record.rendered_findings ?? record.findings ?? record.summary?.rendered_findings ?? record.summary?.findings ?? [];
@@ -16,14 +29,15 @@ function reviewFacts(record) {
     posture: text(record.posture ?? record.summary?.posture), coverage: { complete: coverage?.complete ?? null,
       lenses: (coverage?.lenses ?? []).slice(0, 16).map(lens => ({ lens: text(lens.lens), status: text(lens.status), reason: text(lens.reason) })),
       critic: { status: text(coverage?.critic?.status), reason: text(coverage?.critic?.reason) } },
-    approval: text(record.approval), human_status: text(record.human_status), integration: text(record.integration),
-    cap_reasons: strings(record.cap_reasons ?? record.summary?.cap_reasons), finding_count: findings.length,
+    approval: copy(record.approval, "review.approval"), human_status: copy(record.human_status, "review.human_status"), integration: copy(record.integration, "review.integration"),
+    cap_reasons: copy(record.cap_reasons ?? record.summary?.cap_reasons ?? [], "review.cap_reasons"), finding_count: findings.length, findings_truncated: findings.length > 16,
     findings: findings.slice(0, 16).map(finding => ({ id: text(finding.id), severity: text(finding.severity), title: text(finding.title ?? finding.summary), lens: text(finding.lens) })),
-    watermark: text(record.watermark) };
+    watermark: copy(record.watermark, "review.watermark") };
 }
 
 function attemptRow(attempt) {
   const { selection, run, retained } = attempt, id = run?.run_id ?? null;
+  const truncated = new Set(), copy = (value, field) => boundedJson(value, truncated, field);
   const attention = [...(attempt.attention ?? [])];
   const commands = [];
   const guided = Boolean(retained && attempt.state === "admitted");
@@ -45,31 +59,37 @@ function attemptRow(attempt) {
   if (["incomplete", "archived", "unavailable"].includes(attempt.state)) attention.push("Preserve the retained path and inspect it manually; no guided launch or attach is inferred.");
   let checks = null, critique = null, unresolved = [], quarantined = [], workspace = [];
   if (run) {
-    const summary = summarizeProjectRun(run, { selection });
+    const summary = projectRunFacts(run);
     const inherited = retained?.preview.inherited_checks;
     const isReview = attempt.kind === "review" || run.effects?.some(effect => effect.operation_contract === "flow.operation/review-record/v1");
     const check = isReview ? inherited ?? { kind: "inherited_producer_checks", status: "not_observed" } : summary.checks;
     checks = { kind: check.kind, status: text(check.status), outcome: text(check.outcome), exit_code: check.exit_code ?? null, test_count: check.test_count ?? "unknown", project_checks: check.project_checks ?? null, ...(isReview ? { rerun: false } : {}) };
     critique = isReview ? null : text(summary.critique); unresolved = strings(summary.unresolved_effects); quarantined = strings(summary.quarantined_effects);
-    workspace = summary.workspace_settlement.slice(0, 16).map(item => ({ resource: text(item.resource?.subject_id ?? item.resource?.path ?? item.resource_id), status: text(item.status ?? item.disposition ?? item.state), reason: text(item.reason) }));
+    workspace = summary.workspace_settlement.slice(0, 16).map(item => ({ claim: { id: text(item.claim?.id), generation: item.claim?.generation ?? null, mutation_epoch: item.claim?.mutation_epoch ?? null },
+      disposition: copy(item.disposition, "workspace.disposition"), reason: copy(item.reason, "workspace.reason") }));
+    if (summary.unresolved_effects.length > 32) truncated.add("unresolved_effects");
+    if (summary.quarantined_effects.length > 32) truncated.add("quarantined_effects");
+    if (summary.workspace_settlement.length > 16) truncated.add("workspace_dispositions");
     if (projectRunBlocked(run)) attention.push("Authority reports blocked work.");
     if (unresolved.length) attention.push("Unresolved effects remain; completion and retirement are not established.");
     if (quarantined.length) attention.push("Quarantined effects require authority inspection.");
-    if (workspace.length) attention.push("Workspace disposition is retained; a stopped owner or cancelled phase does not prove reuse.");
+    if (workspace.some(item => item.disposition !== "released")) attention.push("Workspace disposition is retained; a stopped owner or cancelled phase does not prove reuse.");
     if (attempt.record && (attempt.record.current !== true || (attempt.record.coverage ?? attempt.record.summary?.coverage)?.complete !== true)) attention.push("Independent review is stale, incomplete or capped; inspect the exact record.");
   }
   const candidate = attempt.candidate;
   const result = { kind: attempt.kind, state: attempt.state, run_id: id, intended_run_id: attempt.intended_run_id ?? null,
     client: selection.client, runtime_root: selection.runtime_root, request: selection.request ?? null, retained_directory: selection.retained_directory ?? null,
     observation: attempt.observation ?? "retained", summary: text(attempt.summary ?? selection.preparation?.brief?.summary ?? selection.preparation?.summary ?? retained?.preview.inspection?.brief?.summary),
-    phase: text(run?.phase), sequence: run?.sequence ?? null, watermark: text(run?.watermark),
+    phase: text(run?.phase), sequence: run?.sequence ?? null, watermark: copy(run?.watermark, "watermark"),
     producer_run_id: text(selection.producer_run_id ?? attempt.producer_run_id),
     candidate: candidate ? { id: text(candidate.subject_id), fingerprint: text(candidate.candidate_fingerprint), status: text(candidate.status), generation: candidate.generation ?? null,
       commit: text(candidate.candidate?.git?.commit_sha), watermark: text(candidate.watermark) } : null,
-    checks, critique, review: reviewFacts(attempt.record), separate_review_run_ids: strings(attempt.separate_review_run_ids),
-    human_approval: attempt.record?.approval ?? (attempt.separate_review_run_ids?.length ? "inspect_separate_review" : "not_observed"),
-    unresolved_effects: unresolved, quarantined_effects: quarantined, workspace_dispositions: workspace,
-    attention: attention.map(text), next_commands: commands };
+    checks, critique, review: reviewFacts(attempt.record, copy), separate_review_run_ids: strings(attempt.separate_review_run_ids),
+    human_approval: copy(attempt.record?.approval, "human_approval") ?? (attempt.separate_review_run_ids?.length ? "inspect_separate_review" : "not_observed"),
+    unresolved_effects: unresolved, unresolved_effect_count: run ? projectRunFacts(run).unresolved_effects.length : 0, unresolved_effects_truncated: truncated.has("unresolved_effects"),
+    quarantined_effects: quarantined, quarantined_effect_count: run ? projectRunFacts(run).quarantined_effects.length : 0, quarantined_effects_truncated: truncated.has("quarantined_effects"), workspace_dispositions: workspace,
+    workspace_disposition_count: run?.resource_dispositions?.length ?? 0, workspace_dispositions_truncated: truncated.has("workspace_dispositions"),
+    attention: attention.map(text), field_truncations: [...truncated], next_commands: commands };
   return result;
 }
 
@@ -77,6 +97,7 @@ function attemptRow(attempt) {
 export function projectRunsReport(inventory) {
   const report = { ...inventory, clients: inventory.clients.map(({ selection: _selection, ...client }) => client),
     attempts: inventory.attempts.map(attemptRow), diagnostics: inventory.diagnostics.map(item => ({ path: text(item.path), code: text(item.code), message: text(item.message) })) };
+  if (report.attempts.some(row => row.field_truncations.length)) { report.complete = false; report.status = "unavailable"; report.diagnostics.push({ code: "field_truncation", path: report.repository, message: "Some compact fields were truncated; counts and field names are shown." }); }
   if (report.complete && report.attempts.some(row => row.attention.length)) report.status = "attention";
   // Bound the actual serialized output, not just the number of rows.
   while (Buffer.byteLength(JSON.stringify(report)) > report.limits.output_bytes && report.attempts.length) {
@@ -97,7 +118,11 @@ export function renderProjectRuns(report) {
     if (row.critique) lines.push(`  Feature critique: ${row.critique}`);
     if (row.candidate) lines.push(`  Candidate: ${row.candidate.id}; ${row.candidate.status}; ${row.candidate.fingerprint}`);
     if (row.separate_review_run_ids.length) lines.push(`  Separate reviews: ${row.separate_review_run_ids.join(", ")}`);
-    if (row.review) lines.push(`  Review ${row.review.review_id}: ${row.review.posture ?? "unknown"}; coverage ${row.review.coverage.complete === true ? "complete" : "incomplete/unknown"}; findings ${row.review.finding_count}`, `  Human approval: ${row.review.approval ?? "not observed"}; human status: ${row.review.human_status ?? "not observed"}`, ...row.review.cap_reasons.map(reason => `  Review cap: ${reason}`));
+    if (row.review) lines.push(`  Review ${row.review.review_id}: ${row.review.posture ?? "unknown"}; coverage ${row.review.coverage.complete === true ? "complete" : "incomplete/unknown"}; findings ${row.review.finding_count}`, `  Human approval: ${display(row.review.approval)}; human status: ${display(row.review.human_status)}; integration: ${display(row.review.integration)}`, ...row.review.cap_reasons.map(reason => `  Review cap: ${display(reason)}`));
+    if (row.unresolved_effect_count) lines.push(`  Unresolved effects: ${row.unresolved_effect_count}${row.unresolved_effects_truncated ? " (ID list truncated)" : ""}`);
+    if (row.quarantined_effect_count) lines.push(`  Quarantined effects: ${row.quarantined_effect_count}${row.quarantined_effects_truncated ? " (ID list truncated)" : ""}`);
+    for (const item of row.workspace_dispositions) lines.push(`  Workspace claim ${item.claim.id ?? "identity unavailable"} generation ${item.claim.generation ?? "unknown"} epoch ${item.claim.mutation_epoch ?? "unknown"}: ${display(item.disposition)}${item.reason ? ` (${display(item.reason)})` : ""}`);
+    if (row.field_truncations.length) lines.push(`  Truncated fields: ${row.field_truncations.join(", ")}`);
     for (const reason of row.attention) lines.push(`  Attention: ${reason}`);
     for (const command of row.next_commands) lines.push(`  ${command.kind}: ${command.command}`, ...(command.disclosure ? [`    ${command.disclosure}`] : []));
   }

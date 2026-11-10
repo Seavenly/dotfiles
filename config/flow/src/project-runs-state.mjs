@@ -85,15 +85,19 @@ function journal(selection, io, { archived = false } = {}) {
     attention: accepted ? ["Accepted launch intent is retained; admission must be observed independently."] : [] };
 }
 
+function selectionEnvironment(selection, env) {
+  return { ...Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("FLOW_") && !key.startsWith("DOTFILES_"))), ...selection.pilot.environment };
+}
+
 /** The adapter exposes queries only; no lifecycle call is available to the inventory. */
 export function projectRunsObserver({ env = process.env } = {}) {
   return {
-    status: selection => statusFlowOwner({ env: selection.pilot.environment, cleanupStale: false }),
+    status: selection => statusFlowOwner({ env: selectionEnvironment(selection, env), cleanupStale: false }),
     async query(selection, request, { observation, timeoutMs }) {
       if (observation === "live") {
-        return createFlowClient({ ...flowOwnerPaths({ env: selection.pilot.environment }), timeoutMs, maxFrameBytes: RUNS_LIMITS.file_bytes }).query(request);
+        return createFlowClient({ ...flowOwnerPaths({ env: selectionEnvironment(selection, env) }), timeoutMs, maxFrameBytes: RUNS_LIMITS.file_bytes }).query(request);
       }
-      const response = await promisify(execFile)(selection.client, ["query", "--input", JSON.stringify(request), "--json"], { env, timeout: timeoutMs, maxBuffer: RUNS_LIMITS.file_bytes });
+      const response = await promisify(execFile)(selection.client, ["query", "--input", JSON.stringify(request), "--json"], { env: selectionEnvironment(selection, env), timeout: timeoutMs, maxBuffer: RUNS_LIMITS.file_bytes });
       return JSON.parse(response.stdout);
     },
   };
@@ -117,7 +121,7 @@ export async function collectProjectRuns(options = {}, { env = process.env, cwd 
     if (original.identity?.schema !== "flow.local-client/v1" || original.identity.repository !== result.repository) throw failure("profile_changed", "Project profile repository identity changed.");
     const selected = options.client && resolve(cwd, options.client);
     let matched = false;
-    for (const name of io.entries(join(profileRoot, "clients"), limits.clients)) {
+    clientsLoop: for (const name of io.entries(join(profileRoot, "clients"), limits.clients)) {
       const directory = join(profileRoot, "clients", name);
       if (selected && directory !== selected) continue;
       matched = true;
@@ -129,7 +133,7 @@ export async function collectProjectRuns(options = {}, { env = process.env, cwd 
         const entry = { directory, client: client.client, runtime_root: client.runtime_root, authority_directory: client.authority_directory, validation: "valid", selection: client };
         result.clients.push(entry);
         for (const requestName of io.entries(join(directory, "requests"))) {
-          if (result.attempts.length >= limits.attempts) throw failure("attempt_limit", "Attempt limit reached; remaining retained work is unknown.");
+          if (result.attempts.length >= limits.attempts) { diagnostic(directory, failure("attempt_limit", "Attempt limit reached; remaining retained work is unknown.")); break clientsLoop; }
           const request = join(directory, "requests", requestName, "prepare-request.json");
           try {
             io.json(request); const selection = readValidatedProjectRequest(client, request);
@@ -138,7 +142,7 @@ export async function collectProjectRuns(options = {}, { env = process.env, cwd 
               if (result.attempts.length >= limits.attempts) throw failure("attempt_limit", "Attempt limit reached.");
               result.attempts.push({ kind: "feature", ...journal({ ...selection, retained_directory: join(dirname(request), archive) }, io, { archived: true }) });
             }
-          } catch (error) { diagnostic(request, error); result.attempts.push({ kind: "feature", state: "unavailable", selection: { ...client, request }, attention: [error.message] }); }
+          } catch (error) { diagnostic(request, error); if (error.code === "attempt_limit") break clientsLoop; result.attempts.push({ kind: "feature", state: "unavailable", selection: { ...client, request }, attention: [error.message] }); }
         }
         const reviews = join(directory, "receipts/guided-review");
         if (io.exists(reviews)) for (const name of io.entries(reviews)) {
@@ -154,19 +158,19 @@ export async function collectProjectRuns(options = {}, { env = process.env, cwd 
               if (result.attempts.length >= limits.attempts) throw failure("attempt_limit", "Attempt limit reached.");
               result.attempts.push({ kind: "review", ...journal({ ...selection, retained_directory: join(path, archive) }, io, { archived: true }) });
             }
-          } catch (error) { diagnostic(path, error); result.attempts.push({ kind: "review", state: "unavailable", selection: { ...client, retained_directory: path }, attention: [error.message] }); }
+          } catch (error) { diagnostic(path, error); if (error.code === "attempt_limit") break clientsLoop; result.attempts.push({ kind: "review", state: "unavailable", selection: { ...client, retained_directory: path }, attention: [error.message] }); }
         }
       } catch (error) { diagnostic(directory, error); if (!result.clients.some(client => client.directory === directory)) result.clients.push({ directory, validation: "unavailable", reason: error.message }); }
     }
     if (selected && !matched) throw Object.assign(failure("unknown_client", "Select an exact original --client DIRECTORY from this project's retained clients."), { exit: 2 });
   } catch (error) { if (error.exit === 2) throw error; diagnostic(profilePath, error); }
-  await inspectAuthorities(result, io, observer, diagnostic);
+  await inspectAuthorities(result, io, observer, diagnostic, env);
   await observeReviewFacts(result, io, diagnostic);
   result.status = result.complete ? result.attempts.some(attempt => attempt.attention?.length) ? "attention" : "ok" : "unavailable";
   return result;
 }
 
-async function inspectAuthorities(result, io, observer, diagnostic) {
+async function inspectAuthorities(result, io, observer, diagnostic, env) {
   const groups = new Map();
   for (const client of result.clients.filter(client => client.selection)) {
     const key = client.authority_directory;
@@ -176,12 +180,12 @@ async function inspectAuthorities(result, io, observer, diagnostic) {
   for (const [authority, clients] of groups) {
     const row = { authority_directory: authority, observation: "unavailable", owner_state: "unknown", run_ids: [] }; result.authorities.push(row);
     try {
-      const paths = flowOwnerPaths({ env: clients[0].pilot.environment });
+      const paths = flowOwnerPaths({ env: selectionEnvironment(clients[0], env) });
       for (const path of [paths.endpointPath, paths.operatorErrorPath]) if (path && io.exists(path)) io.regular(path);
       const status = await io.wait(timeoutMs => observer.status(clients[0], { timeoutMs })); io.remaining(); row.owner_state = status.state;
       let selected;
       if (status.state === "running") {
-        selected = clients.find(client => ownerRuntimeBindingEqual(deriveOwnerRuntimeBinding({ env: client.pilot.environment }), status.runtime_binding));
+        selected = clients.find(client => ownerRuntimeBindingEqual(deriveOwnerRuntimeBinding({ env: selectionEnvironment(client, env) }), status.runtime_binding));
         if (!selected) throw failure("owner_binding_mismatch", "The running owner does not match a verified selected client/runtime binding.");
         row.observation = "live";
       } else if (status.state === "stopped") {
@@ -215,24 +219,28 @@ async function inspectAuthorities(result, io, observer, diagnostic) {
         else throw failure("attempt_limit", "Attempt limit reached; some authority work was not displayed.");
       }
       for (const attempt of result.attempts.filter(attempt => attempt.selection.authority_directory === authority)) attempt.observation ??= row.observation;
-    } catch (error) { row.reason = error.message; diagnostic(authority, error); }
+    } catch (error) { row.observation = "unavailable"; row.reason = error.message; diagnostic(authority, error); }
   }
 }
 
 
 async function observeReviewFacts(result, io, diagnostic) {
   const observed = result.attempts.filter(attempt => attempt.run);
+  // Candidate facts must be available before correlating reviews, independent of row order.
+  for (const attempt of observed) {
+    const reference = attempt.run.review_candidate_reference;
+    if (!reference?.candidate_id) continue;
+    try {
+      const candidate = await attempt.query({ schema: "flow.query/v1", query: "review", subject_id: reference.candidate_id });
+      if (candidate.schema !== "work.review-candidate-projection/v1" || candidate.subject_id !== reference.candidate_id ||
+          candidate.candidate_fingerprint !== reference.candidate_fingerprint) throw failure("candidate_changed", "Candidate projection does not match the exact producer reference.");
+      attempt.candidate = candidate;
+    } catch (error) { diagnostic(attempt.run.run_id, error); (attempt.attention ??= []).push(error.message); }
+  }
   for (const attempt of observed) {
     const { run, query } = attempt;
     try {
       io.remaining();
-      const reference = run.review_candidate_reference;
-      if (reference?.candidate_id) {
-        const candidate = await query({ schema: "flow.query/v1", query: "review", subject_id: reference.candidate_id });
-        if (candidate.schema !== "work.review-candidate-projection/v1" || candidate.subject_id !== reference.candidate_id ||
-            candidate.candidate_fingerprint !== reference.candidate_fingerprint) throw failure("candidate_changed", "Candidate projection does not match the exact producer reference.");
-        attempt.candidate = candidate;
-      }
       const card = run.active_plan?.cards?.find(card => card.executor?.contract === "flow.operation/review-record/v1");
       const effect = run.effects?.find(effect => effect.operation_contract === "flow.operation/review-record/v1");
       if (!card && !effect && attempt.kind !== "review") continue;
@@ -255,7 +263,10 @@ async function observeReviewFacts(result, io, diagnostic) {
         return query(request.contract === "work.review/v1" ? { schema: "flow.query/v1", query: "review", subject_id: request.subject_id } : request);
       });
       if (found) attempt.record = found.record;
-      const producers = observed.filter(row => row.run.review_candidate_reference?.candidate_id === target.candidate_id && row.run.review_candidate_reference?.candidate_fingerprint === target.candidate_fingerprint);
+      let producers = observed.filter(row => row.run.review_candidate_reference?.candidate_id === target.candidate_id && row.run.review_candidate_reference?.candidate_fingerprint === target.candidate_fingerprint &&
+        row.candidate?.generation === target.lifecycle_generation && digest(row.candidate?.watermark) === digest(target.candidate_authority_watermark) &&
+        (!selection.producer_run_id || row.run.run_id === selection.producer_run_id));
+      if (!selection.producer_run_id && producers.length > 1) { (attempt.attention ??= []).push("Several producers reference this candidate; no producer association is guessed."); producers = []; }
       if (selection.producer_run_id) attempt.producer_run_id = selection.producer_run_id;
       else if (producers.length === 1) attempt.producer_run_id = producers[0].run.run_id;
       if (producers.length === 1) attempt.summary = `Review: ${producers[0].selection.preparation?.brief?.summary ?? "retained candidate"}`;
