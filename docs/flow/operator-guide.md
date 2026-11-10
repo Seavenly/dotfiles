@@ -19,7 +19,9 @@ For installed npm, Python or Go suites, start with
 authority-derived decisions. Use [`flow-supervised review`](guided-review.md)
 for an independent review of an exact retained candidate. Use
 [`flow-supervised runs`](project-runs.md) to find retained work and exact next
-commands without starting an owner. [Manual registered project checks](project-checks.md)
+commands without starting an owner. Use [`flow-supervised usage`](project-usage.md)
+for receipt-bound usage and explicitly partial CLI cost estimates for an exact
+run, without starting work. [Manual registered project checks](project-checks.md)
 remain available.
 The additive v2 check runs in `verify` mode and reports GREEN-only command
 evidence; the v1 test-first contract and plain content-only `verify` remain distinct.

@@ -73,3 +73,8 @@ inspection is incomplete, unavailable or truncated, so undisplayed work may
 exist. Exit 2 means invalid arguments, repository selection or an unknown
 explicit client. No result grants human approval, merge or Git publication
 authority.
+
+For recorded attempt usage, select an exact run with
+[`flow-supervised usage --run RUN_ID`](project-usage.md). Independent reviews
+remain separate selections; usage estimates do not grant billing or lifecycle
+authority.
