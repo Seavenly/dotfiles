@@ -43,7 +43,7 @@ test("public runs help describes the read-only inventory without creating local 
   assert.deepEqual(snapshot(f.root), before);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /flow-supervised runs/u);
-  assert.match(result.stdout, /read.only|without starting|starts no owner/iu);
+  assert.match(result.stdout, /read.only|without starting|starts no owner|No owner start/iu);
 });
 
 test("an uninitialized project has an honest empty inventory and plain init guidance", t => {
@@ -139,7 +139,11 @@ if(state.setup)writeFileSync(configPath,JSON.stringify(state));process.stdout.wr
   };
   const projection = (runId, phase = "succeeded") => ({ schema: "flow.run-projection/v1", run_id: runId, bundle_digest: runId.replace("run:", "sha256:"), phase,
     watermark: "fixture-run:1", sequence: 1, cards: [], effects: [], resource_dispositions: [], active_plan: { cards: [] } });
-  return { ...f, repository, runtime, runtimeCli, setup, pilot, config, configure, trace, records, preview, protectedTrees, calls, assertReadOnly, projection, git, base, head, tree };
+  // The owned original-client transport supplies protocol facts. This regular
+  // marker selects that transport branch; it is not a real authority database
+  // and is never inspected as authority evidence or given to a real owner.
+  const enableHistoryTransport = () => writeFileSync(join(pilot.environment.FLOW_AUTHORITY_DIRECTORY, "authority.sqlite"), "Controlled read-only query transport fixture only.\n");
+  return { ...f, repository, runtime, runtimeCli, setup, pilot, config, configure, trace, records, preview, protectedTrees, calls, assertReadOnly, projection, git, base, head, tree, enableHistoryTransport };
 }
 
 test("stopped-owner prepared overview retains its exact confirmation and never starts or submits work", linux, t => {
@@ -172,7 +176,7 @@ test("stopped manual cancelled history prints original inspection rather than in
   const f = initializedInventory(t), manual = f.projection(manualId, "cancelled");
   manual.effects = [{ effect_id: "effect:external", status: "unresolved" }];
   manual.resource_dispositions = [{ disposition: "quarantined", claim: { id: "workspace:held", generation: 1, mutation_epoch: 1 } }];
-  f.configure({ projections: { [manualId]: manual } });
+  f.configure({ projections: { [manualId]: manual } }); f.enableHistoryTransport();
   const before = f.protectedTrees(), result = f.run(["--repository", f.repository, "--json"]);
   f.assertReadOnly(before); assert.equal(result.status, 0, result.stdout + result.stderr);
   const value = JSON.parse(result.stdout), attempt = value.attempts.find(item => item.run_id === manualId);
@@ -180,6 +184,49 @@ test("stopped manual cancelled history prints original inspection rather than in
   assert.equal(attempt.observation, "inspect_only"); assert.match(JSON.stringify(attempt.attention), /unresolved|quarantin/iu);
   assert.ok(attempt.next_commands.some(item => item.command.includes(f.setup.client) && item.command.includes("query") && item.command.includes(manualId)));
   assert.ok(attempt.next_commands.every(item => !item.command.includes("--attach")));
+});
+
+test("stopped exact independent review retains findings and human state without granting approval", linux, t => {
+  const f = initializedInventory(t), fingerprint = `sha256:${"e".repeat(64)}`, candidateId = `candidate:${"d".repeat(64)}`, watermark = `sha256:${"f".repeat(64)}`;
+  const producer = f.projection(featureId), candidateGit = { clean: true, commit_sha: f.head, tree_sha: f.tree, ref: "refs/heads/main" };
+  producer.review_candidate_reference = { candidate_id: candidateId, candidate_fingerprint: fingerprint };
+  producer.cards = [{ id: "feature-project-check", status: "completed" }, { id: "feature-critique", status: "completed" }];
+  producer.active_plan.cards = [{ id: "feature-project-check", executor: { contract: "flow.operation/project-check/v2" } }];
+  producer.effects = [
+    { operation_contract: "flow.operation/feature-direct-commit/v1", status: "succeeded", receipt: { provider_receipt: { schema: "flow.git-candidate-commit-receipt/v1", old_commit_sha: f.base, ...candidateGit } } },
+    { operation_contract: "flow.operation/project-check/v2", status: "succeeded", receipt: { provider_receipt: { schema: "work.project-check-receipt/v2", outcome: "passed", exit_code: 0, candidate: candidateGit } } },
+  ];
+  f.configure({ setup: true, projections: { [featureId]: producer } });
+  const prepared = f.records(f.invoke(["review", "--repository", f.repository, "--client", f.setup.directory, "--producer", featureId, "--json"]));
+  const preview = prepared.find(value => value.schema === "flow.project-review-preview/v1"); assert.ok(preview);
+  const effectId = "effect:exact-review-record", attemptId = "attempt:exact-review-record", idempotencyKey = "operation:exact-review-record", recordId = "review:exact-record";
+  const finding = { id: "finding:units", lens: "security", urgency: "medium", classification: "non_blocking", summary: "Explain rejected measurement units", detail: "Document which units are supported.", location: { path: "measurements.txt", line: 1 } };
+  const coverage = { complete: true, lenses: [{ lens: "security", status: "produced" }], critic: { status: "produced" } };
+  const approval = { status: "not_requested", reason: { code: "automated_review_is_not_human_approval" } };
+  const humanStatus = { status: "pending", reason: { code: "human_decision_required" } }, integration = { status: "not_integrated", reason: { code: "no_publication_requested" } };
+  const summary = { candidate_fingerprint: fingerprint, coverage, posture: "findings", findings: [finding], merge_ready: false };
+  const receipt = { schema: "flow.review-receipt/v1", review_id: recordId, candidate_fingerprint: fingerprint, lifecycle_generation: 1, review_authority_watermark: watermark, summary };
+  const review = f.projection(reviewId);
+  review.effects = [{ effect_id: effectId, run_id: reviewId, attempt_id: attemptId, idempotency_key: idempotencyKey, operation_contract: "flow.operation/review-record/v1", status: "succeeded", receipt: { provider_receipt: receipt } }];
+  const record = { schema: "flow.review-projection/v1", contract: "work.review/v1", subject_id: recordId, source_run_id: reviewId,
+    operation_contract: "flow.operation/review-record/v1", operation_effect_id: effectId, operation_attempt_id: attemptId, operation_idempotency_key: idempotencyKey,
+    candidate: { candidate_id: candidateId }, candidate_fingerprint: fingerprint, lifecycle_generation: 1, candidate_authority_watermark: watermark,
+    status: "automated_completed", current: true, evidence_currency: "current", summary, coverage, posture: "findings", findings: [finding],
+    approval, human_status: humanStatus, integration, merge_ready: false, watermark };
+  f.configure({ setup: false, owner_state: "stopped", projections: { [featureId]: producer, [reviewId]: review }, review_record: record });
+  f.enableHistoryTransport(); writeFileSync(f.trace, "");
+  const before = f.protectedTrees(), result = f.run(["--repository", f.repository, "--json"]);
+  f.assertReadOnly(before); assert.equal(result.status, 0, result.stdout + result.stderr);
+  const inventory = JSON.parse(result.stdout), featureRow = inventory.attempts.find(item => item.run_id === featureId), reviewRow = inventory.attempts.find(item => item.run_id === reviewId);
+  assert.ok(featureRow); assert.ok(reviewRow); assert.equal(reviewRow.kind, "review");
+  assert.deepEqual(featureRow.separate_review_run_ids, [reviewId]); assert.equal(featureRow.candidate.id, candidateId);
+  assert.equal(featureRow.checks.outcome, "passed"); assert.equal(featureRow.critique, "completed");
+  assert.equal(reviewRow.producer_run_id, featureId); assert.equal(reviewRow.review.review_id, recordId);
+  assert.equal(reviewRow.review.posture, "findings"); assert.equal(reviewRow.review.finding_count, 1); assert.equal(reviewRow.review.coverage.complete, true);
+  assert.equal(reviewRow.checks.outcome, "passed"); assert.equal(reviewRow.checks.rerun, false);
+  assert.deepEqual(reviewRow.review.approval, approval); assert.deepEqual(reviewRow.review.human_status, humanStatus); assert.deepEqual(reviewRow.review.integration, integration);
+  const human = f.run(["--repository", f.repository]); f.assertReadOnly(before); assert.equal(human.status, 0, human.stdout + human.stderr);
+  assert.match(human.stdout, /findings 1/u); assert.match(human.stdout, /human_decision_required/u); assert.doesNotMatch(human.stdout, /\[object Object\]/u);
 });
 
 test("outside client selection and profile aliases cannot execute commands or retarget retained state", linux, t => {
