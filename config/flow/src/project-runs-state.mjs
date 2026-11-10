@@ -17,7 +17,7 @@ const acceptedWarning = "Accepted launch intent is retained; admission must be o
 const failure = (code, message) => Object.assign(new Error(message), { code });
 
 /** Bounded reads only. Missing, broken and redirected paths remain different facts. */
-function reader(limits, now) {
+export function projectRunReadScope(limits = RUNS_LIMITS, now = Date.now) {
   const deadline = now() + limits.elapsed_ms;
   const remaining = () => { const ms = deadline - now(); if (ms <= 0) throw failure("deadline", "Overview deadline reached; remaining work is unknown."); return ms; };
   function exists(path) {
@@ -106,7 +106,7 @@ export function projectRunsObserver({ env = process.env } = {}) {
 
 /** Collect original immutable clients and journals without creating any state. */
 export async function collectProjectRuns(options = {}, { env = process.env, cwd = process.cwd(), observer = projectRunsObserver({ env }), now = Date.now, limits = RUNS_LIMITS } = {}) {
-  const io = reader(limits, now), result = { schema: "flow.project-runs/v1", repository: null, status: "ok", complete: true, clients: [], authorities: [], attempts: [], diagnostics: [], limits };
+  const io = projectRunReadScope(limits, now), result = { schema: "flow.project-runs/v1", repository: null, status: "ok", complete: true, clients: [], authorities: [], attempts: [], diagnostics: [], limits };
   const diagnostic = (path, error) => { result.complete = false; result.diagnostics.push({ path, code: error.code ?? "unavailable", message: error.message }); };
   let location;
   try { location = locateProjectProfile({ repository: options.repository, env, cwd, timeoutMs: Math.min(10000, io.remaining()) }); result.repository = location.repository; }
@@ -171,16 +171,9 @@ export async function collectProjectRuns(options = {}, { env = process.env, cwd 
   return result;
 }
 
-async function inspectAuthorities(result, io, observer, diagnostic, env) {
-  const groups = new Map();
-  for (const client of result.clients.filter(client => client.selection)) {
-    const key = client.authority_directory;
-    if (!groups.has(key)) groups.set(key, []); groups.get(key).push(client.selection);
-  }
-  let queries = 0;
-  for (const [authority, clients] of groups) {
-    const row = { authority_directory: authority, observation: "unavailable", owner_state: "unknown", run_ids: [] }; result.authorities.push(row);
-    try {
+/** Original-client owner binding and query-only access, shared by read-only reports. */
+export async function observeProjectAuthority(clients, { io, observer, env, budget, row = { authority_directory: clients[0].authority_directory, observation: "unavailable", owner_state: "unknown", run_ids: [] } }) {
+  const authority = row.authority_directory;
       const paths = flowOwnerPaths({ env: selectionEnvironment(clients[0], env) });
       for (const path of [paths.endpointPath, paths.operatorErrorPath]) if (path && io.exists(path)) io.regular(path);
       const status = await io.wait(timeoutMs => observer.status(clients[0], { timeoutMs })); io.remaining(); row.owner_state = status.state;
@@ -193,18 +186,34 @@ async function inspectAuthorities(result, io, observer, diagnostic, env) {
         const identities = new Set(clients.map(client => digest({ runtime_root: client.runtime_root, pilot_digest: client.pilot_digest })));
         if (identities.size !== 1) throw failure("stopped_client_ambiguous", "Several stopped client bindings share this authority. Select --client DIRECTORY for exact inspect-only history.");
         selected = clients[0];
-        if (!io.exists(join(authority, "authority.sqlite"))) { row.observation = "retained"; row.owner_state = "stopped"; continue; }
+        if (!io.exists(join(authority, "authority.sqlite"))) { row.observation = "retained"; row.owner_state = "stopped"; return { row, selection: selected, query: null }; }
         io.regular(join(authority, "authority.sqlite"), Number.MAX_SAFE_INTEGER); row.observation = "inspect_only";
       } else throw failure("owner_unavailable", `Owner is ${status.state}; no startup or cleanup was attempted.`);
       row.client = selected.client; row.runtime_root = selected.runtime_root;
       const cache = new Map();
       const query = async request => {
         const key = digest(request); if (cache.has(key)) return cache.get(key);
-        if (++queries > result.limits.queries) throw failure("query_limit", "Public query limit reached; remaining work is unknown.");
+        if (++budget.queries > budget.limit) throw failure("query_limit", "Public query limit reached; remaining work is unknown.");
         const value = await io.wait(timeoutMs => observer.query(selected, request, { observation: row.observation, timeoutMs })); io.remaining();
         if (value?.schema === "flow.rejection/v1") throw failure(value.code, `Read-only inspection refused: ${value.code}`);
         cache.set(key, value); return value;
       };
+  return { row, selection: selected, query };
+}
+
+async function inspectAuthorities(result, io, observer, diagnostic, env) {
+  const groups = new Map();
+  for (const client of result.clients.filter(client => client.selection)) {
+    const key = client.authority_directory;
+    if (!groups.has(key)) groups.set(key, []); groups.get(key).push(client.selection);
+  }
+  const budget = { queries: 0, limit: result.limits.queries };
+  for (const [authority, clients] of groups) {
+    const row = { authority_directory: authority, observation: "unavailable", owner_state: "unknown", run_ids: [] }; result.authorities.push(row);
+    try {
+      const observed = await observeProjectAuthority(clients, { io, observer, env, budget, row });
+      if (!observed.query) continue;
+      const { query, selection: selected } = observed;
       const index = await query({});
       if (index.schema !== "flow.run-index-projection/v1" || !Array.isArray(index.runs) || !["compatible", "uninitialized"].includes(index.authority_schema?.status)) throw failure("invalid_index", "The selected authority did not return a compatible known run index.");
       if (index.runs.length > result.limits.attempts) throw failure("attempt_limit", "Authority run index exceeds the overview limit; work remains unknown.");

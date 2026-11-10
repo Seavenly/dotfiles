@@ -19,6 +19,7 @@ const MAX_STATUS_COUNT = 1_000_000;
 const MAX_INPUT_FILE_BYTES = 4 * 1024 * 1024;
 
 const USAGE = `Usage:
+  flow usage --run RUN_ID [--repository PATH] [--client DIRECTORY] [--json]
   flow runs [--repository PATH] [--client DIRECTORY] [--json]
   flow review [--producer RUN_ID] [--client DIRECTORY] [--json]
   flow review --attach REVIEW_RUN_ID [--json]
@@ -80,6 +81,10 @@ export async function runCli(
   if (args[0] === "init") {
     const { runProjectInit } = await import("./project-init.mjs");
     return runProjectInit(args.slice(1), { env, stdin, stdout, stderr });
+  }
+  if (args[0] === "usage") {
+    const { runProjectUsage } = await import("./project-usage.mjs");
+    return runProjectUsage(args.slice(1), { env, stdout, stderr });
   }
   if (args[0] === "runs") {
     const { runProjectRuns } = await import("./project-runs.mjs");
