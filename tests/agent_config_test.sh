@@ -31,16 +31,23 @@ assert_contains "$(cat "$drovr_review/agents/openai.yaml")" \
   'allow_implicit_invocation: false'
 echo "ok - drovr review requires explicit invocation"
 
+claude_review="$root/config/agents/skills/claude-review"
+assert_contains "$(cat "$claude_review/SKILL.md")" \
+  'disable-model-invocation: true'
+assert_contains "$(cat "$claude_review/agents/openai.yaml")" \
+  'allow_implicit_invocation: false'
+echo "ok - claude review requires explicit invocation"
+
 implement_ticket="$root/config/agents/skills/implement-ticket"
 assert_contains "$(cat "$implement_ticket/SKILL.md")" \
-  'argument-hint: "<issue-url>"'
+  'argument-hint: "[--luna] <issue-url>"'
 assert_contains "$(cat "$implement_ticket/SKILL.md")" \
   'disable-model-invocation: true'
 assert_contains "$(cat "$implement_ticket/agents/openai.yaml")" \
   'allow_implicit_invocation: false'
 [[ -x "$implement_ticket/scripts/with-integration-lock.sh" ]] \
   || fail "implement ticket integration lock is not executable"
-echo "ok - implement ticket accepts one URL and requires explicit invocation"
+echo "ok - implement ticket accepts one URL with optional --luna and requires explicit invocation"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -76,6 +83,7 @@ expected_skills=(
   agent-flow-review
   agent-flow-spike
   agent-flow-stacks
+  claude-review
   code-review
   codebase-design
   diagnosing-bugs
@@ -150,6 +158,7 @@ local_skills=(
   agent-flow-feature
   agent-flow-review
   agent-flow-spike
+  claude-review
   drovr-review
   implement-ticket
   to-epic

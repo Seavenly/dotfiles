@@ -1,6 +1,6 @@
 ---
 name: drovr-review
-description: Run a Sol-led iterative Drovr review with a read-only Claude Code Opus reviewer at medium effort, then delegate accepted corrections and affected verification to native gpt-5.6-luna agents. Use only when invoked as /drovr-review or $drovr-review.
+description: Run a Sol-led iterative Drovr review with a read-only Claude Code Opus reviewer at medium effort, then delegate accepted corrections and affected verification to native gpt-6-luna agents. Use only when invoked as /drovr-review or $drovr-review.
 disable-model-invocation: true
 ---
 
@@ -69,7 +69,7 @@ or Luna summary as proof; inspect the actual candidate state.
 
 4. Batch all accepted (`valid in-scope`) findings into a bounded correction
    task for a direct native, bounded/self-contained fork pinned to
-   `gpt-5.6-luna` with `reasoning_effort: max`. Record the requested and
+   `gpt-6-luna` with `reasoning_effort: max`. Record the requested and
    observed model override and reasoning setting. The task must state the
    exact cwd and candidate, owned files or scope, exclusions, required affected
    tests or checks, and that the agent has no commit, push, merge, issue-closing,

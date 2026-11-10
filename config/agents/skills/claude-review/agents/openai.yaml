@@ -1,0 +1,5 @@
+interface:
+  display_name: "Claude Review"
+  short_description: "Claude Opus review with Sol corrections; optional --luna"
+policy:
+  allow_implicit_invocation: false
