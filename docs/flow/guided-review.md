@@ -32,6 +32,9 @@ Supervised native CLI trust remains explicit. Flow does not independently prove
 all official CLI permission and ambient startup constraints. Strict qualification
 and Mac native execution remain separate unfinished tracks.
 
+Use [`flow-supervised runs`](project-runs.md) to find retained tasks and exact
+original commands without starting or recovering an owner.
+
 ## Scripts and exact confirmation
 
 Select concrete paths and IDs printed by the preview or selection error:

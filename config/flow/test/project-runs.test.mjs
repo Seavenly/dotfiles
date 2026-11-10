@@ -166,3 +166,17 @@ test("attempt cap includes malformed review rows and stops scanning at the bound
   const report = await f.collect({ limits: { ...RUNS_LIMITS, attempts: 1 } });
   assert.equal(report.complete, false); assert(report.attempts.length <= 1); assert(report.diagnostics.some(row => row.code === "attempt_limit"));
 });
+
+
+test("compact output keeps candidate watermarks structured and bounds non-attempt diagnostics", () => {
+  const report = projectRunsReport({ schema: "flow.project-runs/v1", repository: "/project", status: "ok", complete: true,
+    limits: { ...RUNS_LIMITS, output_bytes: 2048 }, clients: [], attempts: [],
+    authorities: [{ owner_state: "stopped", watermark: { stream: "runs", sequence: 4 }, reason: "x".repeat(10000) }],
+    diagnostics: Array.from({ length: 20 }, () => ({ path: "/project", code: "unavailable", message: "x".repeat(10000) })) });
+  assert(Buffer.byteLength(JSON.stringify(report)) <= 2048); assert.equal(report.complete, false);
+  assert(report.diagnostics.some(item => item.code === "output_limit"));
+  const candidateWatermark = { stream: "candidate", sequence: 2 };
+  const candidate = projectRunsReport({ schema: "flow.project-runs/v1", repository: "/project", status: "ok", complete: true, limits: RUNS_LIMITS, clients: [], authorities: [], diagnostics: [],
+    attempts: [{ kind: "manual", state: "archived", selection: {}, candidate: { subject_id: "candidate:owned", watermark: candidateWatermark } }] });
+  assert.deepEqual(candidate.attempts[0].candidate.watermark, candidateWatermark);
+});

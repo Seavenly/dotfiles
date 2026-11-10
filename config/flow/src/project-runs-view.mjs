@@ -39,6 +39,7 @@ function attemptRow(attempt) {
   const { selection, run, retained } = attempt, id = run?.run_id ?? null;
   const truncated = new Set(), copy = (value, field) => boundedJson(value, truncated, field);
   const attention = [...(attempt.attention ?? [])];
+  let unresolvedCount = 0, quarantinedCount = 0;
   const commands = [];
   const guided = Boolean(retained && attempt.state === "admitted");
   if (guided) commands.push({ kind: "attach", command: attachCommand(attempt, id), disclosure: "Attachment starts/reuses this exact owner and may recover previously accepted work." });
@@ -60,6 +61,7 @@ function attemptRow(attempt) {
   let checks = null, critique = null, unresolved = [], quarantined = [], workspace = [];
   if (run) {
     const summary = projectRunFacts(run);
+    unresolvedCount = summary.unresolved_effects.length; quarantinedCount = summary.quarantined_effects.length;
     const inherited = retained?.preview.inherited_checks;
     const isReview = attempt.kind === "review" || run.effects?.some(effect => effect.operation_contract === "flow.operation/review-record/v1");
     const check = isReview ? inherited ?? { kind: "inherited_producer_checks", status: "not_observed" } : summary.checks;
@@ -83,11 +85,11 @@ function attemptRow(attempt) {
     phase: text(run?.phase), sequence: run?.sequence ?? null, watermark: copy(run?.watermark, "watermark"),
     producer_run_id: text(selection.producer_run_id ?? attempt.producer_run_id),
     candidate: candidate ? { id: text(candidate.subject_id), fingerprint: text(candidate.candidate_fingerprint), status: text(candidate.status), generation: candidate.generation ?? null,
-      commit: text(candidate.candidate?.git?.commit_sha), watermark: text(candidate.watermark) } : null,
+      commit: text(candidate.candidate?.git?.commit_sha), watermark: copy(candidate.watermark, "candidate.watermark") } : null,
     checks, critique, review: reviewFacts(attempt.record, copy), separate_review_run_ids: strings(attempt.separate_review_run_ids),
     human_approval: copy(attempt.record?.approval, "human_approval") ?? (attempt.separate_review_run_ids?.length ? "inspect_separate_review" : "not_observed"),
-    unresolved_effects: unresolved, unresolved_effect_count: run ? projectRunFacts(run).unresolved_effects.length : 0, unresolved_effects_truncated: truncated.has("unresolved_effects"),
-    quarantined_effects: quarantined, quarantined_effect_count: run ? projectRunFacts(run).quarantined_effects.length : 0, quarantined_effects_truncated: truncated.has("quarantined_effects"), workspace_dispositions: workspace,
+    unresolved_effects: unresolved, unresolved_effect_count: unresolvedCount, unresolved_effects_truncated: truncated.has("unresolved_effects"),
+    quarantined_effects: quarantined, quarantined_effect_count: quarantinedCount, quarantined_effects_truncated: truncated.has("quarantined_effects"), workspace_dispositions: workspace,
     workspace_disposition_count: run?.resource_dispositions?.length ?? 0, workspace_dispositions_truncated: truncated.has("workspace_dispositions"),
     attention: attention.map(text), field_truncations: [...truncated], next_commands: commands };
   return result;
@@ -95,14 +97,22 @@ function attemptRow(attempt) {
 
 /** Compact public facts, never a second lifecycle projection. */
 export function projectRunsReport(inventory) {
-  const report = { ...inventory, clients: inventory.clients.map(({ selection: _selection, ...client }) => client),
+  const report = { ...inventory, clients: inventory.clients.map(({ selection: _selection, ...client }) => ({ ...client, ...(client.reason ? { reason: text(client.reason) } : {}) })),
+    authorities: inventory.authorities.map(owner => {
+      const truncated = new Set();
+      return { ...owner, reason: text(owner.reason), watermark: boundedJson(owner.watermark, truncated, "authority.watermark"), field_truncations: [...truncated] };
+    }),
     attempts: inventory.attempts.map(attemptRow), diagnostics: inventory.diagnostics.map(item => ({ path: text(item.path), code: text(item.code), message: text(item.message) })) };
-  if (report.attempts.some(row => row.field_truncations.length)) { report.complete = false; report.status = "unavailable"; report.diagnostics.push({ code: "field_truncation", path: report.repository, message: "Some compact fields were truncated; counts and field names are shown." }); }
+  if (report.attempts.some(row => row.field_truncations.length) || report.authorities.some(row => row.field_truncations.length)) { report.complete = false; report.status = "unavailable"; report.diagnostics.push({ code: "field_truncation", path: report.repository, message: "Some compact fields were truncated; counts and field names are shown." }); }
   if (report.complete && report.attempts.some(row => row.attention.length)) report.status = "attention";
   // Bound the actual serialized output, not just the number of rows.
-  while (Buffer.byteLength(JSON.stringify(report)) > report.limits.output_bytes && report.attempts.length) {
-    report.attempts.pop(); report.complete = false; report.status = "unavailable";
-    if (!report.diagnostics.some(item => item.code === "output_limit")) report.diagnostics.push({ path: report.repository, code: "output_limit", message: "Output limit reached; additional attempts are not displayed." });
+  while (Buffer.byteLength(JSON.stringify(report)) > report.limits.output_bytes && (report.attempts.length || report.authorities.length || report.clients.length || report.diagnostics.length > 1)) {
+    if (report.attempts.length) report.attempts.pop();
+    else if (report.authorities.length) report.authorities.pop();
+    else if (report.clients.length) report.clients.pop();
+    else report.diagnostics.splice(report.diagnostics.findIndex(item => item.code !== "output_limit"), 1);
+    report.complete = false; report.status = "unavailable";
+    if (!report.diagnostics.some(item => item.code === "output_limit")) report.diagnostics.push({ path: report.repository, code: "output_limit", message: "Output limit reached; additional rows are not displayed." });
   }
   return report;
 }

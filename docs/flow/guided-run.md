@@ -24,6 +24,9 @@ The supervised CLI trust disclosure remains in force. Flow does not independentl
 establish every official CLI permission or ambient startup constraint. Strict
 qualification and Mac native execution remain separate unfinished tracks.
 
+Use [`flow-supervised runs`](project-runs.md) to find retained tasks and exact
+original commands without starting or recovering an owner.
+
 ## Scripts and exact confirmation
 
 With one retained request, preview it using `flow-supervised run --json`.
