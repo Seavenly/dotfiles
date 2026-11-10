@@ -32,10 +32,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "a3d2de6180d3e4a8c1a97f706968ec39c3144ce7",
+    "candidate_tree_sha": "87546cb7799792581a4ba2b4fbfe29c53350d54d",
     "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"
   },
-  "content_digest": "sha256:974d37e967d385e4a12762da4bca643cdb1033278b7a8fd024fc9a4f9e24fdf8",
+  "content_digest": "sha256:7e0c34b24eceb3cd2c596c3c52a29319d3eb41be4afe653ffa435e3dad010f5a",
   "files": [
     {
       "path": "GLOSSARY.md",
@@ -658,8 +658,8 @@
     {
       "path": "config/flow/src/cli-command.mjs",
       "mode": "100644",
-      "git_blob_sha": "b77d6dbe875194acfbf7d315e5afafad662e59ea",
-      "sha256": "aeab4ec8cfa6af98b7be612030d9f10132e11277e145a131f1d26f66ea09fea7"
+      "git_blob_sha": "21f00f88c901399e786bb4d17a54a82d2c6cdca2",
+      "sha256": "4d5cd450c73387936dc73ad3f5e329a237ccfb72124fb726c2ab30216d071008"
     },
     {
       "path": "config/flow/src/cli.mjs",
@@ -898,8 +898,8 @@
     {
       "path": "config/flow/src/project-runs-state.mjs",
       "mode": "100644",
-      "git_blob_sha": "f9a0e1dfa3366fed416382a8e049fd608df78183",
-      "sha256": "65ad166700cf4c8029b6e638cdfea335f550e5e964e34f0c3facdcf21d3326d3"
+      "git_blob_sha": "d1750e10f69193dd01292cfa14d1c2db31325d35",
+      "sha256": "ade7dc39a2c24428eeb57424f31932421660086bce41b9114e24409019d81bec"
     },
     {
       "path": "config/flow/src/project-runs-view.mjs",
@@ -918,6 +918,18 @@
       "mode": "100644",
       "git_blob_sha": "932927d82984c206b89be807611d92f8807edc8c",
       "sha256": "40490a78f99ea4ae5cedf34f0ff07913ec999c2e1c06997f452784c01ea20769"
+    },
+    {
+      "path": "config/flow/src/project-usage-state.mjs",
+      "mode": "100644",
+      "git_blob_sha": "c21d32ae54577a4dfe6c63120c06c42ab692444e",
+      "sha256": "2d011d255ee2fff823f446bf7df1373168b5092d535eb256729769e1d3ef8695"
+    },
+    {
+      "path": "config/flow/src/project-usage.mjs",
+      "mode": "100644",
+      "git_blob_sha": "a745a1d95d3051ff0387d9e8d475029dae68e221",
+      "sha256": "7289ad1ee51e589aecc250ec220d25e355448c832e53cf8618fc9dc49c28ae81"
     },
     {
       "path": "config/flow/src/runtime.mjs",
@@ -1184,6 +1196,12 @@
       "sha256": "c2a5c9962aef220bcf0a1e95a3ee0c35013633522095f8da4936bbf0282f7269"
     },
     {
+      "path": "config/flow/test/project-usage.test.mjs",
+      "mode": "100644",
+      "git_blob_sha": "08271d472cb724ceb89081b8737976c0ab82ab8f",
+      "sha256": "252cfc6eb4a5d0c7e26ac8a7ac15417b4c7e9740ccffbe10e3cdbc6224f1881b"
+    },
+    {
       "path": "config/flow/test/public-process.test.mjs",
       "mode": "100644",
       "git_blob_sha": "86374df429e5fff064247ea898cd8c668f704ba8",
@@ -1248,6 +1266,12 @@
       "mode": "100644",
       "git_blob_sha": "e30807d36453c5d7e1a692a9050b8526569447d0",
       "sha256": "5f165e3471b366e907a360e0643d4b3e9e907f9b4c4d4b399cfd6b6e5c13acf0"
+    },
+    {
+      "path": "config/flow/test/usage-project-public.test.mjs",
+      "mode": "100644",
+      "git_blob_sha": "ab9b8ff2f27ea5a46de3442bbebabc3796c40dd2",
+      "sha256": "b16ca584365851e51d09b8df89c11df099c5741112196146b87325a1f3b3f18b"
     },
     {
       "path": "docs/adr/0007-use-drovr-as-the-delegated-agent-runtime.md",
@@ -2084,6 +2108,12 @@
       "sha256": "bbea4e8db52e9589f6c6b9e04da0efbe6ce36d3f18c0982e5bb138a207c53e24"
     },
     {
+      "path": "tools/flow/src/recorded-task-usage.mjs",
+      "mode": "100644",
+      "git_blob_sha": "b13d37c5f2b92718634cadca78c55aba7d55f517",
+      "sha256": "2f7fc689660fc9cb82000ad5ff92a96cae0d04b8cd9d46fe2a4ddc92957ce768"
+    },
+    {
       "path": "tools/flow/src/rejection.mjs",
       "mode": "100644",
       "git_blob_sha": "8e7ce03b0fd6c3a3435bb776298183bff166465c",
@@ -2418,6 +2448,12 @@
       "mode": "100644",
       "git_blob_sha": "9d715d34017579e3118a9a205595152697824acd",
       "sha256": "d06b269f12764d3675419510011677ed8a3f5141aa9eb250a20861f4a1138f8a"
+    },
+    {
+      "path": "tools/flow/test/recorded-task-usage.test.mjs",
+      "mode": "100644",
+      "git_blob_sha": "013f284ce9528371fb2a1e534290d5bf5663333f",
+      "sha256": "7b4b9756db7ebba75de384d2c0da998c1325ef2d72a6a199d8ecf6da033c85ce"
     },
     {
       "path": "tools/flow/test/registered-operation.test.mjs",
