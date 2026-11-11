@@ -66,3 +66,24 @@ test("large ambiguous encoding, capability references and noncanonical values re
   const cyclic = {}; cyclic.self = cyclic; rejected(cyclic, "cyclic_input");
   rejected({ content: "e\u0301" }, "ambiguous_normalization");
 });
+
+test("legacy catalog and receipt identities remain exact and cannot select the research-input policy", () => {
+  // Literal identities captured from unchanged dcd62ec, not recomputed from
+  // the implementation under test or generated as new accepted goldens.
+  assert.equal(digest(safety.getEvidenceSafetyCatalog()), "sha256:f4fa426d1728c41fcd0a97dc5127eb2b5d4332cc4aaecfe72d82ce6ec851b7b1");
+  const options = { classification: "research", allowed_use: ["delegate_transfer"], input: { discussion: "Conceptual research compares bounded observations." } };
+  const request = safety.createEvidenceSafetyRequest(options);
+  assert.deepEqual(safety.validateEvidenceSafety(request), { accepted: true, receipt: {
+    allowed_use: ["delegate_transfer"], catalog_id: "flow.contract-catalog/v1@39", classification: "research",
+    input_digest: "sha256:c22424576e1ac0d5d208de23288d26ae4d856775ae4131e16103ca20d2cf8ba0",
+    policy_id: "flow.evidence-safety-policy/v1", schema: "flow.evidence-safety-receipt/v1",
+    receipt_digest: "sha256:cd801fb95f68c6de5eff27bd40088908f4255f42f81027ea339a6109ede3fce5",
+    self_digest: "sha256:cd801fb95f68c6de5eff27bd40088908f4255f42f81027ea339a6109ede3fce5",
+  } });
+  const substituted = safety.validateEvidenceSafety({ ...request, policy_id: "flow.research-input-safety-policy/v1" });
+  assert.equal(substituted.accepted, false); assert.equal(substituted.rejection.code, "policy_identity_mismatch");
+  assert.throws(() => safety.createEvidenceSafetyRequest({ ...options, limits: safety.RESEARCH_INPUT_SAFETY_LIMITS }), { reason: "invalid_request_shape" });
+  const inputValidation = validate({ content: text(10000) });
+  assert.equal(inputValidation.accepted, true);
+  assert.equal(safety.bindDelegateEvidenceReceipt(inputValidation).accepted, false, "research input validation must never become a transferable legacy receipt");
+});
