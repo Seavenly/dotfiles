@@ -12,8 +12,8 @@ import { projectRunsReport, renderProjectRuns } from '../src/project-runs-view.m
 const runtimeRoot=resolve(import.meta.dirname,'../../..'),trust={schema:'flow.supervised-native-cli/v1',acknowledgment:'trust-official-cli-permissions'};
 const save=(path,value)=>writeFileSync(path,JSON.stringify(value)+'\n',{mode:0o600});
 const sink=()=>({isTTY:false,value:'',write(text){this.value+=text;}});
-function fixture(t){
- const root=mkdtempSync(join(tmpdir(),'guided-research-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+function fixture(t,prefix='guided-research-'){
+ const root=mkdtempSync(join(tmpdir(),prefix));t.after(()=>rmSync(root,{recursive:true,force:true}));
  const repository=join(root,'repository'),state=join(root,'state'),source=join(root,'source.txt');mkdirSync(repository);mkdirSync(state);writeFileSync(source,'A bounded supplied note.\n');
  const git=args=>execFileSync('/usr/bin/git',['-c','core.hooksPath=/dev/null','-c','commit.gpgSign=false','-c','user.name=Fixture','-c','user.email=fixture@example.test','-C',repository,...args],{env:{PATH:'/usr/bin:/bin',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_NOSYSTEM:'1'},encoding:'utf8'});
  git(['init','-q','--initial-branch=main']);writeFileSync(join(repository,'file'),'baseline');git(['add','.']);git(['commit','-qm','fixture']);
@@ -67,10 +67,10 @@ test('attachment mismatch refuses before owner action and saved policy cannot be
  assert.throws(()=>parseResearchArguments(['--attach','run:'+'b'.repeat(64),'--timeout-seconds','5']),/saved source/);
 });
 test('research-only requestless client appears in runs with exact confirmation, not feature checks or candidate',async t=>{
- const f=fixture(t),api=transport(f),preview=previewOf(await invoke(f,api));
+ const f=fixture(t,'guided --confirm owned-'),api=transport(f),preview=previewOf(await invoke(f,api));
  const inventory=await collectProjectRuns({repository:f.repository,client:f.directory},{env:f.env,observer:{status:()=>({state:'stopped'}),query:()=>{throw new Error('uninitialized authority must not query');}}});
  const report=projectRunsReport(inventory),row=report.attempts.find(item=>item.kind==='research');assert.equal(report.complete,true,JSON.stringify(report));assert.equal(row.summary,'What follows?');assert.equal(row.state,'prepared');assert.equal(row.checks,null);assert.equal(row.candidate,null);assert.equal(row.research.packet_digest,preview.packet.packet_digest);
- assert.match(row.next_commands.find(item=>item.kind==='confirm').command,/flow-supervised research/);assert.match(renderProjectRuns(report),/residual gaps unknown/);assert.equal(existsSync(join(f.authority,'authority.sqlite')),false);
+ const command=row.next_commands.find(item=>item.kind==='confirm').command;assert.match(command,/flow-supervised research/);assert.ok(command.includes(f.repository));assert.ok(command.includes(f.directory));assert.ok(command.endsWith("'"+preview.confirmation_digest+"'"));assert.match(renderProjectRuns(report),/residual gaps unknown/);assert.equal(existsSync(join(f.authority,'authority.sqlite')),false);
 });
 
 test('public research setup preview escapes an owned executable path without changing selected bytes',async t=>{

@@ -1,3 +1,4 @@
+import { acceptedDelegateEvidenceEntry } from "./delegate-evidence.mjs";
 import { digest, freezeCanonical, isPlainRecord } from "./canonical.mjs";
 import { operationEffectIdentity } from "./effect-identity.mjs";
 import {
@@ -1192,36 +1193,10 @@ function resolveDelegateEvidence(fold, cardId) {
   if (!intent) return { code: "authority_evidence_missing", evidence: null };
   return {
     code: null,
-    evidence: {
-      card_id: cardId,
-      effect_id: attempt.effect_id,
-      attempt_id: attempt.attempt_id,
-      idempotency_key: intent.idempotency_key,
-      source_authority_watermark: intent.source_authority_watermark,
-      evidence: transferableDelegateEvidence(attempt.evidence),
-    },
+    evidence: acceptedDelegateEvidenceEntry(cardId, attempt, intent),
   };
 }
 
-function transferableDelegateEvidence(evidence) {
-  const allowed = [
-    "schema",
-    "attempt_id",
-    "card_id",
-    "turn_id",
-    "drovr_watermark",
-    "route_binding",
-    "settlement_proof",
-    "validator_receipts",
-    "validated_output",
-    "evidence_safety_receipt",
-    "evidence_safety_binding",
-    "authority_terminal_disposition",
-  ];
-  return Object.fromEntries(allowed
-    .filter((key) => Object.hasOwn(evidence, key))
-    .map((key) => [key, evidence[key]]));
-}
 
 function delegateEvidenceSafetyValid(providerReceipt) {
   if (!isPlainRecord(providerReceipt) ||
