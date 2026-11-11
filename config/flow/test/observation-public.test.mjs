@@ -6,6 +6,10 @@ import test from "node:test";
 import { Writable } from "node:stream";
 import { runCli } from "../src/cli-command.mjs";
 import { createFlowClient } from "../src/client.mjs";
+import { createFlowTransportServer } from "../src/transport.mjs";
+import { createFlowRuntime } from "../../../tools/flow/src/flow-runtime.mjs";
+import { createFixedTimeDurableRunAuthority, fixedHostIdentity } from "../../../tools/flow/test-support/fixed-host-identity.mjs";
+import { confirmedLaunchRequest, dependencyCheckpointProposal } from "../../../tools/flow/test-support/dynamic-checkpoint.mjs";
 
 const runId = `run:${"a".repeat(64)}`;
 const finalWatermark = `sha256:${"b".repeat(64)}`;
@@ -141,4 +145,60 @@ for (const mode of ["error", "close"]) test(`public CLI stdout ${mode} while blo
   assert.equal(await bounded(f.execution, `CLI hung after stdout ${mode}`), 1);
   assert.equal(f.returns, 1, "output failure must close the exact public iterator");
   assert.equal(f.commands, 0); assert.ok(f.stderr.length, "output failure must remain visible");
+});
+
+// This control uses real durable authority, public commands and transport, not
+// the finite response fixture above. The writer is an owned in-process test
+// authority; observers use a separate inspect-only authority and no provider.
+test("four public observers converge on durable mutations and disconnect does not cancel the run", async t => {
+  const root = realpathSync(mkdtempSync("/tmp/flow-observe-durable-")), authorityDirectory = join(root, "authority");
+  const writerAuthority = createFixedTimeDurableRunAuthority({ authorityDirectory, hostIdentityAdapter: fixedHostIdentity("boot-a", "observation-writer") });
+  let inspectorAuthority, reopenedAuthority, transport;
+  const watches = [];
+  t.after(async () => {
+    await Promise.all(watches.map(watcher => watcher.return()));
+    await bounded(transport?.close(), "owned durable transport did not close", 5000);
+    reopenedAuthority?.close(); inspectorAuthority?.close(); writerAuthority.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const writer = createFlowRuntime({ runAuthority: writerAuthority });
+  inspectorAuthority = createFixedTimeDurableRunAuthority({ authorityDirectory, access: "inspect", hostIdentityAdapter: fixedHostIdentity("boot-a", "observation-inspector") });
+  const inspector = createFlowRuntime({ runAuthority: inspectorAuthority });
+  transport = createFlowTransportServer({ socketPath: join(root, "view.sock"), runtime: {
+    prepare: request => writer.prepare(request), launch: request => writer.launch(request), command: request => writer.command(request),
+    query: request => inspector.query(request), watch: request => inspector.watch(request),
+  } });
+  await bounded(transport.start(), "owned durable transport did not start", 5000);
+  const clients = Array.from({ length: 4 }, () => createFlowClient({ socketPath: transport.socketPath, timeoutMs: 5000 }));
+  const proposal = dependencyCheckpointProposal(); proposal.requested_authority.commands.push("cancel");
+  const prepared = await clients[0].prepare(proposal), launched = await clients[0].launch(confirmedLaunchRequest(prepared));
+  assert.equal(launched.created, true);
+  const request = { run_id: launched.run_id }, initial = await clients[0].query(request);
+  for (const client of clients) watches.push(client.watch(request));
+  for (const watcher of watches) assert.deepEqual((await bounded(watcher.next(), "initial durable watch missing", 5000)).value, initial);
+  const approval = initial.legal_actions.find(action => action.type === "checkpoint_decision" && action.decision === "approve");
+  assert.ok(approval, "fresh public checkpoint action missing");
+  assert.equal((await bounded(clients[0].command(approval), "checkpoint command blocked by observers", 5000)).accepted, true);
+  const changed = await clients[0].query(request);
+  assert.notEqual(changed.watermark, initial.watermark); assert.equal(changed.phase, "active");
+  async function observeExact(watcher, expected) {
+    for (let count = 0; count < 8; count++) {
+      const item = await bounded(watcher.next(), "durable watch did not converge", 5000);
+      assert.equal(item.done, false);
+      if (item.value.watermark === expected.watermark) { assert.deepEqual(item.value, expected); return; }
+    }
+    assert.fail("durable watch did not reach the fresh full query");
+  }
+  await Promise.all(watches.map(watcher => observeExact(watcher, changed)));
+  await watches[0].return();
+  const afterDisconnect = await clients[1].query(request);
+  assert.deepEqual(afterDisconnect, changed, "disconnecting an observer must not mutate or cancel the run");
+  const cancellation = afterDisconnect.legal_actions.find(action => action.type === "cancel");
+  assert.ok(cancellation, "fresh public cancellation action missing");
+  assert.equal((await bounded(clients[1].command(cancellation), "cancellation blocked after observer disconnect", 5000)).accepted, true);
+  const final = await clients[1].query(request);
+  assert.equal(final.phase, "cancelled"); assert.notEqual(final.watermark, changed.watermark);
+  await Promise.all(watches.slice(1).map(watcher => observeExact(watcher, final)));
+  reopenedAuthority = createFixedTimeDurableRunAuthority({ authorityDirectory, access: "inspect", hostIdentityAdapter: fixedHostIdentity("boot-a", "observation-reopened") });
+  assert.deepEqual(createFlowRuntime({ runAuthority: reopenedAuthority }).query(request), final, "reopened durable replay must match the exact final public projection");
 });
