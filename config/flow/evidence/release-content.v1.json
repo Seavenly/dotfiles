@@ -32,10 +32,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "87546cb7799792581a4ba2b4fbfe29c53350d54d",
+    "candidate_tree_sha": "bbbb2d0c14806f30eaac31b63a771ccf66ac9789",
     "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e"
   },
-  "content_digest": "sha256:7e0c34b24eceb3cd2c596c3c52a29319d3eb41be4afe653ffa435e3dad010f5a",
+  "content_digest": "sha256:8d8815b2fa80f8dd67e6f16749b0bc2d57a17a6fee0f83e5c822109a5421279c",
   "files": [
     {
       "path": "GLOSSARY.md",
@@ -658,8 +658,8 @@
     {
       "path": "config/flow/src/cli-command.mjs",
       "mode": "100644",
-      "git_blob_sha": "21f00f88c901399e786bb4d17a54a82d2c6cdca2",
-      "sha256": "4d5cd450c73387936dc73ad3f5e329a237ccfb72124fb726c2ab30216d071008"
+      "git_blob_sha": "9c20a1208f81bc54c3caf29c6d002cc3bd248b3f",
+      "sha256": "50d7170353913e459d63070aa4070223a62922d82391179ff1c0a059b4e6d4d9"
     },
     {
       "path": "config/flow/src/cli.mjs",
@@ -946,8 +946,8 @@
     {
       "path": "config/flow/src/transport.mjs",
       "mode": "100644",
-      "git_blob_sha": "92b7cc5a696ef84e9fc6c38ea897fc705e660e2f",
-      "sha256": "9bfeb0fdc276a3cc86ed2e90843d2f346d58616601e581bbfabd1201929ac683"
+      "git_blob_sha": "336690c9de78dd5b7dd1fb3e446dc54f2912d2cf",
+      "sha256": "9905f615b37f2676282861d5c3862b9230d04863fd339bc6bb9b94eb76925463"
     },
     {
       "path": "config/flow/src/trusted-directory.mjs",
@@ -1140,6 +1140,18 @@
       "mode": "100644",
       "git_blob_sha": "c4128f6e8f23329532bbcde79642d336805773c6",
       "sha256": "0ed3b0b237d921fca800f96939578d019a08f8aeb54e000c70f8fcad9953db45"
+    },
+    {
+      "path": "config/flow/test/observation-public.test.mjs",
+      "mode": "100644",
+      "git_blob_sha": "4a8c8e58739a6d93b2cd59ebc2090dada327a7de",
+      "sha256": "c9a969881b51d408573290216671d3073f242c598b000b8922546e3245981949"
+    },
+    {
+      "path": "config/flow/test/observation.test.mjs",
+      "mode": "100644",
+      "git_blob_sha": "442aec0d3d717f60a3aae42c356f864002a9186f",
+      "sha256": "0308088e230dd867fbd2370859c0f8b8a9c42adb5919d4c4f211de2d7622068a"
     },
     {
       "path": "config/flow/test/operator-guide.test.mjs",
@@ -1678,8 +1690,26 @@
     {
       "path": "tools/flow/README.md",
       "mode": "100644",
-      "git_blob_sha": "68eb2dd143b2fa99319617cdaf3c8283ab746423",
-      "sha256": "2b2b4addb690ac59f644ce1ab24eae11aa7e2c6db8823689b7dd612bdc5b0336"
+      "git_blob_sha": "b9e26819171b2c2d8c657896d8d16fbc3928f0a8",
+      "sha256": "eaccbd51abcfc287a92c911bf756adba5adcebb7be5ecc84b39d4e16d57c9a18"
+    },
+    {
+      "path": "tools/flow/benchmarks/linux-plan.v1.json",
+      "mode": "100644",
+      "git_blob_sha": "01d5cda97446829c66a747b7238099fd8c455d23",
+      "sha256": "9c4c47be7adc818cd39f98e72cdff7ece1cb8f3f88f0b66e80498a24a0b859b0"
+    },
+    {
+      "path": "tools/flow/benchmarks/observation.mjs",
+      "mode": "100644",
+      "git_blob_sha": "5eadf326730463d3209bfad67dd558e62007c973",
+      "sha256": "860965bc5971781b8f6255c1e27bd9d0c67682071d4ece75788b8d427c14e0ef"
+    },
+    {
+      "path": "tools/flow/benchmarks/observe-linux.py",
+      "mode": "100644",
+      "git_blob_sha": "811a3cb04fb5fcdd73af7f3474ef89e479d09931",
+      "sha256": "e8638e7c3180091b2814e944de73033be49b0f24178ed813ff712b0263a9b23d"
     },
     {
       "path": "tools/flow/diagnostics/macos/README.md",
@@ -2032,8 +2062,8 @@
     {
       "path": "tools/flow/src/projection-watcher.mjs",
       "mode": "100644",
-      "git_blob_sha": "5dcd6ce20212ddff8f16ef660f9449fa6ff09970",
-      "sha256": "a7b842529410aa0a4e01b0a610ea1c04156ecdc8b3bb27009b5ff3cbbe5da953"
+      "git_blob_sha": "dd1a66a9d4c4c93c70fc71ec3ce38e3ce36937cc",
+      "sha256": "1793a6fcfd60f59f842274d718cec9c8434e21761d59cdc87ac8fe72de2b23d0"
     },
     {
       "path": "tools/flow/src/provider-receipt-policies/core.mjs",
@@ -2442,6 +2472,12 @@
       "mode": "100644",
       "git_blob_sha": "8dd41bcdf999f50889727d12631fe1424c62f8f5",
       "sha256": "bdd47ca073e2ecd2c04f894a56c4fa87ebf9f1ee64d201bb0ba8bbd38771effe"
+    },
+    {
+      "path": "tools/flow/test/projection-watcher.test.mjs",
+      "mode": "100644",
+      "git_blob_sha": "be83f58156ce6cd8c78bcca7212654437302f399",
+      "sha256": "8b1da120f18f4475045b08d61ccc2fc28a608e3a24c3f039edd05839aebae795"
     },
     {
       "path": "tools/flow/test/purity-contracts.test.mjs",
