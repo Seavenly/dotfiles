@@ -7,8 +7,8 @@
     "qualification_base_commit": "c34c6e881ce375691d4f3e4ca626c1af9eef81cc",
     "content": {
       "path": "evidence/release-content.v1.json",
-      "sha256": "ee8ef67da564021b89c5cf6f5ded8c5c89b228e9863aaa27fdcfd666fe6dda2f",
-      "digest": "sha256:21820419e2b5177f1b2b40f3b0136ba2d3d4580e7323ea387fce9a1b3b245f9f"
+      "sha256": "9505e965edc89755732d714de9eb4eedccbd1cf1df854725b3f5c8d15e2f4ef8",
+      "digest": "sha256:c7c3ee7ab352a8a00d53dcc1542ed68d9091857deae5cf161ae15279f53261f3"
     },
     "implementation": "flow-runtime/v1"
   },
@@ -142,21 +142,21 @@
       "path": "contracts/catalog.v1.json",
       "sha256": "aa5566fb02c9fece5963fc55eeb1ac202b5715c01c1dfa948540868523043443",
       "status": "passed",
-      "recorded_at": "2026-11-11T00:37:21Z"
+      "recorded_at": "2026-11-11T00:40:11Z"
     },
     {
       "id": "legacy_default_policy",
       "path": "launch-policy.v1.json",
       "sha256": "e08f08a0583f3cbe6ff3150a987a54cf5b08668a1c5430d3eddd8197e9f52b53",
       "status": "passed",
-      "recorded_at": "2026-11-11T00:37:21Z"
+      "recorded_at": "2026-11-11T00:40:11Z"
     },
     {
       "id": "frozen_legacy_inventory",
       "path": "legacy-baselines.v1.json",
       "sha256": "cfe63b5b40e8359f3e8231d229e274fcf0cc36827e82a896ed99cfd5dc8eff27",
       "status": "passed",
-      "recorded_at": "2026-11-11T00:37:21Z"
+      "recorded_at": "2026-11-11T00:40:11Z"
     },
     {
       "id": "replacement_runtime_activation",
@@ -168,23 +168,23 @@
     {
       "id": "release_content_binding",
       "path": "evidence/release-content.v1.json",
-      "sha256": "ee8ef67da564021b89c5cf6f5ded8c5c89b228e9863aaa27fdcfd666fe6dda2f",
+      "sha256": "9505e965edc89755732d714de9eb4eedccbd1cf1df854725b3f5c8d15e2f4ef8",
       "status": "passed",
-      "recorded_at": "2026-11-11T00:37:21Z"
+      "recorded_at": "2026-11-11T00:40:11Z"
     },
     {
       "id": "deterministic_qualification",
       "path": null,
       "sha256": null,
       "status": "not_run",
-      "recorded_at": "2026-11-11T00:37:21Z"
+      "recorded_at": "2026-11-11T00:40:11Z"
     },
     {
       "id": "production_route_conformance",
       "path": "evidence/production-route-conformance.v1.json",
-      "sha256": "b34d7f31a7fb92538ae561d50ca454960174786adb853c4bff9edc13a5904491",
+      "sha256": "fd76bf5feef7ee0e312cd352efee4eccf58c2a2e35bb0f64d99ab6088d63ff58",
       "status": "not_run",
-      "recorded_at": "2026-11-11T00:37:21Z"
+      "recorded_at": "2026-11-11T00:40:11Z"
     },
     {
       "id": "issue_46_host_recovery",
@@ -192,7 +192,7 @@
       "sha256": null,
       "evidence_digest": null,
       "status": "not_run",
-      "recorded_at": "2026-11-11T00:37:21Z"
+      "recorded_at": "2026-11-11T00:40:11Z"
     }
   ],
   "defects": [],
@@ -207,5 +207,5 @@
     "remote_mutations_authorized": false,
     "decided_at": "2026-10-04T01:07:24Z"
   },
-  "recorded_at": "2026-11-11T00:37:21Z"
+  "recorded_at": "2026-11-11T00:40:11Z"
 }
