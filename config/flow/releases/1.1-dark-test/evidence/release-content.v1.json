@@ -32,10 +32,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "6609acf6e14786063700c540bfefd45712db403e",
+    "candidate_tree_sha": "8dd5734d0c00d0eb35938292b57dbaf21f110fb5",
     "qualification_base_commit": "c34c6e881ce375691d4f3e4ca626c1af9eef81cc"
   },
-  "content_digest": "sha256:ba6997c5f35a3ba383baa75eb68b6415785c0544db6a1160d3a8ef46e4f55082",
+  "content_digest": "sha256:06ea6eca575710cbe55a233af807eb93cf2ab5e5aa087c2b93bd07eefcd6d43c",
   "files": [
     {
       "path": "GLOSSARY.md",
@@ -886,8 +886,8 @@
     {
       "path": "config/flow/src/project-research-state.mjs",
       "mode": "100644",
-      "git_blob_sha": "4bbd4dff6fda829131e590d334e9d7cdb25136fb",
-      "sha256": "01a87d66c71af5194748dc780e7d1964b905a2375ab8781ddc9e65528b415f98"
+      "git_blob_sha": "fdf66f0feb8060da1255587e4c6ba20c8c49bed4",
+      "sha256": "c8fc1cb5f2090e58bfe39d84f6cb5559f712933bca6928badcd3f4e9489f6d78"
     },
     {
       "path": "config/flow/src/project-research-view.mjs",
@@ -898,8 +898,8 @@
     {
       "path": "config/flow/src/project-research.mjs",
       "mode": "100644",
-      "git_blob_sha": "7197092c638410447b76a0cd1382c0369126826e",
-      "sha256": "9c62ca332791eaddee9c1a037abfb868cc4fad4d9f1e43ee553c6eeccb3a631b"
+      "git_blob_sha": "feca597ac634b378b526551644bc603b614229d2",
+      "sha256": "2b38b08bd285197d022455fa2f88be7d821c92625f9d0496fd5d8376eab59540"
     },
     {
       "path": "config/flow/src/project-review-preparation.mjs",
@@ -984,6 +984,12 @@
       "mode": "100644",
       "git_blob_sha": "b72df206b79a943a5818bc1ae3a5be750d2f130f",
       "sha256": "eb7a9d08aec551a1bb91f62ad2b255d5ae3e2ae3aada3bcbf7656e959e8f12f3"
+    },
+    {
+      "path": "config/flow/src/research-source-files.mjs",
+      "mode": "100644",
+      "git_blob_sha": "4ede6e9b7c563fdd092245c845d516bb45ae4e50",
+      "sha256": "9d92fe9be3e47e61771b4b5227740b295c644b7bee5285552d182b3c545f8168"
     },
     {
       "path": "config/flow/src/runtime.mjs",
@@ -1282,14 +1288,14 @@
     {
       "path": "config/flow/test/research-direct-fixture.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "e848365a6b9442e33db6922a458ab7e55a23fbcd",
-      "sha256": "8cfcdd973d3170b32831c52b314ccb5471ce0489ef75169249cd7f1e8b6cf746"
+      "git_blob_sha": "973715d165e216daf58c9726dfa2fd3a00976ad5",
+      "sha256": "7f1dea1c593e7111b774e83611f3ade8d9cfe968eae47f1e65bfe9ceac5cd56e"
     },
     {
       "path": "config/flow/test/research-preparation.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "f26db77e36aaa01ad3bd3b3f5f2c136b3f444a2d",
-      "sha256": "b87aae07111ccb24881abac3c17283d5b2202bd2144efcda252e2ca1d56ea17a"
+      "git_blob_sha": "7a724ca7f864577c1f125069809a88626c2b4b4e",
+      "sha256": "434fc2882daa2223e631f088a8c80d3b5e1108cb5cb290d73abb7cf371974a0b"
     },
     {
       "path": "config/flow/test/research-project-public.test.mjs",
@@ -2254,8 +2260,8 @@
     {
       "path": "tools/flow/src/research-source-packet.mjs",
       "mode": "100644",
-      "git_blob_sha": "615cae70db8a8e3fdefd7a683d4a672538f07c5c",
-      "sha256": "2b64a5eaf71f7bf58dedec76324cbe35ff330bd5f9beffd84efec991beca6d49"
+      "git_blob_sha": "a3c382a3e9bb37c2623bb4474504251436738d8d",
+      "sha256": "058ffa38d04293c2146e5e3b7df26b17b7196dd6dac9f3f1e823f9be45adda8a"
     },
     {
       "path": "tools/flow/src/result-bindings.mjs",
@@ -2596,8 +2602,8 @@
     {
       "path": "tools/flow/test/research-flow.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "6999e8da49b2bc2b6b068f352a2223b82222add6",
-      "sha256": "058041cbaceb0b3d6d7f4ffe85fd09dc6553c9336710293889d5f4086d7b1422"
+      "git_blob_sha": "7eccea4dd3be3b33602e54d6c99016465f26e8b4",
+      "sha256": "a02958ade107ac0077ab2c2e33f2c4c6d50ae55e1c097bdecd1090c837bb639c"
     },
     {
       "path": "tools/flow/test/research-input-safety.test.mjs",
@@ -2608,8 +2614,8 @@
     {
       "path": "tools/flow/test/research-source-packet.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "8fa928f3527377e9698b20d7c37e3de1384e67f9",
-      "sha256": "689bf6279443215b1989f001459ea0a72195527dd81a644b450d20f792fbbab1"
+      "git_blob_sha": "5de1f093af430c711a0577029eba32185d9eb435",
+      "sha256": "d55a79a72b74a60ebeecec5fad6fa2cd666341cb12cf416790f294a28b361413"
     },
     {
       "path": "tools/flow/test/review-flow.test.mjs",
