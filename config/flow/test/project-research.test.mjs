@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { digest } from '../../../tools/flow/src/canonical.mjs';
@@ -82,4 +82,13 @@ test('public research setup preview escapes an owned executable path without cha
  assert.equal(exit,0,stderr.value);assert.equal(stdout.value.includes('\u001b'),false);assert.equal(stdout.value.includes('\npretend-confirmed'),false);assert.match(stdout.value,/\\u001b/);
  const json=sink();assert.equal(await runProjectInit(['--purpose','research','--repository',f.repository,'--codex-executable',path,'--json'],{env,stdout:json,stderr:sink(),stdin:{isTTY:false}}),0);
  assert.equal(JSON.parse(json.value).plan.codex_executable.path,path);assert.equal(existsSync(env.FLOW_LOCAL_CLIENT_STATE_HOME),false);
+});
+
+test('public research setup refuses redirected state ancestry before profile allocation',async t=>{
+ const f=fixture(t),{runProjectInit}=await import('../src/project-init.mjs');
+ execFileSync('/usr/bin/git',['-C',f.repository,'config','user.name','Fixture']);execFileSync('/usr/bin/git',['-C',f.repository,'config','user.email','fixture@example.test']);
+ const outside=join(f.root,'outside'),alias=join(f.root,'state-alias');mkdirSync(outside);symlinkSync(outside,alias);
+ const stdout=sink(),stderr=sink(),env={...f.env,FLOW_LOCAL_CLIENT_STATE_HOME:alias};
+ const exit=await runProjectInit(['--purpose','research','--repository',f.repository,'--codex-executable','/usr/bin/true','--json'],{env,stdout,stderr,stdin:{isTTY:false}});
+ assert.equal(exit,1);assert.match(stderr.value,/canonical|alias/);assert.equal(existsSync(join(outside,'flow-local')),false);
 });

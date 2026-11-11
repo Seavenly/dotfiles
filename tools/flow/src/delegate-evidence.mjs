@@ -10,7 +10,7 @@ export function acceptedDelegateEvidenceEntry(cardId, attempt, intent) {
   };
 }
 
-function transferableDelegateEvidence(evidence) {
+export function transferableDelegateEvidence(evidence) {
   const allowed = [
     "schema",
     "attempt_id",

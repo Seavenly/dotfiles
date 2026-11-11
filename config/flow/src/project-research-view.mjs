@@ -16,10 +16,12 @@ export function renderResearchPreview(preview) {
  'No prototype, project test, candidate, review, approval or publication is authorized.',''].map(terminalText).join('\n');
 }
 function acceptedResearchAttempt(run, cardId) {
- const attempts=(run.delegate_attempts??[]).filter(attempt=>attempt.card_id===cardId&&attempt.status==='accepted');
+ const attempts=(run.delegate_attempts??[]).filter(attempt=>attempt.card_id===cardId);
  if(!attempts.length)return null;
  if(attempts.length!==1)failRun('Research delegate attempt is ambiguous; inspect exact evidence.','research_report_changed',1);
- const attempt=attempts[0],effects=(run.effects??[]).filter(item=>item.effect_id===attempt.effect_id);
+ const attempt=attempts[0];
+ if(attempt.status!=='accepted')return null;
+ const effects=(run.effects??[]).filter(item=>item.effect_id===attempt.effect_id);
  if(effects.length!==1)failRun('Research delegate effect is missing or ambiguous.','research_report_changed',1);
  const effect=effects[0],card=run.active_plan?.cards?.find(item=>item.id===cardId);
  if(!card||card.inputs?.task_inputs?.flow!=='spike/v2'||digest(card.route)!==digest(effect.route_binding)||digest(attempt.route_binding)!==digest(effect.route_binding)||digest(attempt.evidence?.route_binding)!==digest(effect.route_binding)||effect.run_id!==run.run_id||effect.card_id!==cardId||effect.attempt_id!==attempt.attempt_id||effect.status!=='succeeded'||effect.effect_kind!=='delegate'||

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +20,16 @@ function retainedCheck(client) {
  if(!match) fail('Original trusted client does not expose its exact retained check selection; use its original setup.');
  return match[1]==='undefined'?undefined:JSON.parse(match[1]);
 }
+function canonicalResearchState(path) {
+ const selected=resolve(path);
+ for(let current=selected;;current=dirname(current)) {
+  let stat;
+  try { stat=lstatSync(current); } catch(error) { if(error.code!=="ENOENT")throw error; }
+  if(stat&&(!stat.isDirectory()||stat.isSymbolicLink()||realpathSync(current)!==current))fail("Research state must retain canonical directory ancestry; aliases and broken paths are unsupported.");
+  if(dirname(current)===current)break;
+ }
+ return selected;
+}
 export function createResearchSetupPlan(options,{env=process.env,cwd=process.cwd()}={}) {
  if(!/^v22\./.test(process.version)) fail('Research setup requires Node 22.');
  for(const flag of ['--summary','--acceptance','--brief','--kind','--tool-executable','--python-runner','--test-directory','--test-pattern','--reconfigure-check']) if(options[flag] || flag==='--acceptance'&&options.acceptance?.length) fail('Research setup uses no feature brief, project type or checker. Select --purpose research separately.');
@@ -28,6 +38,7 @@ export function createResearchSetupPlan(options,{env=process.env,cwd=process.cwd
  if(projectGit(repository,['status','--porcelain']).length) fail('Choose an existing clean Git project; preserve dirty work before setup.');
  const stateHome=env.FLOW_LOCAL_CLIENT_STATE_HOME??env.XDG_STATE_HOME??join(env.HOME??homedir(),'.local/state');
  if(!isAbsolute(stateHome)||stateHome===repository||stateHome.startsWith(repository+'/')) fail('Choose an absolute private state directory outside the project.');
+ canonicalResearchState(stateHome);
  const profile=join(stateHome,'flow-local',digest(repository).slice(7,31));
  const codex=selectInitCodex({repository,profilePath:join(profile,'profile.json'),explicitPath:options['--codex-executable'],env});
  let selected,check,gitIdentity;

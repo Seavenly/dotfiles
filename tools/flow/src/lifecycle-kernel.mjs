@@ -1,4 +1,4 @@
-import { acceptedDelegateEvidenceEntry } from "./delegate-evidence.mjs";
+import { acceptedDelegateEvidenceEntry, transferableDelegateEvidence } from "./delegate-evidence.mjs";
 import { digest, freezeCanonical, isPlainRecord } from "./canonical.mjs";
 import { operationEffectIdentity } from "./effect-identity.mjs";
 import {

@@ -47,6 +47,8 @@ test('public production spike/v2 executes two bounded deterministic tasks and tr
  const report=readResearchReport(run,packet);assert.equal(report.assurance,'lower');assert.equal(report.residual_gaps.length,1);
  for (const change of [
   clone=>clone.delegate_attempts.push(structuredClone(clone.delegate_attempts.find(attempt=>attempt.card_id==='spike-research'))),
+  clone=>clone.delegate_attempts.push({...clone.delegate_attempts.find(attempt=>attempt.card_id==='spike-research'),status:'quarantined'}),
+  clone=>clone.delegate_attempts.push({...clone.delegate_attempts.find(attempt=>attempt.card_id==='spike-research'),status:'reserved'}),
   clone=>delete clone.effects.find(effect=>effect.card_id==='spike-research').source_authority_watermark,
   clone=>clone.effects.push(structuredClone(clone.effects.find(effect=>effect.card_id==='spike-synthesis'))),
   clone=>clone.active_plan.cards.find(card=>card.id==='spike-research').inputs.task_inputs.packet.sources[0].content+='changed'
