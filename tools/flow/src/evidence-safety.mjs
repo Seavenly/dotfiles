@@ -43,6 +43,15 @@ export const EVIDENCE_SAFETY_LIMITS = Object.freeze({
   max_nested_structured_strings: 16,
 });
 
+// Research input is a separate, immutable policy. Legacy evidence receipts,
+// output limits and boundary binding identities retain policy v1 unchanged.
+export const RESEARCH_INPUT_SAFETY_POLICY_ID = "flow.research-input-safety-policy/v1";
+export const RESEARCH_INPUT_SAFETY_LIMITS = Object.freeze({
+  ...EVIDENCE_SAFETY_LIMITS,
+  max_string_length: 160 * 1024,
+  max_total_string_length: 512 * 1024,
+});
+
 const REQUEST_FIELDS = Object.freeze([
   "schema",
   "policy_id",
@@ -145,6 +154,24 @@ export function getEvidenceSafetyCatalog() {
     ],
     limits: { ...EVIDENCE_SAFETY_LIMITS },
   });
+}
+
+/** Classify the complete research input, never a transferable-evidence receipt. */
+export function validateResearchInputSafety(value) {
+  try {
+    const snapshot = boundedCanonicalSnapshot(value, RESEARCH_INPUT_SAFETY_LIMITS);
+    const issue = scanInput(snapshot, RESEARCH_INPUT_SAFETY_LIMITS);
+    if (issue) return researchInputRejected(issue);
+    return freezeCanonical({ accepted: true, policy_id: RESEARCH_INPUT_SAFETY_POLICY_ID,
+      input_digest: digest(snapshot) });
+  } catch (error) {
+    return researchInputRejected(canonicalFailure(error));
+  }
+}
+
+function researchInputRejected(code) {
+  return freezeCanonical({ accepted: false, policy_id: RESEARCH_INPUT_SAFETY_POLICY_ID,
+    rejection: { schema: "flow.research-input-safety-rejection/v1", code, reason: code, redacted: true } });
 }
 
 /** Build an exact request without consulting any ambient source. */
@@ -407,20 +434,21 @@ function validateDataProperties(
   value,
   ancestors = new Set(),
   state = { depth: 0, nodes: 0, totalStringLength: 0 },
+  limits = EVIDENCE_SAFETY_LIMITS,
 ) {
   state.nodes += 1;
-  if (state.nodes > EVIDENCE_SAFETY_LIMITS.max_nodes) {
+  if (state.nodes > limits.max_nodes) {
     return "evidence_too_large";
   }
-  if (state.depth > EVIDENCE_SAFETY_LIMITS.max_depth) {
+  if (state.depth > limits.max_depth) {
     return "evidence_too_deep";
   }
 
   if (typeof value === "string") {
     const size = stringByteLength(value);
-    if (size > EVIDENCE_SAFETY_LIMITS.max_string_length ||
+    if (size > limits.max_string_length ||
         state.totalStringLength + size >
-          EVIDENCE_SAFETY_LIMITS.max_total_string_length) {
+          limits.max_total_string_length) {
       return "evidence_too_large";
     }
     state.totalStringLength += size;
@@ -474,9 +502,9 @@ function validateDataProperties(
     }
     if (!Array.isArray(value)) {
       const size = stringByteLength(key);
-      if (size > EVIDENCE_SAFETY_LIMITS.max_string_length ||
+      if (size > limits.max_string_length ||
           state.totalStringLength + size >
-            EVIDENCE_SAFETY_LIMITS.max_total_string_length) {
+            limits.max_total_string_length) {
         state.depth -= 1;
         ancestors.delete(value);
         return "evidence_too_large";
@@ -496,7 +524,7 @@ function validateDataProperties(
       ancestors.delete(value);
       return "non_canonical_input";
     }
-    const issue = validateDataProperties(descriptor.value, ancestors, state);
+    const issue = validateDataProperties(descriptor.value, ancestors, state, limits);
     if (issue) {
       state.depth -= 1;
       ancestors.delete(value);
@@ -508,8 +536,8 @@ function validateDataProperties(
   return null;
 }
 
-function boundedCanonicalSnapshot(value) {
-  const issue = validateDataProperties(value);
+function boundedCanonicalSnapshot(value, limits = EVIDENCE_SAFETY_LIMITS) {
+  const issue = validateDataProperties(value, new Set(), undefined, limits);
   if (issue) {
     throw new CanonicalValueError(
       issue,
@@ -539,8 +567,9 @@ function normalizeAllowedUses(value) {
     unique.includes(boundary));
 }
 
-function scanInput(input) {
+function scanInput(input, limits = EVIDENCE_SAFETY_LIMITS) {
   const state = {
+    limits,
     depth: 0,
     nodes: 0,
     totalStringLength: 0,
@@ -566,8 +595,8 @@ function scanValue(
     ? keyName
     : inheritedLateKey;
   state.nodes += 1;
-  if (state.nodes > EVIDENCE_SAFETY_LIMITS.max_nodes) return "evidence_too_large";
-  if (state.depth > EVIDENCE_SAFETY_LIMITS.max_depth) return "evidence_too_deep";
+  if (state.nodes > state.limits.max_nodes) return "evidence_too_large";
+  if (state.depth > state.limits.max_depth) return "evidence_too_deep";
   if (value === null || typeof value === "boolean") {
     return null;
   }
@@ -603,7 +632,7 @@ function scanValue(
   } else if (!isPlainRecord(value)) {
     issue = "non_canonical_input";
   } else {
-    if (looksLikeStructuralCapabilityEnvelope(value)) {
+    if (looksLikeStructuralCapabilityEnvelope(value, state.limits)) {
       issue = "capability_reference";
     }
     // Canonical JSON sorts object keys; array traversal above intentionally
@@ -749,33 +778,38 @@ function containsMaterial(value) {
     containsMaterial(child));
 }
 
-function looksLikeStructuralCapabilityEnvelope(value) {
+function looksLikeStructuralCapabilityEnvelope(value, limits = EVIDENCE_SAFETY_LIMITS) {
   if (!isPlainRecord(value)) return false;
   const entries = Object.entries(value);
   const marker = entries.some(([key, child]) => {
     return semanticKeyMatches(
       key,
       /^(?:type|kind|contract|schema|envelopetype)$/,
+      limits,
     ) && typeof child === "string" &&
       semanticValueMatches(
         child,
         /(?:capability|authority|grant|permission|delegat|envelope)/i,
+        limits,
       );
   });
   const subject = entries.find(([key, child]) =>
     semanticKeyMatches(
       key,
       /^(?:subject|target|resource|object|resourceid|resourcekey)$/,
+      limits,
     ) && hasSubstantiveEnvelopeMaterial(child));
   const strongGrant = entries.find(([key, child]) =>
     semanticKeyMatches(
       key,
       /^(?:scope|grant|grants|permission|permissions|authority|authorityscope|capability|capabilities|right|rights|privilege|privileges)$/,
+      limits,
     ) && hasSubstantiveEnvelopeMaterial(child));
   const genericGrant = entries.find(([key, child]) =>
     semanticKeyMatches(
       key,
       /^(?:action|actions|command|commands|mutation|mutations|operation|operations|effect|effects)$/,
+      limits,
     ) && hasSubstantiveEnvelopeMaterial(child));
   if (subject === undefined) return false;
   if (marker && (strongGrant !== undefined || genericGrant !== undefined)) {
@@ -783,28 +817,28 @@ function looksLikeStructuralCapabilityEnvelope(value) {
   }
   if (strongGrant !== undefined) return true;
   return genericGrant !== undefined &&
-    hasAuthorityBearingEnvelopeMaterial(subject[1], genericGrant[1]);
+    hasAuthorityBearingEnvelopeMaterial(subject[1], genericGrant[1], limits);
 }
 
-function semanticKeyMatches(key, pattern) {
-  return semanticStringCandidates(key, 4).some((candidate) =>
+function semanticKeyMatches(key, pattern, limits) {
+  return semanticStringCandidates(key, 4, limits).some((candidate) =>
     pattern.test(normalizeSemanticKey(candidate)));
 }
 
-function semanticValueMatches(value, pattern) {
-  return semanticStringCandidates(value, 4).some((candidate) =>
+function semanticValueMatches(value, pattern, limits) {
+  return semanticStringCandidates(value, 4, limits).some((candidate) =>
     pattern.test(candidate));
 }
 
-function semanticStringCandidates(value, base64MinimumLength) {
+function semanticStringCandidates(value, base64MinimumLength, limits) {
   if (typeof value !== "string") return [];
   const candidates = [];
   let candidate = value;
   for (let layer = 0;
-    layer <= EVIDENCE_SAFETY_LIMITS.max_encoded_layers;
+    layer <= limits.max_encoded_layers;
     layer += 1) {
     candidates.push(candidate);
-    const decoded = nextEncodedValue(candidate, { base64MinimumLength });
+    const decoded = nextEncodedValue(candidate, { base64MinimumLength, maxStringLength: limits.max_string_length });
     if (decoded === null || decoded === candidate) break;
     candidate = decoded;
   }
@@ -822,25 +856,25 @@ function hasSubstantiveEnvelopeMaterial(value) {
   return Object.values(value).some(hasSubstantiveEnvelopeMaterial);
 }
 
-function hasAuthorityBearingEnvelopeMaterial(subject, grant) {
+function hasAuthorityBearingEnvelopeMaterial(subject, grant, limits) {
   return envelopeMaterialMatches(subject, (candidate) =>
     /[:/#]/.test(candidate) ||
     /^(?:artifact|branch|capability|repository|repo|resource|secret|service|workspace)$/i.test(
       candidate.trim(),
-    )) || envelopeMaterialMatches(grant, (candidate) =>
-    /[a-z0-9*]:[a-z0-9*]/i.test(candidate));
+    ), limits) || envelopeMaterialMatches(grant, (candidate) =>
+    /[a-z0-9*]:[a-z0-9*]/i.test(candidate), limits);
 }
 
-function envelopeMaterialMatches(value, predicate) {
+function envelopeMaterialMatches(value, predicate, limits) {
   if (typeof value === "string") {
-    return semanticStringCandidates(value, 4).some(predicate);
+    return semanticStringCandidates(value, 4, limits).some(predicate);
   }
   if (Array.isArray(value)) {
-    return value.some((child) => envelopeMaterialMatches(child, predicate));
+    return value.some((child) => envelopeMaterialMatches(child, predicate, limits));
   }
   if (!isPlainRecord(value)) return false;
   return Object.values(value).some((child) =>
-    envelopeMaterialMatches(child, predicate));
+    envelopeMaterialMatches(child, predicate, limits));
 }
 
 function scanString(
@@ -852,13 +886,13 @@ function scanString(
 ) {
   const size = stringByteLength(value);
   state.totalStringLength += size;
-  if (size > EVIDENCE_SAFETY_LIMITS.max_string_length ||
-      state.totalStringLength > EVIDENCE_SAFETY_LIMITS.max_total_string_length) {
+  if (size > state.limits.max_string_length ||
+      state.totalStringLength > state.limits.max_total_string_length) {
     return "evidence_too_large";
   }
   let candidate = value;
   for (let layer = 0;
-    layer <= EVIDENCE_SAFETY_LIMITS.max_encoded_layers;
+    layer <= state.limits.max_encoded_layers;
     layer += 1) {
     const issue = inspectString(candidate, state, keyName, {
       checkRawUriPercent: layer === 0,
@@ -871,15 +905,16 @@ function scanString(
     if (isImmutableSourceUri(candidate)) return null;
     const decoded = nextEncodedValue(candidate, {
       base64MinimumLength: layer > 0 ? 4 : base64MinimumLength,
+      maxStringLength: state.limits.max_string_length,
     });
     if (decoded === null || decoded === candidate) return null;
-    if (layer === EVIDENCE_SAFETY_LIMITS.max_encoded_layers) {
+    if (layer === state.limits.max_encoded_layers) {
       return "ambiguous_normalization";
     }
     const decodedSize = stringByteLength(decoded);
     state.totalStringLength += decodedSize;
-    if (decodedSize > EVIDENCE_SAFETY_LIMITS.max_string_length ||
-        state.totalStringLength > EVIDENCE_SAFETY_LIMITS.max_total_string_length) {
+    if (decodedSize > state.limits.max_string_length ||
+        state.totalStringLength > state.limits.max_total_string_length) {
       return "evidence_too_large";
     }
     candidate = decoded;
@@ -913,16 +948,16 @@ function inspectString(
     state,
   });
   if (immutableMetadataIssue) return immutableMetadataIssue;
-  const nested = parseNestedStructuredString(value);
+  const nested = parseNestedStructuredString(value, state.limits);
   const hasNestedStructure = nested !== null && typeof nested === "object";
   if (!hasNestedStructure && isPathLike(value, checkRawUriPercent)) {
     return "ambient_filesystem_path";
   }
-  const explicitBase64 = decodeExplicitBase64(value);
+  const explicitBase64 = decodeExplicitBase64(value, { maxStringLength: state.limits.max_string_length });
   if (explicitBase64.present && explicitBase64.decoded === null) {
     return "malformed_encoding";
   }
-  if (looksLikeMalformedEncoding(value, keyName)) return "malformed_encoding";
+  if (looksLikeMalformedEncoding(value, keyName, state.limits)) return "malformed_encoding";
 
   if (nested === "duplicate_keys") return "non_canonical_input";
   if (nested === "too_deep") return "evidence_too_deep";
@@ -931,7 +966,7 @@ function inspectString(
   if (nested !== null) {
     state.nestedStructuredStrings += 1;
     if (state.nestedStructuredStrings >
-        EVIDENCE_SAFETY_LIMITS.max_nested_structured_strings) {
+        state.limits.max_nested_structured_strings) {
       return "evidence_too_large";
     }
     const nestedIssue = scanValue(nested, state, keyName);
@@ -946,13 +981,13 @@ function isLateEvidenceMarker(key, value) {
     /^(?:cancelled|canceled|late|quarantined|late[_-]quarantined|late[_-]unclaimed)$/i.test(value.trim());
 }
 
-function nextEncodedValue(value, { base64MinimumLength = 8 } = {}) {
-  const explicitBase64 = decodeExplicitBase64(value);
+function nextEncodedValue(value, { base64MinimumLength = 8, maxStringLength = EVIDENCE_SAFETY_LIMITS.max_string_length } = {}) {
+  const explicitBase64 = decodeExplicitBase64(value, { maxStringLength });
   if (explicitBase64.present) return explicitBase64.decoded;
   const percentDecoded = decodePercentOnce(value);
   if (percentDecoded.malformed) return null;
   if (percentDecoded.decoded !== value) return percentDecoded.decoded;
-  return decodeBoundedBase64(value, { minimumLength: base64MinimumLength });
+  return decodeBoundedBase64(value, { minimumLength: base64MinimumLength, maxStringLength });
 }
 
 function looksLikeCredential(value) {
@@ -1058,13 +1093,13 @@ function scanUrlMetadataValue(value, state, key) {
   if (typeof value !== "string") return null;
   let candidate = value;
   for (let layer = 0;
-    layer <= EVIDENCE_SAFETY_LIMITS.max_encoded_layers;
+    layer <= state.limits.max_encoded_layers;
     layer += 1) {
-    const explicitBase64 = decodeExplicitBase64(candidate);
+    const explicitBase64 = decodeExplicitBase64(candidate, { maxStringLength: state.limits.max_string_length });
     if (explicitBase64.present && explicitBase64.decoded === null) {
       return "malformed_encoding";
     }
-    const nested = parseNestedStructuredString(candidate);
+    const nested = parseNestedStructuredString(candidate, state.limits);
     if (nested === "duplicate_keys") return "non_canonical_input";
     if (nested === "too_deep") return "evidence_too_deep";
     if (nested === "too_large") return "evidence_too_large";
@@ -1079,7 +1114,7 @@ function scanUrlMetadataValue(value, state, key) {
     if (nested !== null) {
       state.nestedStructuredStrings += 1;
       if (state.nestedStructuredStrings >
-          EVIDENCE_SAFETY_LIMITS.max_nested_structured_strings) {
+          state.limits.max_nested_structured_strings) {
         return "evidence_too_large";
       }
       const nestedIssue = scanValue(nested, state, key);
@@ -1088,15 +1123,16 @@ function scanUrlMetadataValue(value, state, key) {
 
     const decoded = nextEncodedValue(candidate, {
       base64MinimumLength: layer > 0 ? 4 : 8,
+      maxStringLength: state.limits.max_string_length,
     });
     if (decoded === null || decoded === candidate) return null;
-    if (layer === EVIDENCE_SAFETY_LIMITS.max_encoded_layers) {
+    if (layer === state.limits.max_encoded_layers) {
       return "ambiguous_normalization";
     }
     const decodedSize = stringByteLength(decoded);
     state.totalStringLength += decodedSize;
-    if (decodedSize > EVIDENCE_SAFETY_LIMITS.max_string_length ||
-        state.totalStringLength > EVIDENCE_SAFETY_LIMITS.max_total_string_length) {
+    if (decodedSize > state.limits.max_string_length ||
+        state.totalStringLength > state.limits.max_total_string_length) {
       return "evidence_too_large";
     }
     candidate = decoded;
@@ -1316,7 +1352,7 @@ function looksLikeMalformedPercentEncoding(value) {
   return false;
 }
 
-function looksLikeMalformedEncoding(value, keyName) {
+function looksLikeMalformedEncoding(value, keyName, limits = EVIDENCE_SAFETY_LIMITS) {
   const normalizedKey = typeof keyName === "string"
     ? normalizeSemanticKey(keyName)
     : "";
@@ -1326,7 +1362,7 @@ function looksLikeMalformedEncoding(value, keyName) {
     return false;
   }
   if (/^base64:/i.test(value)) {
-    return decodeExplicitBase64(value).decoded === null;
+    return decodeExplicitBase64(value, { maxStringLength: limits.max_string_length }).decoded === null;
   }
   if (/%[0-9A-Fa-f]{2}/.test(value)) return false;
   if (!normalizedKey.includes("base64")) return false;
@@ -1335,15 +1371,16 @@ function looksLikeMalformedEncoding(value, keyName) {
   }
   return /[^A-Za-z0-9+/_=-]/.test(value) ||
     value.length % 4 === 1 ||
-    decodeBoundedBase64(value, { minimumLength: 4 }) === null;
+    decodeBoundedBase64(value, { minimumLength: 4, maxStringLength: limits.max_string_length }) === null;
 }
 
-function decodeExplicitBase64(value) {
+function decodeExplicitBase64(value, { maxStringLength = EVIDENCE_SAFETY_LIMITS.max_string_length } = {}) {
   if (!/^base64:/i.test(value)) return { present: false, decoded: null };
   return {
     present: true,
     decoded: decodeBoundedBase64(value.slice("base64:".length), {
       minimumLength: 1,
+      maxStringLength,
     }),
   };
 }
@@ -1359,7 +1396,7 @@ function decodePercentOnce(value) {
   }
 }
 
-function decodeBoundedBase64(value, { minimumLength = 8 } = {}) {
+function decodeBoundedBase64(value, { minimumLength = 8, maxStringLength = EVIDENCE_SAFETY_LIMITS.max_string_length } = {}) {
   if (typeof value !== "string" || value.length < minimumLength) return null;
 
   const hasStandardAlphabet = /[+/]/.test(value);
@@ -1386,7 +1423,7 @@ function decodeBoundedBase64(value, { minimumLength = 8 } = {}) {
   }
   try {
     const bytes = Buffer.from(normalized, "base64");
-    if (bytes.length === 0 || bytes.length > EVIDENCE_SAFETY_LIMITS.max_string_length) {
+    if (bytes.length === 0 || bytes.length > maxStringLength) {
       return null;
     }
     const roundTrip = bytes.toString("base64");
@@ -1405,10 +1442,10 @@ function decodeBoundedBase64(value, { minimumLength = 8 } = {}) {
   }
 }
 
-function parseNestedStructuredString(value) {
+function parseNestedStructuredString(value, limits = EVIDENCE_SAFETY_LIMITS) {
   const trimmed = value.trim();
   if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return null;
-  const scan = scanJsonStructure(trimmed);
+  const scan = scanJsonStructure(trimmed, limits);
   if (scan !== null) return scan;
   try {
     const parsed = JSON.parse(trimmed);
@@ -1418,7 +1455,7 @@ function parseNestedStructuredString(value) {
   }
 }
 
-function scanJsonStructure(text) {
+function scanJsonStructure(text, limits) {
   let index = 0;
   let nodes = 0;
 
@@ -1461,8 +1498,8 @@ function scanJsonStructure(text) {
 
   function parseValue(depth) {
     nodes += 1;
-    if (nodes > EVIDENCE_SAFETY_LIMITS.max_nodes) return "too_large";
-    if (depth > EVIDENCE_SAFETY_LIMITS.max_depth) return "too_deep";
+    if (nodes > limits.max_nodes) return "too_large";
+    if (depth > limits.max_depth) return "too_deep";
     skipWhitespace();
     const character = text[index];
     if (character === "{") return parseObject(depth);
