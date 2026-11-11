@@ -37,6 +37,7 @@ const beforeAdmissionCodes = new Set(["closed_facts_changed", "facts_changed", "
 // authorize refresh only with the same launch bundle and a fresh unknown_run.
 const reviewBeforeAdmissionCodes = new Set(["candidate_changed", "workspace_changed", "run_authority_changed", "review_authority_changed", "workspace_authority_changed", "route_changed", "catalog_changed", "operation_changed", "validator_changed", "time_changed", "authority_changed"]);
 const beforeAdmission = (selection, code) => beforeAdmissionCodes.has(code) ||
+  selection.frontend_command === "research" && ["research_packet_changed", "research_route_changed"].includes(code) ||
   selection.frontend_command === "review" && reviewBeforeAdmissionCodes.has(code);
 export function manualRunInspection(selection, runId) {
   const client = quoteShell(selection.client), request = quoteShell(JSON.stringify({ run_id: runId }));
@@ -100,7 +101,7 @@ export async function preparePreview(selection, { refresh, call, emit, materiali
   } finally { unlock(); }
 }
 
-export async function submitPrepared(selection, retained, confirmation, { call, emit }) {
+export async function submitPrepared(selection, retained, confirmation, { call, emit, validateBeforeSend }) {
   const unlock = lockProjectSubmission(selection);
   try {
     const current = loadRetainedPreview(selection);
@@ -131,6 +132,7 @@ export async function submitPrepared(selection, retained, confirmation, { call, 
     }
     const exactLaunch = readRunJson(launchPath);
     if (digest(exactLaunch.prepared) !== digest(current.prepared) || exactLaunch.confirmation?.confirmation_digest !== confirmation) failRun("Saved launch does not contain the exact confirmed prepared task. No command was sent.", "launch_identity_changed", 1);
+    if (validateBeforeSend) await validateBeforeSend();
     let receipt;
     try { receipt = await call(selection, ["launch", "--input-file", launchPath, "--json"]); }
     catch (error) {

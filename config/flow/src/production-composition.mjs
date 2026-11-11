@@ -1,9 +1,12 @@
+import { createResearchDefinition, createResearchOutputValidators, RESEARCH_VALIDATOR, REPORT_VALIDATOR } from "../../../tools/flow/src/research-flow.mjs";
+import { validateResearchSourcePacket } from "../../../tools/flow/src/research-source-packet.mjs";
 import { PROJECT_CHECK_CONTRACT, PROJECT_CHECK_VALIDATOR } from "../../../tools/flow/src/project-check.mjs";
 import { resolveProjectCheck } from "./production-project-check.mjs";
 import { projectCheckRunnerIdentity } from "./production-project-check-runner.mjs";
 import { isDirectDescription, directDescriptionIssue } from "../../../tools/flow/src/execution-contract.mjs";
 import { supervisedTrustPosture } from "./supervised-native-trust.mjs";
 import { FEATURE_DIRECT_COMMIT_CONTRACT } from "../../../tools/flow/src/feature-flow.mjs";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -182,6 +185,7 @@ export function createProductionComposition({
     defaults: {
       "feature/v1": supervisedTrustPosture(createFeatureDefinition({ independentCritique: true }), executionTrust, { gitIdentity, projectCheck: featureTestCheck?.schema === "flow.production-project-check/v2" }),
       "review/v1": supervisedTrustPosture(createReviewDefinition(), executionTrust),
+      "spike/v2": supervisedTrustPosture(createResearchDefinition(), executionTrust),
     },
     overrides: predefinedDefinitions,
   });
@@ -206,6 +210,7 @@ export function createProductionComposition({
     reviewPreparationProvider,
     validators: mergeRegistrations({
       defaults: {
+        ...createResearchOutputValidators(),
         [FEATURE_DELEGATE_OUTPUT_VALIDATOR]: {
           validate: validateDelegateOutput,
           evidenceSafety: validateDelegateEvidenceSafety,
@@ -313,6 +318,14 @@ export function createProductionComposition({
           missing: [...missing, ...unexpected],
         };
       }
+      if (route?.flow === "spike" && route.mode === "quick" &&
+          (request?.schema === "flow.research-preparation-request/v1" || request?.prepared?.definition?.id === "spike/v2")) {
+        const cards = request?.prepared?.graph?.cards;
+        const valid = !cards || cards.length === 2 && cards.every(card => card.executor?.kind === "delegate" &&
+          card.executor.contract === "flow.delegated-agent-port/v1" && ["spike-research", "spike-synthesis"].includes(card.id));
+        return { available: valid && delegatedAgentPort.backend === "direct" && definitions["spike/v2"]?.contract === "flow.definition/spike/v2",
+          source: "supervised_quick_research", contracts: ["flow.definition/spike/v2", "flow.delegated-agent-port/v1"], missing: valid ? [] : ["unlisted_research_executor"] };
+      }
       return {
         available: false,
         source: "production_composition",
@@ -321,14 +334,14 @@ export function createProductionComposition({
       };
     },
     isPreparationRequest(request) {
-      return request?.schema === PREPARATION_SCHEMA ||
+      return request?.schema === "flow.research-preparation-request/v1" || request?.schema === PREPARATION_SCHEMA ||
         request?.brief !== undefined && request?.repository !== undefined;
     },
     async prepare(request, compileSelection) {
       if (typeof compileSelection !== "function") {
         throw new TypeError("production preparation requires the core compiler");
       }
-      const prepared = await buildPreparationSelection({
+      const prepared = await (request?.schema === "flow.research-preparation-request/v1" ? buildResearchPreparationSelection : buildPreparationSelection)({
         request,
         delegatedAgentPort,
         gitWorkspaceObservationAdapter,
@@ -367,6 +380,20 @@ export function createProductionComposition({
     beforeLaunch(request, authority) {
       const prepared = request?.prepared;
       const inputs = prepared?.selection?.inputs;
+      if (prepared?.definition?.id === "spike/v2") {
+        if (!validateResearchSourcePacket(inputs?.packet)) throw new ProductionPreparationError("research_packet_changed", "Prepared source packet failed exact validation");
+        const workspace = inputs.workspace, repository = resolveProductionWorkspace(workspace?.subject_id);
+        const live = currentWorkspaceProjection(authority, workspace?.subject_id);
+        if (!repository || !live || live.generation !== workspace.generation || live.mutation_epoch !== workspace.mutation_epoch ||
+            live.taint !== null || live.claims?.length || !sameCanonicalValue(observeGit(repository.path, gitWorkspaceObservationAdapter), workspace.git) ||
+            digest({ git: live.git }) !== workspace.fingerprint) throw new ProductionPreparationError("workspace_fingerprint_changed", "Research workspace changed after preparation; refresh only proven unlaunched work");
+        for (const binding of Object.values(inputs.delegation)) {
+          const executable = binding.description.backend.executable;
+          if (directDescriptionIssue(binding.description) || binding.description.launch.capability !== "read-only" ||
+              realpathSync(executable.path) !== executable.path ||
+              executable.sha256 !== ("sha256:" + createHash("sha256").update(readFileSync(executable.path)).digest("hex"))) throw new ProductionPreparationError("research_route_changed", "Research executable identity changed after preparation");
+        }
+      }
       if (prepared?.definition?.id === "feature/v1" && gitIdentity !== undefined &&
           digest(prepared.trust_posture?.git_identity ?? null) !== digest(gitIdentity)) {
         throw new ProductionPreparationError("feature_git_identity_drift", "The prepared author and committer must match the selected local client identity");
@@ -1838,36 +1865,7 @@ function configuredBackupRestoreAdapter({
   }
 }
 
-async function buildPreparationSelection({
-  request,
-  delegatedAgentPort,
-  gitWorkspaceObservationAdapter,
-  hostIdentity,
-  timeAdapter,
-  repositories,
-  workspaceRepositories,
-  runAuthority = null,
-  featureTestCheck,
-  authorityDirectory,
-}) {
-  if (!isFeaturePreparationRequest(request)) {
-    throw new ProductionPreparationError(
-      "invalid_preparation_request",
-      "feature preparation requires flow.feature-preparation-request/v1",
-    );
-  }
-  const brief = request.brief;
-  if (!isRecord(brief) || brief.schema !== BRIEF_SCHEMA ||
-      typeof brief.id !== "string" || brief.id.length === 0 ||
-      typeof brief.summary !== "string" || brief.summary.length === 0 ||
-      !Array.isArray(brief.acceptance) || brief.acceptance.length === 0 ||
-      !brief.acceptance.every((criterion) =>
-        typeof criterion === "string" && criterion.length > 0)) {
-    throw new ProductionPreparationError(
-      "invalid_brief",
-      "feature preparation requires one accepted brief",
-    );
-  }
+function prepareProductionWorkspace({ request, gitWorkspaceObservationAdapter, repositories, workspaceRepositories, runAuthority }) {
   const repositoryPath = canonicalRepositoryPath(repositoryPathOf(request.repository));
   const repositoryId = `repository:${digest(repositoryPath).slice("sha256:".length)}`;
   let git;
@@ -1945,6 +1943,41 @@ async function buildPreparationSelection({
     path: repositoryPath,
     ref: git.ref,
   });
+
+  return { repositoryPath, repositoryId, workspaceSubjectId, workspace };
+}
+
+async function buildPreparationSelection({
+  request,
+  delegatedAgentPort,
+  gitWorkspaceObservationAdapter,
+  hostIdentity,
+  timeAdapter,
+  repositories,
+  workspaceRepositories,
+  runAuthority = null,
+  featureTestCheck,
+  authorityDirectory,
+}) {
+  if (!isFeaturePreparationRequest(request)) {
+    throw new ProductionPreparationError(
+      "invalid_preparation_request",
+      "feature preparation requires flow.feature-preparation-request/v1",
+    );
+  }
+  const brief = request.brief;
+  if (!isRecord(brief) || brief.schema !== BRIEF_SCHEMA ||
+      typeof brief.id !== "string" || brief.id.length === 0 ||
+      typeof brief.summary !== "string" || brief.summary.length === 0 ||
+      !Array.isArray(brief.acceptance) || brief.acceptance.length === 0 ||
+      !brief.acceptance.every((criterion) =>
+        typeof criterion === "string" && criterion.length > 0)) {
+    throw new ProductionPreparationError(
+      "invalid_brief",
+      "feature preparation requires one accepted brief",
+    );
+  }
+  const { repositoryPath, repositoryId, workspaceSubjectId, workspace } = prepareProductionWorkspace({ request, gitWorkspaceObservationAdapter, repositories, workspaceRepositories, runAuthority });
 
   const mode = request.mode;
   if (featureTestCheck?.schema === "flow.production-project-check/v2" && request.check === undefined) {
@@ -2086,6 +2119,32 @@ async function buildPreparationSelection({
       explicit_facts: explicitFacts,
     },
   };
+}
+
+async function buildResearchPreparationSelection(options) {
+  const { request, delegatedAgentPort, timeAdapter, runAuthority } = options;
+  if (!exactObject(request, ["schema", "repository", "packet", "limits", "routes"]) ||
+      !validateResearchSourcePacket(request.packet)) throw new ProductionPreparationError("invalid_research_request", "Select one exact safe source packet and repository");
+  const { repositoryPath, workspace } = prepareProductionWorkspace(options);
+  const existing = currentWorkspaceProjection(runAuthority, workspace.subject_id);
+  if (existing && (existing.taint !== null || existing.claims.length)) throw new ProductionPreparationError("workspace_already_claimed", "Settle retained workspace claims before research");
+  const delegation = {};
+  for (const [role, validator] of [["researcher", RESEARCH_VALIDATOR], ["synthesizer", REPORT_VALIDATOR]]) {
+    delegation[role] = await describedRoute({ delegatedAgentPort, workspacePath: repositoryPath,
+      input: request.routes?.[role] ?? { harness: "codex", model: "gpt-6.1-sol", effort: "high", capability: "read-only", role },
+      capability: "read-only", role, flow: "spike/v2", validator });
+    if (delegation[role].description.launch.capability !== "read-only") throw new ProductionPreparationError("invalid_research_route", "Research delegates must request read-only execution");
+  }
+  const seconds = request.limits?.max_elapsed_seconds ?? 600;
+  if (!exactObject(request.limits ?? {}, ["max_elapsed_seconds", "max_revisions"]) || request.limits?.max_revisions && request.limits.max_revisions !== 0 || !Number.isSafeInteger(seconds) || seconds < 1 || seconds > 3600) throw new ProductionPreparationError("invalid_limits", "Research permits one attempt per role, zero revisions and an overall 1..3600 second limit");
+  const resource = { kind: "workspace", id: workspace.subject_id, generation: workspace.generation, mutation_epoch: workspace.mutation_epoch, fingerprint: workspace.fingerprint };
+  const validators = [RESEARCH_VALIDATOR, REPORT_VALIDATOR];
+  const bindings = [["spike-research", delegation.researcher], ["spike-synthesis", delegation.synthesizer]].map(([card_id,binding])=>({card_id,route:binding.route}));
+  return { selection: { schema: "flow.predefined-flow-selection/v1", definition: "spike/v2", inputs: { mode: "quick", packet: request.packet, workspace, delegation },
+    explicit_facts: { catalog_fingerprint: digest({ definition: "spike/v2", validators }), route_snapshot: { watermark: digest(bindings), bindings },
+      capability_envelopes: [], operation_contracts: [], validator_contracts: validators,
+      resource_claims: [resource], block_observations: [], time_facts: timeAdapter.observe(), subject_generations: [{ schema: "flow.subject-generation/v1", contract: "work.workspace/v1", subject_id: workspace.subject_id, generation: workspace.generation, fingerprint: workspace.fingerprint }],
+      elapsed_seconds: 0, limits: { max_cards: 2, max_revisions: 0, max_cards_per_revision: 0, max_capabilities: 0, max_resources: 1, max_elapsed_seconds: seconds } } } };
 }
 
 function currentWorkspaceProjection(runAuthority, subjectId) {
@@ -2304,6 +2363,8 @@ async function describedRoute({
   input,
   capability,
   role,
+  flow = "feature/v1",
+  validator = FEATURE_DELEGATE_OUTPUT_VALIDATOR,
 }) {
   const launch = input?.launch ?? input;
   if (!isRecord(launch)) {
@@ -2316,7 +2377,7 @@ async function describedRoute({
     schema: "flow.delegated-agent-description-request/v1",
     launch: { ...launch, capability: launch.capability ?? capability },
     caller_metadata: {
-      flow: "feature/v1",
+      flow,
       role,
     },
     ...(delegatedAgentPort.backend === "direct" ? { workspace_path: workspacePath } : {}),
@@ -2390,7 +2451,7 @@ async function describedRoute({
     ...descriptionIdentity,
     description_digest: digest(descriptionIdentity),
   });
-  const agentId = `agent:flow-feature-${role}-${description.comparison_keys.launch.slice(-16)}`;
+  const agentId = `agent:flow-${flow === "spike/v2" ? "research" : "feature"}-${role}-${description.comparison_keys.launch.slice(-16)}`;
   return {
     description: boundDescription,
     route: {
@@ -2399,7 +2460,7 @@ async function describedRoute({
       description_digest: boundDescription.description_digest,
       launch_comparison_key: boundDescription.comparison_keys.launch,
     },
-    validators: [FEATURE_DELEGATE_OUTPUT_VALIDATOR],
+    validators: [validator],
   };
 }
 

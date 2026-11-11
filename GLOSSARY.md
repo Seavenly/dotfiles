@@ -455,6 +455,12 @@ A typed, redacted failure from the evidence safety validator whose stable code
 never reproduces rejected input bytes or fragments.
 _Avoid_: Sanitized transcript, secret-bearing error
 
+**Source packet**:
+The immutable supplied text for one confirmed research question, with exact
+content identities and provenance. It establishes the bytes considered, not the
+truth or authenticity of their claims.
+_Avoid_: Fetched sources, verified facts, ambient context
+
 **Quick spike**:
 The predefined, quick-only tracer that binds one confirmed question to one
 read-only researcher and one independently routed synthesizer. It can finish

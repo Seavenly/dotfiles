@@ -21,6 +21,15 @@ export function directOutputContract(intent) {
   } else if (task?.phase === "critique") {
     const source = JSON.parse(readFileSync(new URL("../../../config/flow/schemas/flow.feature-critique-output.v1.schema.json", import.meta.url), "utf8"));
     const { $id, $schema, ...shape } = source; schema = shape;
+  } else if (task?.flow === "spike/v2" && task.schema === "flow.delegate-task-inputs/v1" &&
+      ["research", "synthesis"].includes(task.phase) &&
+      intent.delegate_output_schemas?.length === 1 && intent.delegate_output_schemas[0] ===
+        (task.phase === "research" ? "flow.spike-research-evidence/v2" : "flow.spike-report/v2")) {
+    const name = task.phase === "research" ? "research" : "report";
+    const source = JSON.parse(readFileSync(new URL(`../../../config/flow/schemas/flow.spike-${name}-output.v2.schema.json`, import.meta.url), "utf8"));
+    const { $id, $schema, ...shape } = source;
+    schema = shape;
+    schema.properties.question_id = { const: task.packet.question.id };
   } else if (isLocalReviewTask(task, intent.delegate_output_schemas)) {
     const source = JSON.parse(readFileSync(new URL("../../../config/flow/schemas/flow.review-result.v1.schema.json", import.meta.url), "utf8"));
     const { $id, $schema, ...shape } = source;

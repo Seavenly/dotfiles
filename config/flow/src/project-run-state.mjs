@@ -80,21 +80,30 @@ export function readValidatedProjectRequest(client, path) {
     retained_directory: join(dirname(path), "guided-run") };
 }
 
-/** Discover immutable local clients without starting their owner or executing them. */
-export function discoverProjectRuns({ repository, request, env = process.env, cwd = process.cwd() } = {}) {
+/** Validate initialized clients even when setup has not created a feature request. */
+export function discoverInitializedClients({ repository, client: selectedClient, env = process.env, cwd = process.cwd() } = {}) {
   const { repository: root, profileRoot } = locateProjectProfile({ repository, env, cwd });
-  if (!existsSync(join(profileRoot, "profile.json"))) failRun("This project has no retained local setup in the selected state directory. Run flow-supervised init first.");
+  if (!existsSync(join(profileRoot, "profile.json"))) failRun("This project has no retained local setup. Run flow-supervised init --purpose research first.");
   const original = readRunJson(join(profileRoot, "profile.json"));
   if (realpathSync(profileRoot) !== resolve(profileRoot)) failRun("Select the original canonical local state directory; profile aliases cannot select another authority.");
   if (original.identity?.schema !== "flow.local-client/v1" || original.identity.repository !== root) failRun("Local profile repository identity changed; retain its state and inspect the existing setup.");
-  const requested = request && resolve(cwd, request);
-  const selections = [];
+  const selected = selectedClient && resolve(cwd, selectedClient), clients = [];
   for (const name of readdirSync(join(profileRoot, "clients")).sort()) {
     if (!/^(?:verify|[a-f0-9]{64})(?:\.runtime-[a-f0-9]{64})?$/u.test(name)) failRun("Unknown retained client identity; inspect the local profile before running.");
     const directory = join(profileRoot, "clients", name);
-    const client = readValidatedProjectClient({ repository: root, profileRoot, original, directory });
-    for (const entry of readdirSync(join(directory, "requests")).sort()) {
-      const path = join(directory, "requests", entry, "prepare-request.json");
+    if (selected && selected !== directory) continue;
+    clients.push(readValidatedProjectClient({ repository: root, profileRoot, original, directory }));
+  }
+  if (!clients.length) failRun("Select an exact original initialized --client DIRECTORY.");
+  return clients;
+}
+
+/** Discover immutable feature requests without starting their owner. */
+export function discoverProjectRuns({ repository, request, env = process.env, cwd = process.cwd() } = {}) {
+  const requested = request && resolve(cwd, request), selections = [];
+  for (const client of discoverInitializedClients({ repository, env, cwd })) {
+    for (const entry of readdirSync(join(client.directory, "requests")).sort()) {
+      const path = join(client.directory, "requests", entry, "prepare-request.json");
       if (realpathSync(path) !== resolve(path)) failRun("Retained request path aliases are unsupported; use the original canonical initialized request.");
       if (requested && path !== requested) continue;
       selections.push(readValidatedProjectRequest(client, path));

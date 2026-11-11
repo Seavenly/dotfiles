@@ -1,3 +1,4 @@
+import { validateResearchSourcePacket } from "./research-source-packet.mjs";
 import { createHash } from "node:crypto";
 
 import { digest, freezeCanonical, isPlainRecord } from "./canonical.mjs";
@@ -6,6 +7,7 @@ import {
   createEvidenceSafetyRequest,
   validateDelegateEvidenceSafety,
   validateEvidenceSafety,
+  validateResearchInputSafety,
 } from "./evidence-safety.mjs";
 
 export const DELEGATE_INPUT_ENVELOPE_SCHEMA =
@@ -109,7 +111,7 @@ export function materializeDelegateInputEnvelope({
   }
   requireNonEmptyString(instructions, "instructions");
   validateDelegateInputInstructions(instructions);
-  validateDelegateTaskInputs(taskInputs);
+  validateDelegateTaskInputs(taskInputs, outputRequirements);
   const resources = normalizeResourceReferences(resourceReferences);
   const authority = normalizeExecutionAuthority(executionAuthority, resources);
   const requirements = normalizeOutputRequirements(outputRequirements);
@@ -192,7 +194,7 @@ export class DelegateInputEnvelopeError extends TypeError {
  * Preparation reuses this guard so invalid selections cannot become effects;
  * materialization keeps the same check as transport-time defense in depth.
  */
-export function validateDelegateTaskInputs(taskInputs) {
+export function validateDelegateTaskInputs(taskInputs, outputRequirements) {
   if (!isPlainRecord(taskInputs) ||
       taskInputs.schema !== DELEGATE_TASK_INPUTS_SCHEMA) {
     throw new DelegateInputEnvelopeError(
@@ -201,7 +203,11 @@ export function validateDelegateTaskInputs(taskInputs) {
     );
   }
   assertTransferableShape(taskInputs, "task_inputs");
-  validateDelegateTransferValue(taskInputs, "task_inputs");
+  const research = taskInputs.flow === "spike/v2" && taskInputs.role === "researcher" && taskInputs.phase === "research" &&
+    outputRequirements?.schemas?.length === 1 && outputRequirements.schemas[0] === "flow.spike-research-evidence/v2" &&
+    outputRequirements.validator_contracts?.length === 1 && outputRequirements.validator_contracts[0] === "flow.validator/spike-research-evidence/v2" &&
+    validateResearchSourcePacket(taskInputs.packet);
+  validateDelegateTransferValue(taskInputs, "task_inputs", research);
   return taskInputs;
 }
 
@@ -217,7 +223,13 @@ export function validateDelegateInputInstructions(instructions) {
  * Rejections intentionally expose only the stable safety code; rejected input
  * bytes and fragments must never be copied into a transport error.
  */
-function validateDelegateTransferValue(value, field) {
+function validateDelegateTransferValue(value, field, research = false) {
+  if (research) {
+    const result = validateResearchInputSafety(projectDelegateTaskInputSafety(value));
+    if (!result.accepted) throw new DelegateInputEnvelopeError("unsafe_delegate_input",
+      `delegate task_inputs failed research input safety: ${result.rejection.code}`);
+    return;
+  }
   let request;
   try {
     request = createEvidenceSafetyRequest({

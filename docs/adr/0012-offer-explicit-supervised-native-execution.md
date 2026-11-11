@@ -44,3 +44,12 @@ not turn arbitrary command failure into intended RED or replace independent
 critique. The original v1 health/expected-RED/GREEN test-first contract remains
 separate. Missing, failed, cancelled or uncertain command evidence cannot seal a
 candidate or discharge workspace claims without their existing authority proofs.
+
+Supervised quick research is an additive `spike/v2` route. The operator supplies
+one bounded question and explicit local source files, whose exact bytes form an
+immutable Source packet. Two distinct read-only delegates produce lower-assurance
+research and synthesis using host-materialized evidence identities. No source is
+automatically fetched, and no report grants mutation, candidate, approval or
+publication authority. Legacy `spike/v1` remains unchanged. Research setup reuses
+the existing project authority and immutable client lifecycle without inventing
+a feature brief or registered project check.

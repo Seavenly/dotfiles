@@ -62,7 +62,8 @@ export function supervisedAdmissionIssue({ request, route, executionTrust, backe
     return "supervised_backend_unsupported";
   }
   if (!(route.flow === "feature" && ["verify", "test"].includes(route.mode) ||
-      route.flow === "review" && route.mode === "local")) {
+      route.flow === "review" && route.mode === "local" ||
+      route.flow === "spike" && route.mode === "quick" && (request.schema === "flow.research-preparation-request/v1" || request.prepared?.definition?.id === "spike/v2"))) {
     return "supervised_route_unsupported";
   }
   if (operation === "launch") {

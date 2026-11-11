@@ -1480,7 +1480,7 @@ function validateDelegateInputSelections(
   const taskInputs = card.inputs?.task_inputs;
   if (taskInputs !== undefined) {
     try {
-      validateDelegateTaskInputs(taskInputs);
+      validateDelegateTaskInputs(taskInputs, { schemas: card.outputs, validator_contracts: card.validators });
     } catch {
       invalidPlan(
         "invalid_delegate_task_inputs",

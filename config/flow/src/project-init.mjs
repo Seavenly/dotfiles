@@ -1,3 +1,4 @@
+import { createResearchSetupPlan, renderResearchSetupPlan, applyResearchSetupPlan } from "./research-setup.mjs";
 import { execFile } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -15,7 +16,7 @@ const runtimeRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url))
 const fail = message => { throw new Error(message); };
 const text = path => readFileSync(path, "utf8");
 const save = (path, data) => writeFileSync(path, JSON.stringify(data, null, 2) + "\n", { flag: "wx", mode: 0o600 });
-const valueFlags = new Set(["--repository", "--kind", "--summary", "--acceptance", "--id", "--brief", "--codex-executable", "--tool-executable", "--test-directory", "--test-pattern", "--python-runner", "--read-executable", "--pin", "--timeout-seconds", "--client-link", "--upgrade-runtime", "--reconfigure-check", "--confirm"]);
+const valueFlags = new Set(["--purpose", "--client", "--repository", "--kind", "--summary", "--acceptance", "--id", "--brief", "--codex-executable", "--tool-executable", "--test-directory", "--test-pattern", "--python-runner", "--read-executable", "--pin", "--timeout-seconds", "--client-link", "--upgrade-runtime", "--reconfigure-check", "--confirm"]);
 function canonicalDestination(path) {
   const remaining = [];
   while (!existsSync(path)) { remaining.unshift(path.split("/").at(-1)); path = dirname(path); }
@@ -28,6 +29,8 @@ export const INIT_USAGE = `Usage:
   flow-supervised init [same selections] --confirm sha256:DIGEST [--json]
 
 Options:
+  --purpose feature|research    default feature; research needs no brief or checks
+  --client DIRECTORY           exact existing research setup/upgrade client
   --repository PATH            existing clean Git project (default: current project)
   --kind npm|python|go          select when project signals are ambiguous
   --summary TEXT               feature summary; TTY prompts when omitted
@@ -69,6 +72,7 @@ export function parseInitArguments(args) {
   }
   if (options["--brief"] && (options["--summary"] || options.acceptance.length || options["--id"])) fail("Choose --brief or plain --summary/--acceptance flags, not both");
   for (const key of ["--upgrade-runtime", "--reconfigure-check"]) if (options[key] !== undefined && options[key] !== "yes") fail(`Use ${key} yes explicitly`);
+  if (options["--purpose"] && !["feature", "research"].includes(options["--purpose"])) fail("Use --purpose feature or research");
   const seconds = Number(options["--timeout-seconds"] ?? 300);
   if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 1800) fail("--timeout-seconds must be an integer from 1 through 1800");
   options.timeoutMs = seconds * 1000;
@@ -85,6 +89,7 @@ function briefFromOptions(options) {
 
 /** A read-only concrete selection, suitable for human preview or digest confirmation. */
 export function createProjectInitPlan(options, { env = process.env, cwd = process.cwd() } = {}) {
+  if (options["--purpose"] === "research") return createResearchSetupPlan(options, { env, cwd });
   if (!/^v22\./u.test(process.version)) fail("Guided setup requires Node 22");
   const selected = realpathSync(resolve(cwd, options["--repository"] ?? "."));
   const repository = realpathSync(projectGit(selected, ["rev-parse", "--show-toplevel"]).trim());
@@ -147,6 +152,7 @@ export function createProjectInitPlan(options, { env = process.env, cwd = proces
 }
 
 export function renderProjectInitPlan(plan) {
+  if (plan.purpose === "research") return renderResearchSetupPlan(plan);
   const check = plan.project_check;
   const display = value => String(value).replace(/[\u0000-\u001f\u007f-\u009f]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
   return ["Flow project setup - preview", `Project: ${plan.repository}`, `Feature: ${plan.brief.summary}`,
@@ -167,6 +173,7 @@ export function renderProjectInitPlan(plan) {
 }
 
 async function applyPlan(plan, options, env, cwd) {
+  if (plan.purpose === "research") return applyResearchSetupPlan(plan, options, { env, cwd });
   const current = createProjectInitPlan(options, { env, cwd });
   if (digest(current) !== digest(plan)) fail("Project or selected inputs changed after preview. Review a fresh init plan.");
   const parent = plan.setup.configuration_parent;
@@ -195,7 +202,7 @@ export async function runProjectInit(args, { env = process.env, cwd = process.cw
     const interactive = Boolean(stdin.isTTY && stdout.isTTY && !options["--json"] && !options["--confirm"]);
     if (interactive) {
       prompts = createInterface({ input: stdin, output: stdout });
-      if (!options["--brief"]) {
+      if (options["--purpose"] !== "research" && !options["--brief"]) {
         options["--summary"] ??= (await prompts.question("What feature should Flow work on? ")).trim();
         if (!options.acceptance.length) {
           stdout.write("Acceptance criteria, one per line. Finish with an empty line.\n");
@@ -205,7 +212,7 @@ export async function runProjectInit(args, { env = process.env, cwd = process.cw
       const selected = realpathSync(resolve(cwd, options["--repository"] ?? "."));
       const repository = projectGit(selected, ["rev-parse", "--show-toplevel"]).trim();
       const signals = projectSignals(repository);
-      if (!options["--kind"] && signals.kinds.length !== 1) options["--kind"] = (await prompts.question(`Project type (${signals.kinds.join(", ") || "npm, python, go"}): `)).trim();
+      if (options["--purpose"] !== "research" && !options["--kind"] && signals.kinds.length !== 1) options["--kind"] = (await prompts.question(`Project type (${signals.kinds.join(", ") || "npm, python, go"}): `)).trim();
       if (!options["--codex-executable"]) {
         try {
           const state = env.FLOW_LOCAL_CLIENT_STATE_HOME ?? env.XDG_STATE_HOME ?? join(env.HOME ?? homedir(), ".local/state");
