@@ -47,3 +47,11 @@ test('public preparation refuses changed bytes and a widened route without nativ
  request.routes={researcher:{harness:'codex',capability:'workspace-write-denied'},synthesizer:{harness:'codex',capability:'read-only'}};
  const rejected=await f.runtime.prepare(request);assert.equal(rejected.schema,'flow.rejection/v1');assert.equal((await f.runtime.query({})).runs.length,0);
 });
+
+test('changed real workspace refuses launch before admission without dispatch', async t => {
+ const f=fixture(t),prepared=await f.runtime.prepare({schema:'flow.research-preparation-request/v1',repository:f.repository,packet:f.packet,execution_trust:acknowledgment});
+ writeFileSync(join(f.repository,'notes'),'changed after preparation');
+ const result=await f.runtime.launch({prepared,execution_trust:acknowledgment,confirmation:{schema:'flow.predefined-flow-confirmation-decision/v1',decision:'accept',bundle_digest:prepared.bundle_digest,confirmation_digest:prepared.confirmation_digest},closed_facts:{schema:'flow.closed-fact-observation/v1',bundle_digest:prepared.bundle_digest,facts:prepared.explicit_facts}});
+ assert.equal(result.code,'workspace_fingerprint_changed',JSON.stringify(result));
+ assert.equal((await f.runtime.query({})).runs.length,0);
+});

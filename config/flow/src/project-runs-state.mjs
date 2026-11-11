@@ -1,3 +1,4 @@
+import { researchSelection } from "./project-research-state.mjs";
 import { execFile } from "node:child_process";
 import { lstatSync, opendirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -161,6 +162,23 @@ export async function collectProjectRuns(options = {}, { env = process.env, cwd 
             }
           } catch (error) { diagnostic(path, error); if (error.code === "attempt_limit") break clientsLoop; result.attempts.push({ kind: "review", state: "unavailable", selection: { ...client, retained_directory: path }, attention: [error.message] }); }
         }
+        const researchRoot = join(directory, "receipts/guided-research");
+        if (io.exists(researchRoot)) for (const name of io.entries(researchRoot)) {
+          const path = join(researchRoot, name);
+          try {
+            if (result.attempts.length >= limits.attempts) throw failure("attempt_limit", "Attempt limit reached.");
+            if (!/^[a-f0-9]{64}$/u.test(name)) throw failure("unknown_research", "Unknown retained research intent.");
+            const intent = io.json(join(path, "intent.json"));
+            const selection = researchSelection(client, intent.packet, intent.source_provenance, intent.policy);
+            io.remaining();
+            if (selection.intent_directory !== path || digest(intent) !== selection.selection_digest) throw failure("research_changed", "Research intent no longer binds the original client/source packet.");
+            result.attempts.push({ kind: "research", ...journal(selection, io) });
+            for (const archive of io.entries(path).filter(name => name.startsWith("session.retained-"))) {
+              if (result.attempts.length >= limits.attempts) throw failure("attempt_limit", "Attempt limit reached.");
+              result.attempts.push({ kind: "research", ...journal({ ...selection, retained_directory: join(path, archive) }, io, { archived: true }) });
+            }
+          } catch (error) { diagnostic(path, error); if (error.code === "attempt_limit") break clientsLoop; result.attempts.push({ kind: "research", state: "unavailable", selection: { ...client, retained_directory: path }, attention: [error.message] }); }
+        }
       } catch (error) { diagnostic(directory, error); if (!result.clients.some(client => client.directory === directory)) result.clients.push({ directory, validation: "unavailable", reason: error.message }); }
     }
     if (selected && !matched) throw Object.assign(failure("unknown_client", "Select an exact original --client DIRECTORY from this project's retained clients."), { exit: 2 });
@@ -227,7 +245,7 @@ async function inspectAuthorities(result, io, observer, diagnostic, env) {
         if (attempts.length) for (const attempt of attempts) {
           if (attempt.state === "accepted_unknown") attempt.attention = (attempt.attention ?? []).filter(reason => reason !== acceptedWarning);
           attempt.state = "admitted"; attempt.run = run; attempt.observation = row.observation; attempt.query = query; }
-        else if (result.attempts.length < result.limits.attempts) result.attempts.push({ kind: "manual", state: "admitted", selection: selected, run, observation: row.observation, query, attention: ["No matching validated guided receipt; use the original client's inspection commands."] });
+        else if (result.attempts.length < result.limits.attempts) result.attempts.push({ kind: run.active_plan?.cards?.some(card => card.inputs?.task_inputs?.flow === "spike/v2") ? "research" : "manual", state: "admitted", selection: selected, run, observation: row.observation, query, attention: ["No matching validated guided receipt; use the original client's inspection commands."] });
         else throw failure("attempt_limit", "Attempt limit reached; some authority work was not displayed.");
       }
       for (const attempt of result.attempts.filter(attempt => attempt.selection.authority_directory === authority)) attempt.observation ??= row.observation;

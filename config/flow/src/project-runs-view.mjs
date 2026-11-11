@@ -1,3 +1,4 @@
+import { readResearchReport, researchAttachCommand, researchConfirmCommand } from "./project-research-view.mjs";
 import { quoteShell } from "../scripts/feature-client-files.mjs";
 import { projectRunBlocked, projectRunFacts, terminalText } from "./project-run-view.mjs";
 import { reviewAttachCommand } from "./project-review-view.mjs";
@@ -19,7 +20,7 @@ function boundedJson(value, truncated, field) {
 }
 const queryCommand = (client, request) => `${quoteShell(client)} query --input ${quoteShell(JSON.stringify(request))} --json`;
 const previewCommand = selection => `flow-supervised run --repository ${quoteShell(selection.repository)} --request ${quoteShell(selection.request)}`;
-const attachCommand = (attempt, id) => attempt.kind === "review" ? reviewAttachCommand(attempt.selection, id) : `${previewCommand(attempt.selection)} --attach ${quoteShell(id)}`;
+const attachCommand = (attempt, id) => attempt.kind === "research" ? researchAttachCommand(attempt.selection, id) : attempt.kind === "review" ? reviewAttachCommand(attempt.selection, id) : `${previewCommand(attempt.selection)} --attach ${quoteShell(id)}`;
 
 function reviewFacts(record, copy) {
   if (!record) return null;
@@ -44,7 +45,7 @@ function attemptRow(attempt) {
   const guided = Boolean(retained && attempt.state === "admitted");
   if (guided) commands.push({ kind: "attach", command: attachCommand(attempt, id), disclosure: "Attachment starts/reuses this exact owner and may recover previously accepted work." });
   else if (attempt.state === "prepared") {
-    const command = attempt.kind === "review" ? `flow-supervised review --repository ${quoteShell(selection.repository)} --client ${quoteShell(selection.directory)} --producer ${quoteShell(selection.producer_run_id)} --timeout-seconds ${selection.policy.max_elapsed_seconds} --max-revisions ${selection.policy.max_revisions}` : previewCommand(selection);
+    const command = attempt.kind === "research" ? researchConfirmCommand(selection, retained.preview.confirmation_digest).replace(/ --confirm .*$/u, "") : attempt.kind === "review" ? `flow-supervised review --repository ${quoteShell(selection.repository)} --client ${quoteShell(selection.directory)} --producer ${quoteShell(selection.producer_run_id)} --timeout-seconds ${selection.policy.max_elapsed_seconds} --max-revisions ${selection.policy.max_revisions}` : previewCommand(selection);
     commands.push({ kind: "inspect_preview", command: `${quoteShell(selection.client)} local inspect-prepared ${quoteShell(retained.preview.prepared_file)}` });
     commands.push({ kind: "confirm", command: `${command} --confirm ${quoteShell(retained.preview.confirmation_digest)}`, disclosure: "Explicit confirmation may start/reuse the owner and launch this exact retained task; inspect its current confirmation first." });
   } else if (attempt.state === "accepted_unknown" && retained) {
@@ -78,15 +79,29 @@ function attemptRow(attempt) {
     if (workspace.some(item => item.disposition !== "released")) attention.push("Workspace disposition is retained; a stopped owner or cancelled phase does not prove reuse.");
     if (attempt.record && (attempt.record.current !== true || (attempt.record.coverage ?? attempt.record.summary?.coverage)?.complete !== true)) attention.push("Independent review is stale, incomplete or capped; inspect the exact record.");
   }
-  const candidate = attempt.candidate;
+  let research = null;
+  if (attempt.kind === "research") {
+    const packet = selection.packet ?? run?.active_plan?.cards?.find(card => card.id === "spike-research")?.inputs?.task_inputs?.packet;
+    let report = null;
+    if (packet && run) {
+      try { report = readResearchReport(run, packet); }
+      catch { attention.push("Research report does not bind the exact accepted source/evidence attempt; inspect original public evidence."); }
+    }
+    research = { question: text(packet?.question?.text), packet_digest: text(packet?.packet_digest),
+      report_status: report ? "validated_report" : "not_observed", assurance: report?.assurance ?? null,
+      finding_count: report?.findings.length ?? null, residual_gap_count: report?.residual_gaps.length ?? null,
+      research_evidence_digest: text(report?.research_evidence_digest) };
+    checks = null; critique = null;
+  }
+  const candidate = attempt.kind === "research" ? null : attempt.candidate;
   const result = { kind: attempt.kind, state: attempt.state, run_id: id, intended_run_id: attempt.intended_run_id ?? null,
     client: selection.client, runtime_root: selection.runtime_root, request: selection.request ?? null, retained_directory: selection.retained_directory ?? null,
-    observation: attempt.observation ?? "retained", summary: text(attempt.summary ?? selection.preparation?.brief?.summary ?? selection.preparation?.summary ?? retained?.preview.inspection?.brief?.summary),
+    observation: attempt.observation ?? "retained", summary: text(research?.question ?? attempt.summary ?? selection.preparation?.brief?.summary ?? selection.preparation?.summary ?? retained?.preview.inspection?.brief?.summary),
     phase: text(run?.phase), sequence: run?.sequence ?? null, watermark: copy(run?.watermark, "watermark"),
     producer_run_id: text(selection.producer_run_id ?? attempt.producer_run_id),
     candidate: candidate ? { id: text(candidate.subject_id), fingerprint: text(candidate.candidate_fingerprint), status: text(candidate.status), generation: candidate.generation ?? null,
       commit: text(candidate.candidate?.git?.commit_sha), watermark: copy(candidate.watermark, "candidate.watermark") } : null,
-    checks, critique, review: reviewFacts(attempt.record, copy), separate_review_run_ids: strings(attempt.separate_review_run_ids),
+    research, checks, critique, review: reviewFacts(attempt.record, copy), separate_review_run_ids: strings(attempt.separate_review_run_ids),
     human_approval: copy(attempt.record?.approval, "human_approval") ?? (attempt.separate_review_run_ids?.length ? "inspect_separate_review" : "not_observed"),
     unresolved_effects: unresolved, unresolved_effect_count: unresolvedCount, unresolved_effects_truncated: truncated.has("unresolved_effects"),
     quarantined_effects: quarantined, quarantined_effect_count: quarantinedCount, quarantined_effects_truncated: truncated.has("quarantined_effects"), workspace_dispositions: workspace,
@@ -124,6 +139,7 @@ export function renderProjectRuns(report) {
   if (!report.attempts.length && report.status !== "uninitialized") lines.push("No retained attempts were found in the inspected scope.");
   for (const row of report.attempts) {
     lines.push("", `${row.kind}: ${row.summary?.slice(0, 160) ?? "retained task"}`, `  ID: ${row.run_id ?? row.intended_run_id ?? "not admitted"}`, `  ${row.state}${row.phase ? `; phase ${row.phase}` : ""}; ${row.observation}`, `  Client runtime: ${row.runtime_root}`, `  Retained: ${row.retained_directory ?? row.request ?? "public authority"}`);
+    if (row.research) lines.push(`  Research packet: ${row.research.packet_digest ?? "unavailable"}; report ${row.research.report_status}; assurance ${row.research.assurance ?? "not observed"}; residual gaps ${row.research.residual_gap_count ?? "unknown"}`, "  Supplied-source research only; no candidate, human approval or publication.");
     if (row.checks) lines.push(`  Checks: ${row.checks.kind}; ${row.checks.outcome ?? row.checks.status ?? row.checks.project_checks ?? "not observed"}; test count ${row.checks.test_count}${row.checks.rerun === false ? " (inherited; not rerun)" : ""}`);
     if (row.critique) lines.push(`  Feature critique: ${row.critique}`);
     if (row.candidate) lines.push(`  Candidate: ${row.candidate.id}; ${row.candidate.status}; ${row.candidate.fingerprint}`);

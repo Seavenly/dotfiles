@@ -2136,7 +2136,7 @@ async function buildResearchPreparationSelection(options) {
     if (delegation[role].description.launch.capability !== "read-only") throw new ProductionPreparationError("invalid_research_route", "Research delegates must request read-only execution");
   }
   const seconds = request.limits?.max_elapsed_seconds ?? 600;
-  if (!exactObject(request.limits ?? {}, ["max_elapsed_seconds", "max_revisions"]) || request.limits?.max_revisions && request.limits.max_revisions !== 0 || !Number.isSafeInteger(seconds) || seconds < 1 || seconds > 3600) throw new ProductionPreparationError("invalid_limits", "Research permits one attempt per role, zero revisions and an overall 1..3600 second limit");
+  if (!exactObject(request.limits ?? {}, ["max_elapsed_seconds", "max_revisions"]) || request.limits?.max_revisions !== undefined && request.limits.max_revisions !== 0 || !Number.isSafeInteger(seconds) || seconds < 1 || seconds > 3600) throw new ProductionPreparationError("invalid_limits", "Research permits one attempt per role, zero revisions and an overall 1..3600 second limit");
   const resource = { kind: "workspace", id: workspace.subject_id, generation: workspace.generation, mutation_epoch: workspace.mutation_epoch, fingerprint: workspace.fingerprint };
   const validators = [RESEARCH_VALIDATOR, REPORT_VALIDATOR];
   const bindings = [["spike-research", delegation.researcher], ["spike-synthesis", delegation.synthesizer]].map(([card_id,binding])=>({card_id,route:binding.route}));

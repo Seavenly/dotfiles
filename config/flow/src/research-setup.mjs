@@ -9,6 +9,7 @@ import { discoverInitializedClients, readRunJson } from './project-run-state.mjs
 import { selectInitCodex } from './init-codex-selection.mjs';
 import { projectGit } from './project-check-presets.mjs';
 import { resolveProductionGitIdentity } from './production-direct-commit.mjs';
+import { terminalText } from './project-run-view.mjs';
 import { provisionLocalClient } from './local-client-provisioning.mjs';
 const runtimeRoot=realpathSync(resolve(dirname(fileURLToPath(import.meta.url)),'../../..'));
 const fail=message=>{throw new Error(message);};
@@ -44,7 +45,7 @@ export function createResearchSetupPlan(options,{env=process.env,cwd=process.cwd
   execution_trust:'supervised-native-cli',trust_disclosure:'Official CLI requested read-only permissions and ambient startup remain operator-supervised, not independently enforced.',project_tests:'not_run',owner_started:false,provider_execution:'not_run'};
 }
 export function renderResearchSetupPlan(plan) {
- return ['Flow research setup - preview',`Project: ${plan.repository}`,`Official CLI: ${plan.codex_executable.path}`,`Expected version (not observed): ${plan.codex_executable.expected_version}`,`Executable: ${plan.codex_executable.sha256}`,`Selection: ${plan.codex_executable.provenance.kind}`,`Authority: ${plan.setup.authority_directory}`,`Existing client: ${plan.selected_client??'new research-only client'}`,`Preserved checker: ${plan.retained_check_digest??'none; no project check required'}`,`Trust: ${plan.trust_disclosure}`,'No feature brief, project command, owner or provider is needed for setup. Setup never launches research.',''].join('\n');
+ return ['Flow research setup - preview',`Project: ${plan.repository}`,`Official CLI: ${plan.codex_executable.path}`,`Expected version (not observed): ${plan.codex_executable.expected_version}`,`Executable: ${plan.codex_executable.sha256}`,`Selection: ${plan.codex_executable.provenance.kind}`,`Authority: ${plan.setup.authority_directory}`,`Existing client: ${plan.selected_client??'new research-only client'}`,`Preserved checker: ${plan.retained_check_digest??'none; no project check required'}`,`Trust: ${plan.trust_disclosure}`,'No feature brief, project command, owner or provider is needed for setup. Setup never launches research.',''].map(terminalText).join('\n');
 }
 export async function applyResearchSetupPlan(plan,options,{env,cwd}) {
  const current=createResearchSetupPlan(options,{env,cwd});
