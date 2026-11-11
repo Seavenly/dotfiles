@@ -32,7 +32,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 39);
+  assert.equal(catalog.catalog_version, 40);
   for (const contract of [
     "flow.release-manifest/v1",
     "flow.dark-opt-in/v1",
@@ -47,12 +47,14 @@ test("the public catalog exposes the settled interface and forbids legacy import
   }
   assert.equal(
     EVIDENCE_SAFETY_CATALOG_ID,
-    `flow.contract-catalog/v1@${catalog.catalog_version}`,
+    "flow.contract-catalog/v1@39",
   );
   assert.equal(
     catalog.flow_runtime.evidence_safety.catalog_id,
     EVIDENCE_SAFETY_CATALOG_ID,
   );
+  assert.equal(catalog.predefined_flows["spike/v2"].evidence.model_hash_computation, false);
+  assert.equal(catalog.predefined_flows["spike/v2"].source_fetch, "never");
   assert.deepEqual(catalog.flow_runtime.transport, {
     interface: "flow.runtime/v1",
     request: "flow.transport-request/v1",

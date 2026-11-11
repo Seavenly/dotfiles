@@ -236,6 +236,40 @@ const SPIKE_FLOW = {
   negative_outcome:
     "no prototype, production implementation or candidate, review candidate or approval, publication, tracker completion, or mutation authority",
 };
+const NATIVE_QUICK_RESEARCH = {
+  "definition": "flow.definition/spike/v2",
+  "preparation": "flow.research-preparation-request/v1",
+  "mode": "quick",
+  "source_packet": "flow.research-source-packet/v1",
+  "input_safety": {
+    "policy_id": "flow.research-input-safety-policy/v1",
+    "rejection": "flow.research-input-safety-rejection/v1",
+    "limits": {
+      "max_string_length": 163840,
+      "max_total_string_length": 524288
+    },
+    "scanning": "same_whole_value_checks_as_legacy_evidence_safety"
+  },
+  "researcher": {
+    "output": "flow.spike-research-evidence/v2",
+    "validator": "flow.validator/spike-research-evidence/v2"
+  },
+  "synthesizer": {
+    "output": "flow.spike-report/v2",
+    "validator": "flow.validator/spike-report/v2"
+  },
+  "evidence": {
+    "envelope": "flow.authority-materialized-evidence/v1",
+    "digest": "host_created_exact_accepted_researcher_projection",
+    "model_hash_computation": false
+  },
+  "workspace": "exact_workspace_authority_read_only_generation_epoch_fingerprint",
+  "assurance": "lower",
+  "source_fetch": "never",
+  "attempts_per_role": 1,
+  "max_revisions": 0,
+  "publication": "none"
+};
 const PREDEFINED_AUTHORITY_BINDINGS = {
   authority: "RunAuthority",
   declaration: "flow.required-authority/v1",
@@ -934,6 +968,10 @@ export async function loadContractCatalog({
       ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("quick spike flow contracts are incomplete");
   }
+  if (catalog.catalog_version === 40 && (!isDeepStrictEqual(catalog.predefined_flows?.["spike/v2"], NATIVE_QUICK_RESEARCH) ||
+      !["flow.definition/spike/v2", "flow.research-preparation-request/v1", "flow.research-source-packet/v1", "flow.research-input-safety-policy/v1", "flow.research-input-safety-rejection/v1", "flow.spike-research-evidence/v2", "flow.spike-report/v2", "flow.validator/spike-research-evidence/v2", "flow.validator/spike-report/v2"].every(contract => catalog.contracts.includes(contract)))) {
+    throw new Error("supervised quick research contracts are incomplete");
+  }
   if (!CHECKPOINT_CONTRACTS.every((contract) =>
     catalog.contracts.includes(contract))) {
     throw new Error("checkpoint contracts are incomplete");
@@ -1146,11 +1184,10 @@ export async function loadContractCatalog({
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("Work-domain resource safety contracts are incomplete");
   }
-  const evidenceCatalogIdForVersion =
-    `flow.contract-catalog/v1@${catalog.catalog_version}`;
-  const evidenceCatalogVersionMatches =
-    Number.isInteger(catalog.catalog_version) &&
-    EVIDENCE_SAFETY.catalog_id === evidenceCatalogIdForVersion;
+  // Catalog 40 adds research inputs without relabeling policy-39 receipts.
+  // Both immutable catalogs retain the exact legacy evidence policy identity.
+  const evidenceCatalogVersionMatches = [39, 40].includes(catalog.catalog_version) &&
+    EVIDENCE_SAFETY.catalog_id === "flow.contract-catalog/v1@39";
   if (!evidenceCatalogVersionMatches || !isDeepStrictEqual(
     catalog.flow_runtime?.evidence_safety,
     EVIDENCE_SAFETY,

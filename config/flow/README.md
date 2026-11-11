@@ -290,7 +290,7 @@ capability secrets, the prepared bundle, or ambient transcripts.
 When a predecessor join is declared, `predecessor_evidence` is the exact
 RunAuthority-materialized, issue-79-compatible evidence receipt and binding;
 the evidence-safety catalog identity is
-`flow.contract-catalog/v1@39`.
+`flow.contract-catalog/v1@40`. Legacy transferable-evidence receipts retain their exact policy-39 catalog identity.
 
 Callers select instructions, minimal task-input IDs and facts, resource
 selection IDs, and output requirements. RunAuthority derives execution

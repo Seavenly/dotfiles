@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.research-preparation-request.v1.schema.json",
+  "title": "flow.research-preparation-request/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "repository",
+    "packet",
+    "execution_trust"
+  ],
+  "properties": {
+    "schema": {
+      "const": "flow.research-preparation-request/v1"
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1
+    },
+    "packet": {
+      "$ref": "flow.research-source-packet.v1.schema.json"
+    },
+    "execution_trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "acknowledgment"
+      ],
+      "properties": {
+        "schema": {
+          "const": "flow.supervised-native-cli/v1"
+        },
+        "acknowledgment": {
+          "const": "trust-official-cli-permissions"
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_elapsed_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "max_revisions": {
+          "const": 0
+        }
+      }
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "researcher": {
+          "$ref": "#/$defs/route"
+        },
+        "synthesizer": {
+          "$ref": "#/$defs/route"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "route": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "harness": {
+              "enum": [
+                "codex",
+                "claude"
+              ]
+            },
+            "role": {
+              "type": "string",
+              "minLength": 1
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "effort": {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ]
+            },
+            "capability": {
+              "const": "read-only"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "launch"
+          ],
+          "properties": {
+            "launch": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "harness": {
+                  "enum": [
+                    "codex",
+                    "claude"
+                  ]
+                },
+                "role": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "model": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh"
+                  ]
+                },
+                "capability": {
+                  "const": "read-only"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

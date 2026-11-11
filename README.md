@@ -247,10 +247,12 @@ incomplete, or foreign-environment phase keeps admission withheld.
 
 Canonical evidence crossing the delegate, artifact, or resource-handoff
 boundary is validated by the pure versioned evidence-safety contract in
-`tools/flow/src/evidence-safety.mjs`. Catalog v38 binds policy
-`flow.evidence-safety-policy/v1` to exact catalog identity
-`flow.contract-catalog/v1@38`; rejected evidence produces only typed redacted
-codes and never reads ambient host state.
+`tools/flow/src/evidence-safety.mjs`. Catalog v40 preserves the legacy policy
+`flow.evidence-safety-policy/v1` and its exact receipt catalog identity
+`flow.contract-catalog/v1@39`. Quick research uses the distinct bounded input
+policy `flow.research-input-safety-policy/v1` for supplied source contents;
+legacy evidence validation and receipt identities remain unchanged. Rejections
+produce only typed redacted codes and never read ambient host state.
 
 The three implementations use disjoint authority roots, and existing runs
 remain owned by the implementation that created them. No legacy import adapter
