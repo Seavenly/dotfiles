@@ -40,8 +40,8 @@ test("public research help accepts plain question and source selections without 
   assert.match(result.stdout, /research/iu);
 });
 
-function cleanProject(t) {
-  const f = privateResearch(t), repository = join(f.root, "project"); mkdirSync(repository);
+function cleanProject(t, { name = "project" } = {}) {
+  const f = privateResearch(t), repository = join(f.root, name); mkdirSync(repository);
   const git = args => execFileSync("/usr/bin/git", ["-C", repository, ...args], { env: f.env, encoding: "utf8", timeout: 10000 });
   git(["init", "-q", "--initial-branch=main"]);
   git(["config", "user.name", "Research public fixture"]); git(["config", "user.email", "research@example.invalid"]);
@@ -140,7 +140,7 @@ function records(text) {
   try { return [JSON.parse(text)]; } catch { return text.split("\n").filter(Boolean).map(line => JSON.parse(line)); }
 }
 
-function terminalResearch(f, args, steps) {
+function terminalCli(f, args, steps) {
   const driver = `import errno,json,os,pty,select,signal,subprocess,sys,time
 master,slave=pty.openpty();child=subprocess.Popen(json.loads(sys.argv[1]),stdin=slave,stdout=slave,stderr=slave,start_new_session=True);os.close(slave)
 steps=json.loads(sys.argv[2]);output=bytearray();answered=0;cursor=0;deadline=time.monotonic()+25;timed_out=False
@@ -169,7 +169,7 @@ finally:
  os.close(master)
 print(json.dumps({'exit':child.wait(),'output':output.decode(errors='replace'),'answered':answered,'timed_out':timed_out}))
 `;
-  const result = spawnSync("/usr/bin/python3", ["-I", "-S", "-c", driver, JSON.stringify([process.execPath, cli, "research", ...args]), JSON.stringify(steps)], { env: { ...f.env, TERM: "xterm-256color" }, cwd: f.root, encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 * 1024 });
+  const result = spawnSync("/usr/bin/python3", ["-I", "-S", "-c", driver, JSON.stringify([process.execPath, cli, ...args]), JSON.stringify(steps)], { env: { ...f.env, TERM: "xterm-256color" }, cwd: f.root, encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 * 1024 });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const terminal = JSON.parse(result.stdout); assert.equal(terminal.timed_out, false, terminal.output); assert.equal(terminal.answered, steps.length, terminal.output);
   return terminal;
@@ -185,7 +185,7 @@ test("public preview retains exact source bytes and cached terminal decline disp
   const sourceDigest = createHash("sha256").update(Buffer.from(content)).digest("hex");
   assert.equal(preview.packet.sources[0].digest, `sha256:${sourceDigest}`); assert.equal(preview.packet.sources[0].uri, `urn:sha256:${sourceDigest}`);
   assert.equal(preview.packet.sources[0].size_bytes, Buffer.byteLength(content)); assert.equal(JSON.stringify(preview.packet).includes(f.root), false);
-  const preparedBefore = readFileSync(preview.prepared_file), declined = terminalResearch(f, args, [{ prompt: "Launch this exact supervised research? [y/N]", answer: "n\n" }]);
+  const preparedBefore = readFileSync(preview.prepared_file), declined = terminalCli(f, ["research", ...args], [{ prompt: "Launch this exact supervised research? [y/N]", answer: "n\n" }]);
   assert.equal(declined.exit, 0, declined.output); assert.match(declined.output, /Which observation tradeoffs remain uncertain/u);
   assert.match(declined.output, /researcher/iu); assert.match(declined.output, /synthesizer/iu); assert.match(declined.output, /supervised/iu); assert.match(declined.output, /600/u);
   assert.deepEqual(readFileSync(preview.prepared_file), preparedBefore); assert.equal(f.state().preparations, 1); assert.equal(f.state().launches, 0); assert.equal(existsSync(f.executed), false);
@@ -206,7 +206,7 @@ test("source drift and unsafe source contents cannot reuse confirmation or start
 
 test("terminal confirmation detaches on interrupt then attaches and cancels the same research attempt", { skip: process.platform !== "linux" }, t => {
   const f = controlledResearch(t), args = ["--repository", f.repository, "--question", "Which observation tradeoffs remain uncertain?", "--source", f.source];
-  const terminal = terminalResearch(f, args, [
+  const terminal = terminalCli(f, ["research", ...args], [
     { prompt: "Launch this exact supervised research? [y/N]", answer: "y\n" },
     { prompt: "spike-research", interrupt: true },
   ]);
@@ -289,7 +289,22 @@ test("ambiguous retained clients require explicit selection and real terminal ch
   const before = snapshot(f.env.XDG_STATE_HOME), refusal = f.run([...args, "--json"]);
   assert.equal(refusal.status, 2, refusal.stdout + refusal.stderr); assert.match(refusal.stderr, /--client/u);
   assert.deepEqual(snapshot(f.env.XDG_STATE_HOME), before); assert.equal(f.state().calls.length, 0);
-  const selected = terminalResearch(f, args, [{ prompt: "Client number:", answer: "1\n" }, { prompt: "Launch this exact supervised research? [y/N]", answer: "n\n" }]);
+  const selected = terminalCli(f, ["research", ...args], [{ prompt: "Client number:", answer: "1\n" }, { prompt: "Launch this exact supervised research? [y/N]", answer: "n\n" }]);
   assert.equal(selected.exit, 0, selected.output); assert.match(selected.output, /Choose the exact initialized client/u);
   assert.equal(f.state().launches, 0); assert.equal(f.state().preparations, 1); assert.equal(existsSync(f.executed), false);
+});
+
+test("real terminal research setup escapes operational path controls while retaining exact JSON selection", t => {
+  const f = cleanProject(t, { name: "project-\u001b[31m-owned\nsuffix" });
+  const args = ["--purpose", "research", "--repository", f.repository, "--codex-executable", realpathSync(process.execPath)];
+  const before = snapshot(f.root), preview = f.call(["init", ...args, "--json"]);
+  assert.equal(preview.status, 0, preview.stdout + preview.stderr);
+  assert.equal(JSON.parse(preview.stdout).plan.repository, f.repository);
+  const terminal = terminalCli(f, ["init", ...args], [{ prompt: "Create this supervised setup? [y/N]", answer: "n\n" }]);
+  t.diagnostic(JSON.stringify({ kind: "controlled-real-pty-init-decline", output: terminal.output }));
+  assert.equal(terminal.exit, 0, terminal.output);
+  assert.equal(terminal.output.includes("\u001b[31m"), false, "untrusted path must not emit a terminal escape");
+  assert.equal(terminal.output.includes("owned\nsuffix"), false, "untrusted path must not forge a line");
+  assert.ok(terminal.output.includes("\\u001b[31m-owned\\nsuffix"), terminal.output);
+  assert.deepEqual(snapshot(f.root), before, "decline must not create a profile or owner, or execute the selected CLI");
 });
