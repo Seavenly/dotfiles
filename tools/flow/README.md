@@ -523,7 +523,15 @@ ambient workspace path; local review targets alone receive a read-only
 - `watch({ run_id })` returns an async iterator whose first item is the current
   projection and whose later items carry new authority watermarks. Watching an
   unknown run returns a one-shot iterator containing one typed rejection and
-  then completes.
+  then completes. Durable polling starts at 100 ms and backs off to 1000 ms
+  after an unchanged read, retaining full replay verification. The in-process
+  and socket client queues each retain FIFO observations up to 64 items or
+  8 MiB, then detach that observer with `watch_backpressure_exceeded` after its
+  queued items drain. Errors remain observable without a pending read; explicit
+  `return()` clears buffered data and releases the observer. CLI watch output
+  respects stdout backpressure. Query fresh state through the same client
+  before reattaching or acting on buffered choices. No observer failure cancels
+  work. See [measurement and recovery details](../../docs/flow/observation.md).
 
 ### Predefined flow selection
 

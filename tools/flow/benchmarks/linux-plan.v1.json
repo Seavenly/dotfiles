@@ -1,0 +1,38 @@
+{
+  "schema": "flow.observation-linux-measurement-plan/v1",
+  "workload": {
+    "checkpoint_cards": [
+      1,
+      16,
+      64
+    ],
+    "accepted_prompt_bytes_per_card": 1024,
+    "complete_all_but": 2,
+    "watchers": [
+      1,
+      4
+    ],
+    "idle_seconds_per_case": 5,
+    "warm_query_samples": 10,
+    "control_admission_cancel_samples": 10,
+    "slow_consumer_burst_frames": 512,
+    "slow_consumer_payload_bytes": 1024,
+    "no_real_authorities_or_native_calls": true
+  },
+  "goals": {
+    "idle_cpu_percent_one_core_1_observer": 2,
+    "idle_cpu_percent_one_core_4_observers": 5,
+    "descriptive_warm_query_p95_ms": 250,
+    "control_admission_cancel_p95_ms": 500,
+    "update_detection_p95_ms": 1000,
+    "retained_queue_items": 64,
+    "retained_queue_serialized_bytes": 8388608
+  },
+  "bounds": {
+    "wall_seconds": 120,
+    "fixture_bytes": 134217728,
+    "disk_reserve_bytes": 2147483648
+  },
+  "scope": "Linux synthetic checkpoint-only workload; 0 delegated attempts, at most63 target run events. CPU5s and10warm query samples are descriptive; control timings are same-process synchronous acceptance only, not hostIPC/completion. No native/provider/version/auth calls; Mac and long delegated histories remain unmeasured.",
+  "reference_baseline_commit": "26687af443a3a24efbfd8702c910607179c80617"
+}

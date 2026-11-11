@@ -23,6 +23,8 @@ commands without starting an owner. Use [`flow-supervised usage`](project-usage.
 for receipt-bound usage and explicitly partial CLI cost estimates for an exact
 run, without starting work. [Manual registered project checks](project-checks.md)
 remain available.
+See [bounded observation](observation.md) for watch backpressure, fresh-query
+recovery and the finite Linux CPU measurements.
 The additive v2 check runs in `verify` mode and reports GREEN-only command
 evidence; the v1 test-first contract and plain content-only `verify` remain distinct.
 
