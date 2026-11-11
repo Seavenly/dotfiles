@@ -26,6 +26,9 @@ base = Path(__file__).resolve().parent
 root = Path(args.source).resolve()
 plan = json.loads((base / 'linux-plan.v1.json').read_text())
 out = Path(args.output).resolve()
+reserve = plan['bounds']['disk_reserve_bytes']
+if min(shutil.disk_usage(root).free, shutil.disk_usage(out.parent).free) < reserve:
+    parser.error('Source and output filesystems each require the 2GiB free-disk reserve')
 out.mkdir(mode=0o700)
 (out / 'measurement-plan.json').write_text(json.dumps(plan, indent=2) + '\n')
 env = {key: value for key, value in os.environ.items()
@@ -53,7 +56,7 @@ with (out / 'stdout.log').open('wb') as stdout, (out / 'stderr.log').open('wb') 
     while child.poll() is None:
         if time.monotonic() - start > plan['bounds']['wall_seconds']:
             reason = 'deadline'
-        if shutil.disk_usage(root).free < plan['bounds']['disk_reserve_bytes']:
+        if min(shutil.disk_usage(root).free, shutil.disk_usage(out).free) < reserve:
             reason = 'disk_reserve'
         if sum(path.stat().st_size for path in out.rglob('*') if path.is_file()) > plan['bounds']['fixture_bytes']:
             reason = 'fixture_bytes'

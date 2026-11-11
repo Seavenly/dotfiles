@@ -57,7 +57,8 @@ RESULTS=/absolute/new/private/observation-results
 `--socket-only` runs just the finite slow-consumer canaries. The output directory
 must be new. The wrapper scrubs credentials and Node/Git/Flow overrides, records
 the exact source commit and host, bounds the workload to 120 seconds and 128 MiB,
-and stops at the 2 GiB free-disk reserve. Raw logs, progress, reports, receipts and
+and requires the 2 GiB free-disk reserve on both source and output filesystems,
+before starting and while running. Raw logs, progress, reports, receipts and
 owned synthetic authorities remain in that directory for inspection. Remove only
 that owned directory when its evidence is no longer needed. The short owned
 temporary socket directory is removed after the finite canary completes.
