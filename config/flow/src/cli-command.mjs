@@ -181,7 +181,9 @@ export async function runCli(
         ? selectedClient.watch(request)
         : directRuntime.watch(request);
       for await (const observation of watcher) {
-        stdout.write(`${JSON.stringify(observation)}\n`);
+        if (stdout.write(`${JSON.stringify(observation)}\n`) === false) {
+          await waitForWatchDrain(stdout);
+        }
       }
       return 0;
     }
@@ -206,7 +208,9 @@ export async function runCli(
     }
     stderr.write(`${JSON.stringify(createRejection({
       operation,
-      code: operation === "query" && request?.query === "legacy_compatibility_inventory"
+      code: operation === "watch" && ["watch_backpressure_exceeded", "watch_read_failed", "watch_output_closed"].includes(error?.code)
+        ? error.code
+        : operation === "query" && request?.query === "legacy_compatibility_inventory"
         ? "inventory_unavailable"
         : "transport_unavailable",
       authorityWatermarkDomain: "host",
@@ -215,6 +219,23 @@ export async function runCli(
   } finally {
     if (ownsDirectRuntime) closeFlowRuntime(directRuntime);
   }
+}
+
+function waitForWatchDrain(stream) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      stream.removeListener("drain", drained);
+      stream.removeListener("error", failed);
+      stream.removeListener("close", closed);
+    };
+    const drained = () => { cleanup(); resolve(); };
+    const failed = () => { cleanup(); reject(Object.assign(new Error("Watch output unavailable."), { code: "watch_output_closed" })); };
+    const closed = failed;
+    stream.once("drain", drained);
+    stream.once("error", failed);
+    stream.once("close", closed);
+    if (stream.destroyed || stream.closed || stream.writableEnded) failed();
+  });
 }
 
 async function ownerIsAvailable(paths) {

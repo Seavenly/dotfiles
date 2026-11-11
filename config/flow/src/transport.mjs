@@ -426,6 +426,8 @@ export function watchFlowTransport({
   let iteratorPromise = null;
   let closed = false;
   let done = false;
+  let failure = null;
+  let queuedBytes = 0;
   const queue = [];
   const waiters = [];
 
@@ -434,12 +436,20 @@ export function watchFlowTransport({
       return iterator;
     },
     next() {
-      if (queue.length > 0) return Promise.resolve(queue.shift());
+      if (queue.length > 0) {
+        const item = queue.shift();
+        queuedBytes -= item.bytes;
+        return Promise.resolve(item.observation);
+      }
+      if (failure) return Promise.reject(failure);
       if (done) return Promise.resolve({ done: true, value: undefined });
       ensureReader();
       return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
     },
     async return() {
+      queue.length = 0;
+      queuedBytes = 0;
+      failure = null;
       close();
       return { done: true, value: undefined };
     },
@@ -452,6 +462,7 @@ export function watchFlowTransport({
     iteratorPromise = (async () => {
       try {
         socket = await connect(socketPath, timeoutMs);
+        if (closed) { socket.destroy(); return; }
         await writeFrame(socket, requestFrame({
           operation: "watch",
           request,
@@ -487,7 +498,7 @@ export function watchFlowTransport({
           finish();
           return;
         }
-        publish({ done: false, value: response.result });
+        publish({ done: false, value: response.result }, frame.byteLength + 1);
       }
       // Validate only the still-incomplete frame after consuming every
       // complete newline-delimited frame. A single TCP chunk may contain
@@ -499,15 +510,22 @@ export function watchFlowTransport({
     if (!done) throw transportError("transport_disconnected");
   }
 
-  function publish(item) {
+  function publish(item, bytes) {
     const waiter = waiters.shift();
     if (waiter) waiter.resolve(item);
-    else queue.push(item);
+    else {
+      if (queue.length >= 64 || queuedBytes + bytes > 8 * 1024 * 1024) {
+        throw transportError("watch_backpressure_exceeded");
+      }
+      queue.push({ observation: item, bytes });
+      queuedBytes += bytes;
+    }
   }
 
   function finish(error = null) {
     if (done) return;
     done = true;
+    failure = error;
     if (error) {
       for (const waiter of waiters.splice(0)) waiter.reject(error);
     } else {
