@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFlowRuntime, closeFlowRuntime } from '../src/runtime.mjs';
-import { readResearchSourcePacket } from '../../../tools/flow/src/research-source-packet.mjs';
+import { readResearchSourcePacket } from '../src/research-source-files.mjs';
 import { readResearchReport } from '../src/project-research-view.mjs';
 const trust={schema:'flow.supervised-native-cli/v1',acknowledgment:'trust-official-cli-permissions'};
 // This bounded executable simulates the official wire format. It is not a

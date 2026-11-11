@@ -4,7 +4,8 @@ import { mkdtempSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { readResearchSourcePacket, validateResearchSourcePacket } from '../src/research-source-packet.mjs';
+import { readResearchSourcePacket } from '../../../config/flow/src/research-source-files.mjs';
+import { validateResearchSourcePacket } from '../src/research-source-packet.mjs';
 
 test('plain source files become exact immutable content-addressed research bytes without local paths', t => {
  const dir=mkdtempSync(join(tmpdir(),'source-packet-')); t.after(()=>rmSync(dir,{recursive:true,force:true}));

@@ -1,7 +1,8 @@
 import { existsSync, lstatSync, mkdirSync, opendirSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { digest } from '../../../tools/flow/src/canonical.mjs';
-import { readResearchSourcePacket, validateResearchSourcePacket } from '../../../tools/flow/src/research-source-packet.mjs';
+import { readResearchSourcePacket } from './research-source-files.mjs';
+import { validateResearchSourcePacket } from '../../../tools/flow/src/research-source-packet.mjs';
 import { failRun, loadRetainedPreview, readRunJson, retainRunJson } from './project-run-state.mjs';
 
 export function researchPolicy(options) {

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { digest } from '../../../tools/flow/src/canonical.mjs';
 import { executionDescription } from '../../../tools/flow/src/execution-contract.mjs';
-import { readResearchSourcePacket } from '../../../tools/flow/src/research-source-packet.mjs';
+import { readResearchSourcePacket } from '../src/research-source-files.mjs';
 import { materializeDelegateInputEnvelope } from '../../../tools/flow/src/delegate-input-envelope.mjs';
 import { directOutputContract } from '../../../tools/flow/src/direct-output-contract.mjs';
 import { createFlowRuntime, closeFlowRuntime } from '../src/runtime.mjs';

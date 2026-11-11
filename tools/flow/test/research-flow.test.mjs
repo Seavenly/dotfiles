@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { digest } from '../src/canonical.mjs';
-import { readResearchSourcePacket } from '../src/research-source-packet.mjs';
+import { readResearchSourcePacket } from '../../../config/flow/src/research-source-files.mjs';
 import { validateResearchOutput, RESEARCH_SCHEMA, REPORT_SCHEMA } from '../src/research-flow.mjs';
 import { validateDelegateEvidenceSafety } from '../src/evidence-safety.mjs';
 function fixture(t) {

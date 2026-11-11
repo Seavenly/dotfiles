@@ -2,7 +2,7 @@ import { createInterface } from 'node:readline/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { digest } from '../../../tools/flow/src/canonical.mjs';
-import { readResearchSourcePacket } from '../../../tools/flow/src/research-source-packet.mjs';
+import { readResearchSourcePacket } from './research-source-files.mjs';
 import { discoverInitializedClients, failRun } from './project-run-state.mjs';
 import { runDecisionActions, terminalText } from './project-run-view.mjs';
 import { callProjectClient, followProjectSession, input, ownerStart, preparePreview, requireRun, submitDecision, submitPrepared } from './project-session.mjs';
