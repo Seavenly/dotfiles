@@ -2,7 +2,7 @@
   "schema": "flow.transition-qualification-evidence/v1",
   "release_id": "flow-release-1.1-dark-test/v1",
   "qualification_base_commit": "c34c6e881ce375691d4f3e4ca626c1af9eef81cc",
-  "release_content_digest": "sha256:b1e8cd2dde8f9a9803b858c07eef1053abff62c9aed917afe18e21ff7976e892",
+  "release_content_digest": "sha256:ba6997c5f35a3ba383baa75eb68b6415785c0544db6a1160d3a8ef46e4f55082",
   "status": "not_run",
   "scope": "deterministic_route_and_host_fault_conformance",
   "contracts": [
@@ -124,7 +124,7 @@
       "status": "not_run"
     }
   ],
-  "captured_at": "2026-11-11T01:48:31Z",
+  "captured_at": "2026-11-11T01:52:53Z",
   "environment": {
     "os": "linux",
     "architecture": "x64",
@@ -132,5 +132,5 @@
     "npm": "10.9.8",
     "git": "2.53.0"
   },
-  "candidate_tree_sha": "40889bb5b8393b82ce60086b84f025943fa12c6c"
+  "candidate_tree_sha": "6609acf6e14786063700c540bfefd45712db403e"
 }

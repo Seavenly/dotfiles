@@ -32,10 +32,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "40889bb5b8393b82ce60086b84f025943fa12c6c",
+    "candidate_tree_sha": "6609acf6e14786063700c540bfefd45712db403e",
     "qualification_base_commit": "c34c6e881ce375691d4f3e4ca626c1af9eef81cc"
   },
-  "content_digest": "sha256:b1e8cd2dde8f9a9803b858c07eef1053abff62c9aed917afe18e21ff7976e892",
+  "content_digest": "sha256:ba6997c5f35a3ba383baa75eb68b6415785c0544db6a1160d3a8ef46e4f55082",
   "files": [
     {
       "path": "GLOSSARY.md",
@@ -58,8 +58,8 @@
     {
       "path": "config/flow/README.md",
       "mode": "100644",
-      "git_blob_sha": "e21899e8979cce4ea53a79525b26c4c6344811b1",
-      "sha256": "c781183e0efa4005cf98971a7c10e7082d694418f6648b12f43668a613104b41"
+      "git_blob_sha": "31880f1195b48b6379c4ff884eb91e1d8e63542c",
+      "sha256": "aaea68ed1a841adcee38931b95fd6f79e14859367fafd1e0690cfde7fda70bf8"
     },
     {
       "path": "config/flow/contracts/catalog.v1.json",
