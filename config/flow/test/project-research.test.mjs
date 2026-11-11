@@ -92,3 +92,24 @@ test('public research setup refuses redirected state ancestry before profile all
  const exit=await runProjectInit(['--purpose','research','--repository',f.repository,'--codex-executable','/usr/bin/true','--json'],{env,stdout,stderr,stdin:{isTTY:false}});
  assert.equal(exit,1);assert.match(stderr.value,/canonical|alias/);assert.equal(existsSync(join(outside,'flow-local')),false);
 });
+
+test('public research setup rejects normalized state destinations inside the project',async t=>{
+ const f=fixture(t),{runProjectInit}=await import('../src/project-init.mjs');
+ execFileSync('/usr/bin/git',['-C',f.repository,'config','user.name','Fixture']);execFileSync('/usr/bin/git',['-C',f.repository,'config','user.email','fixture@example.test']);
+ const stdout=sink(),stderr=sink(),env={...f.env,FLOW_LOCAL_CLIENT_STATE_HOME:`${f.root}/decoy/../repository/private-state`};
+ const exit=await runProjectInit(['--purpose','research','--repository',f.repository,'--codex-executable','/usr/bin/true','--json'],{env,stdout,stderr,stdin:{isTTY:false}});
+ assert.equal(exit,1);assert.match(stderr.value,/outside/);assert.equal(existsSync(join(f.repository,'private-state')),false);
+});
+
+test('public research setup rejects computed profile/client/authority aliases before outside allocation',async t=>{
+ const f=fixture(t),{runProjectInit}=await import('../src/project-init.mjs');
+ execFileSync('/usr/bin/git',['-C',f.repository,'config','user.name','Fixture']);execFileSync('/usr/bin/git',['-C',f.repository,'config','user.email','fixture@example.test']);
+ for(const [index,level] of ['flow-local','profile','clients','authority','broken'].entries()) {
+  const state=join(f.root,`new-state-${index}`),outside=join(f.root,`outside-${index}`);mkdirSync(state);mkdirSync(outside);
+  const profile=join(state,'flow-local',digest(f.repository).slice(7,31));
+  const target=level==='flow-local'?join(state,'flow-local'):level==='profile'?profile:join(profile,level==='broken'?'clients':level);
+  mkdirSync(join(target,'..'),{recursive:true});symlinkSync(level==='broken'?join(outside,'missing'):outside,target);
+  const stderr=sink(),exit=await runProjectInit(['--purpose','research','--repository',f.repository,'--codex-executable','/usr/bin/true','--json'],{env:{...f.env,FLOW_LOCAL_CLIENT_STATE_HOME:state},stdout:sink(),stderr,stdin:{isTTY:false}});
+  assert.equal(exit,1,level);assert.match(stderr.value,/canonical|alias/,level);assert.equal(existsSync(join(outside,'profile.json')),false);assert.equal(existsSync(join(outside,digest(f.repository).slice(7,31))),false);
+ }
+});

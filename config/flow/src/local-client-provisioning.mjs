@@ -1,6 +1,6 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { digest } from "../../../tools/flow/src/canonical.mjs";
 import { writeFeatureClient } from "../scripts/feature-client-files.mjs";
 import { assertLocalCheckChangeQuiescent } from "./local-client-state.mjs";
@@ -8,6 +8,18 @@ import { statusFlowOwner } from "./owner-process.mjs";
 import { SUPERVISED_NATIVE_ACKNOWLEDGMENT } from "./supervised-native-trust.mjs";
 const load = path => JSON.parse(readFileSync(path, "utf8"));
 const save = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+
+/** Refuse redirected existing ancestors before any profile/client write. */
+export function assertCanonicalLocalDirectories(...paths) {
+  for (const path of paths) for (let current = resolve(path); ; current = dirname(current)) {
+    let stat;
+    try { stat = lstatSync(current); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (stat && (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(current) !== current)) {
+      throw new Error("Local state must retain canonical directory ancestry; aliases and broken paths are unsupported");
+    }
+    if (dirname(current) === current) break;
+  }
+}
 
 /** Shared immutable client provisioning. No owner, request or provider is started. */
 export async function provisionLocalClient({ repository, executable, gitIdentity, check, runtimeRoot, node, env = process.env, upgradeRuntime, reconfigureCheck, preserveSelectedCheck = false }) {
@@ -21,6 +33,7 @@ export async function provisionLocalClient({ repository, executable, gitIdentity
   const checkKey = checkDigest?.slice(7) ?? "verify";
   let directory = join(profileRoot, "clients", checkKey);
   const authorityDirectory = join(profileRoot, "authority");
+  assertCanonicalLocalDirectories(parent, profileRoot, join(profileRoot, "clients"), authorityDirectory, directory);
   let profile;
   let runtimeChanged = false;
   if (existsSync(profileRoot)) {
@@ -34,6 +47,7 @@ export async function provisionLocalClient({ repository, executable, gitIdentity
       directory = join(profileRoot, "clients", `${checkKey}.runtime-${digest(runtimeRoot).slice(7)}`);
       if (!existsSync(directory) && options["--upgrade-runtime"] !== "yes") throw new Error("Use --upgrade-runtime yes to select a different runtime while retaining the same authority");
     }
+    assertCanonicalLocalDirectories(directory);
     const checkKeys = new Set(readdirSync(join(profileRoot, "clients")).map(name => {
       const match = /^(verify|[a-f0-9]{64})(?:\.runtime-[a-f0-9]{64})?$/u.exec(name);
       if (!match) throw new Error("Local client directory has an unknown identity");

@@ -50,6 +50,7 @@ export function locateProjectProfile({ repository, env = process.env, cwd = proc
 
 /** Validate one original generated client without executing it. */
 export function readValidatedProjectClient({ repository: root, profileRoot, original, directory }) {
+  if (realpathSync(directory) !== resolve(directory) || realpathSync(join(profileRoot, "authority")) !== resolve(join(profileRoot, "authority"))) failRun("Client or authority paths must retain their original canonical private layout.");
   const pilot = readRunJson(join(directory, "pilot.json"));
   const identity = pilot.local_client;
   const { runtime_root: _originalRuntime, ...pins } = original.identity;
