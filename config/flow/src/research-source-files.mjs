@@ -42,7 +42,7 @@ export function readResearchSourcePacket({ question, sources, cwd = process.cwd(
   }
   const identity = { schema: 'flow.research-source-packet/v1', question: { id: `question:${digest(question).slice(7)}`, text: question }, sources: entries };
   const packet = freezeCanonical({ ...identity, packet_digest: digest(identity) });
-  if (!validateResearchSourcePacket(packet)) fail('Research source packet failed safety or exact-byte validation. Preserve the original files and select safe bounded text; contents are not echoed.');
+  if (!validateResearchSourcePacket(packet)) fail('Research source packet failed safety or exact-byte validation. Credentials, unsafe paths and non-content-addressed reference URLs may be refused. Keep optional reference URLs outside supplied source text. Preserve the original files; rejected contents are not echoed.');
   return { packet, provenance };
 }
 

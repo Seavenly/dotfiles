@@ -33,6 +33,9 @@ canonical UTF-8 files, each at most 32 KiB and together at most 128 KiB. Aliases
 malformed UTF-8, duplicate source contents and unsafe text are refused. The
 existing safety scanner rejects credentials, unsafe paths and other prohibited
 content without echoing rejected bytes; it does not silently remove content.
+Non-content-addressed reference URLs within supplied text may also be refused.
+Keep optional reference URLs in separate provenance notes, outside the supplied
+source files.
 
 Flow snapshots the exact bytes and derives content-addressed source IDs,
 SHA-256 identities and a packet digest. Local file paths appear in the preview
