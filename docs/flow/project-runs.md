@@ -6,9 +6,9 @@ Inside an initialized project, use:
 flow-supervised runs
 ```
 
-The overview lists retained feature tasks and independent reviews, including
-unlaunched previews, uncertain accepted intents, completed work and attempts that
-need attention. Each row includes the task title, exact identity, original client
+The overview lists retained feature tasks, independent reviews and supplied-source
+research, including unlaunched previews, uncertain accepted intents, completed
+work and attempts that need attention. Each row includes the task title, exact identity, original client
 runtime, retained evidence path and supported next commands. Commands are printed
 for inspection; none are executed by the overview.
 
@@ -46,10 +46,19 @@ approval. Review checks are inherited producer evidence, not a rerun. A cancelle
 phase or stopped owner does not release held or quarantined workspace claims.
 Claim identity, generation and mutation epoch remain visible where supplied.
 
+Research rows show the question, exact source-packet digest, observed report
+status, lower assurance and residual-gap count. A research-only initialized
+client can appear without a feature request. A prepared packet is not a completed
+report; an unavailable proof stays unavailable. Research has no candidate,
+inherited checker or human approval, and the overview never fetches source text.
+Use the printed exact [`research`](guided-research.md) confirmation or attachment
+command only after inspecting its evidence and recovery disclosure.
+
 Printed `run`, confirmation, attachment and original-owner start commands can
 start or reuse that exact owner and recover previously authorized work when you
 explicitly execute them. Read their disclosure first. Existing
-[`run`](guided-run.md) and [`review`](guided-review.md) frontends still own exact
+[`run`](guided-run.md), [`review`](guided-review.md) and
+[`research`](guided-research.md) frontends still own exact
 confirmation, attachment, cancellation and authority-derived decisions.
 The overview performs no start, preparation, refresh, confirmation, launch,
 submission locking, journal write or lifecycle cleanup. Bare `status` and

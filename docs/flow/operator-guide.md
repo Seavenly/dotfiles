@@ -22,7 +22,10 @@ for an independent review of an exact retained candidate. Use
 commands without starting an owner. Use [`flow-supervised usage`](project-usage.md)
 for receipt-bound usage and explicitly partial CLI cost estimates for an exact
 run, without starting work. [Manual registered project checks](project-checks.md)
-remain available.
+remain available. For a bounded question over supplied local text, use
+[`init --purpose research` and `research`](guided-research.md). Research needs no
+feature brief or check, fetches no sources, and produces lower-assurance evidence
+rather than a candidate or approval.
 See [bounded observation](observation.md) for watch backpressure, fresh-query
 recovery and the finite Linux CPU measurements.
 The additive v2 check runs in `verify` mode and reports GREEN-only command
@@ -108,6 +111,15 @@ different checks. A changed check still requires `--reconfigure-check yes`.
 Use the returned client or a new link name; the old command is never replaced.
 Setup starts no owner or provider. Owner/configuration handshakes and fresh
 preparation fences still decide whether a later start or launch is compatible.
+
+For research on an existing project, run the new runtime's
+`flow-supervised init --purpose research --client /private/original/client
+--upgrade-runtime yes` with the same original state directory after this
+stopped, settled procedure. The selected check is preserved, even though research
+does not run it. Node, official executable, trust and Git identity pins must stay
+exact; only the runtime changes. Keep every original client and use the returned
+immutable client path for the research preview. Do not select another state root
+to evade held claims or taint.
 
 Without an explicit v2 project check, default `verify` means **Git-backed content observations plus independent model
 critique; project checks NOT_RUN; runtime behavior not established**. The

@@ -22,6 +22,22 @@ task, confirm it and follow implementation, checks and critique. This is
 supervised CLI trust, not strict native qualification; Mac native
 execution remains unsupported.
 
+## Set up supplied-source research
+
+For a question over explicit local text files, use
+`flow-supervised init --purpose research` instead. It previews the selected
+project, official executable, private authority and supervised trust contract;
+no feature brief, project type or checker is required. Confirmation creates or
+reuses an immutable client and runs the existing bounded CLI version check. It
+starts no owner, project test or model task.
+
+An existing project keeps its authority, original profile, executable/Git pins
+and selected checker. With several clients, select the exact `--client DIRECTORY`.
+An older runtime needs the explicit stopped, settled `--upgrade-runtime yes`
+procedure below; setup never silently switches it. Continue with the
+[research guide](guided-research.md) to supply plain question/source flags and
+review a separate launch confirmation.
+
 ## Plain flags for scripts
 
 No hand-written JSON is required. For example:

@@ -457,6 +457,10 @@ task, follow implementation/check/critique progress, and act on fresh authority
 decisions without assembling JSON.
 Use [`flow-supervised review`](docs/flow/guided-review.md) for a separately
 confirmed independent review of the exact retained candidate.
+Use [`flow-supervised research`](docs/flow/guided-research.md) for a bounded
+question over explicit local source files. `init --purpose research` needs no
+feature brief or project check. Two separately routed read-only delegates produce
+a lower-assurance cited report with residual gaps; sources are never fetched.
 
 `flow local setup --execution-trust supervised-native-cli --repository PATH
 --brief JSON_FILE --codex-executable PATH` creates a private, reusable client for
