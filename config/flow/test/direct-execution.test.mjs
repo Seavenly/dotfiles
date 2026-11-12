@@ -98,7 +98,7 @@ if(task.flow==="review/v1") {
   const prefix=${JSON.stringify(scratch)}+"/parallel-"+mode;
   appendFileSync(prefix+"-events",task.role+":"+(task.lens??"critic")+"\\n");
   writeFileSync(prefix+"-"+(task.lens??"critic")+"-input.json",JSON.stringify(envelope));
-  if(task.role==="lens") while(!existsSync(prefix+"-release-"+task.lens)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);
+  if(task.role==="lens") { const deadline=Date.now()+15000; while(!existsSync(prefix+"-release-"+task.lens)) { if(Date.now()>deadline) throw new Error("owned lens fixture release timed out"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10); } }
  }
  output={schema:"flow.review-result/v1",findings:[],posture:"no_findings",coverage:"produced"};
 }

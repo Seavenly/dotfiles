@@ -6,36 +6,77 @@
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "query"],
+      "required": [
+        "schema",
+        "query"
+      ],
       "properties": {
-        "schema": { "const": "flow.query/v1" },
-        "query": { "const": "autonomous_runner_status" }
+        "schema": {
+          "const": "flow.query/v1"
+        },
+        "query": {
+          "const": "autonomous_runner_status"
+        }
       }
     },
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "query"],
+      "required": [
+        "schema",
+        "query"
+      ],
       "properties": {
-        "schema": { "const": "flow.query/v1" },
-        "query": { "const": "legacy_compatibility_inventory" }
+        "schema": {
+          "const": "flow.query/v1"
+        },
+        "query": {
+          "const": "legacy_compatibility_inventory"
+        }
       }
     },
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "query", "launch", "caller_metadata"],
+      "required": [
+        "schema",
+        "query",
+        "launch",
+        "caller_metadata"
+      ],
       "properties": {
-        "schema": { "const": "flow.query/v1" },
-        "query": { "const": "delegated_agent_description" },
+        "schema": {
+          "const": "flow.query/v1"
+        },
+        "query": {
+          "const": "delegated_agent_description"
+        },
         "launch": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "harness": { "enum": ["claude", "codex"] },
-            "role": { "type": "string", "minLength": 1 },
-            "model": { "type": "string", "minLength": 1 },
-            "effort": { "enum": ["low", "medium", "high", "xhigh"] },
+            "harness": {
+              "enum": [
+                "claude",
+                "codex"
+              ]
+            },
+            "role": {
+              "type": "string",
+              "minLength": 1
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "effort": {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ]
+            },
             "capability": {
               "enum": [
                 "read-only",
@@ -53,10 +94,17 @@
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "query"],
+      "required": [
+        "schema",
+        "query"
+      ],
       "properties": {
-        "schema": { "const": "flow.query/v1" },
-        "query": { "const": "review_inbox" }
+        "schema": {
+          "const": "flow.query/v1"
+        },
+        "query": {
+          "const": "review_inbox"
+        }
       }
     },
     {
@@ -70,14 +118,23 @@
         "selection"
       ],
       "properties": {
-        "schema": { "const": "flow.query/v1" },
-        "query": { "const": "review_preparation_facts" },
-        "candidate_id": { "type": "string", "minLength": 1 },
+        "schema": {
+          "const": "flow.query/v1"
+        },
+        "query": {
+          "const": "review_preparation_facts"
+        },
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1
+        },
         "candidate_fingerprint": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
-        "selection": { "$ref": "#/$defs/reviewPreparationSelection" }
+        "selection": {
+          "$ref": "#/$defs/reviewPreparationSelection"
+        }
       }
     }
   ],
@@ -85,15 +142,27 @@
     "reviewPreparationSelection": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "lenses", "routes"],
+      "required": [
+        "schema",
+        "lenses",
+        "routes"
+      ],
       "properties": {
-        "schema": { "const": "flow.review-preparation-selection/v1" },
+        "schema": {
+          "const": "flow.review-preparation-selection/v1"
+        },
         "target": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["candidate_id", "candidate_fingerprint"],
+          "required": [
+            "candidate_id",
+            "candidate_fingerprint"
+          ],
           "properties": {
-            "candidate_id": { "type": "string", "minLength": 1 },
+            "candidate_id": {
+              "type": "string",
+              "minLength": 1
+            },
             "candidate_fingerprint": {
               "type": "string",
               "pattern": "^sha256:[0-9a-f]{64}$"
@@ -104,12 +173,18 @@
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "routes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["lenses", "critic"],
+          "required": [
+            "lenses",
+            "critic"
+          ],
           "properties": {
             "lenses": {
               "type": "object",
@@ -117,8 +192,61 @@
                 "$ref": "#/$defs/reviewRouteChoice"
               }
             },
-            "critic": { "$ref": "#/$defs/reviewRouteChoice" }
+            "critic": {
+              "$ref": "#/$defs/reviewRouteChoice"
+            }
           }
+        },
+        "execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "max_in_flight",
+            "card_ids"
+          ],
+          "properties": {
+            "schema": {
+              "const": "flow.read-only-sibling-policy/v1"
+            },
+            "max_in_flight": {
+              "enum": [
+                1,
+                2
+              ]
+            },
+            "card_ids": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "review-lens-security",
+                  "review-lens-correctness"
+                ]
+              }
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "max_in_flight": {
+                    "const": 2
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "card_ids": {
+                    "minItems": 2,
+                    "type": "array"
+                  }
+                }
+              }
+            }
+          ]
         }
       }
     },
@@ -127,17 +255,33 @@
       "additionalProperties": false,
       "minProperties": 1,
       "properties": {
-        "launch": { "type": "object" },
-        "description": { "type": "object" }
+        "launch": {
+          "type": "object"
+        },
+        "description": {
+          "type": "object"
+        }
       },
       "anyOf": [
         {
-          "required": ["launch"],
-          "properties": { "launch": { "type": "object" } }
+          "required": [
+            "launch"
+          ],
+          "properties": {
+            "launch": {
+              "type": "object"
+            }
+          }
         },
         {
-          "required": ["description"],
-          "properties": { "description": { "type": "object" } }
+          "required": [
+            "description"
+          ],
+          "properties": {
+            "description": {
+              "type": "object"
+            }
+          }
         }
       ]
     }

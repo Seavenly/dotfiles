@@ -534,6 +534,17 @@ test("autonomous cancellation closes a live delegate without admitting new work"
     // unresolved admitted effect continues to occupy global capacity.
     assert.equal(cancelledProjection.effects.find(effect => effect.effect_kind === "delegate").receipt, null);
     assert.equal(statusAutonomousFlowRuntime(runtime).delegates.active, 1);
+    const nextProposal = delegateCardProposal(description);
+    nextProposal.graph.cards[0].inputs.prompt += " - independent next run";
+    const next = runtime.launch(confirmedLaunchRequest(runtime.prepare(nextProposal)));
+    assert.ok(next.run_id);
+    runtime.command(runtime.query({ run_id: next.run_id }).legal_actions.find(action => action.decision === "approve"));
+    await ticks(8);
+    const waiting = runtime.query({ run_id: next.run_id });
+    assert.ok(waiting.legal_actions.some(action => action.type === "delegate_execute"));
+    assert.equal(waiting.effects.length, 0, "cancelled unresolved delegate still occupies the autonomous runner's global slot");
+    assert.equal(statusAutonomousFlowRuntime(runtime).delegates.available, 0);
+    stopAutonomousFlowRuntime(runtime);
   });
 
 test("autonomous runner observes a settling delegate and runs its newly ready operation",

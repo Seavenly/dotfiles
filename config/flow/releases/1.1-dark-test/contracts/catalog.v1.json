@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 40,
+  "catalog_version": 41,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -664,6 +664,19 @@
       "history": "append_only_old_result_records",
       "superseded": "superseded_producers_and_bindings_are_unusable",
       "gated_or_declined": "active_declarations_unchanged"
+    },
+    "read_only_siblings": {
+      "policy": "flow.read-only-sibling-policy/v1",
+      "authority": "RunAuthority",
+      "trusted_definition": "flow.definition/review/v1",
+      "maximum": 2,
+      "members": "confirmed_independent_read_only_lenses",
+      "resources": "exact_observed_WorkspaceAuthority",
+      "capacity_scope": "per_run_admission_and_separate_owner_runner_slots",
+      "pending_intents": "consume_slots_before_invocation",
+      "uncertainty": "blocks_new_admission",
+      "critic_join": "every_selected_lens_accepted",
+      "legacy_absence": "serial_without_identity_change"
     }
   },
   "predefined_flows": {
@@ -1350,7 +1363,9 @@
     "flow.spike-research-evidence/v2",
     "flow.spike-report/v2",
     "flow.validator/spike-research-evidence/v2",
-    "flow.validator/spike-report/v2"
+    "flow.validator/spike-report/v2",
+    "flow.read-only-sibling-policy/v1",
+    "flow.project-review-execution/v1"
   ],
   "run_plan": {
     "contract": "flow.run-plan/v1",

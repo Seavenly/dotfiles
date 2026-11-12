@@ -468,6 +468,14 @@ with lower-assurance evidence and residual gaps, but it has no mutation,
 publication, review, tracker, or prototype authority.
 _Avoid_: Production implementation, review run, deep investigation
 
+**Read-only sibling group**:
+The exact independent delegate cards a trusted predefined definition permits
+RunAuthority to admit together under an explicitly confirmed finite bound. Each
+member retains its own attempt, immutable route, observed workspace authority,
+settlement and retirement evidence. Owner runner capacity is a separate limit;
+read-only labels alone confer no admission authority.
+_Avoid_: Parallel flag, shared agent, unrestricted fan-out, runner slot grant
+
 **Authority-materialized delegate evidence**:
 The digest-bound envelope RunAuthority creates from accepted upstream delegate
 evidence for one declared dependent card. It is the only evidence context a

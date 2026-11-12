@@ -131,6 +131,19 @@ const PUBLIC_HOST_RUNNER = {
     "terminal_disposition",
   ],
 };
+const READ_ONLY_SIBLINGS = {
+  "policy": "flow.read-only-sibling-policy/v1",
+  "authority": "RunAuthority",
+  "trusted_definition": "flow.definition/review/v1",
+  "maximum": 2,
+  "members": "confirmed_independent_read_only_lenses",
+  "resources": "exact_observed_WorkspaceAuthority",
+  "capacity_scope": "per_run_admission_and_separate_owner_runner_slots",
+  "pending_intents": "consume_slots_before_invocation",
+  "uncertainty": "blocks_new_admission",
+  "critic_join": "every_selected_lens_accepted",
+  "legacy_absence": "serial_without_identity_change"
+};
 const AUTONOMOUS_RUNNER_QUERY = {
   projection: "flow.runtime-runner-status/v1",
   rejection: "flow.rejection/v1",
@@ -968,9 +981,13 @@ export async function loadContractCatalog({
       ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("quick spike flow contracts are incomplete");
   }
-  if (catalog.catalog_version === 40 && (!isDeepStrictEqual(catalog.predefined_flows?.["spike/v2"], NATIVE_QUICK_RESEARCH) ||
+  if (catalog.catalog_version >= 40 && (!isDeepStrictEqual(catalog.predefined_flows?.["spike/v2"], NATIVE_QUICK_RESEARCH) ||
       !["flow.definition/spike/v2", "flow.research-preparation-request/v1", "flow.research-source-packet/v1", "flow.research-input-safety-policy/v1", "flow.research-input-safety-rejection/v1", "flow.spike-research-evidence/v2", "flow.spike-report/v2", "flow.validator/spike-research-evidence/v2", "flow.validator/spike-report/v2"].every(contract => catalog.contracts.includes(contract)))) {
     throw new Error("supervised quick research contracts are incomplete");
+  }
+  if (catalog.catalog_version === 41 && (!isDeepStrictEqual(catalog.flow_runtime?.read_only_siblings, READ_ONLY_SIBLINGS) ||
+      ![READ_ONLY_SIBLINGS.policy, "flow.project-review-execution/v1"].every(contract => catalog.contracts.includes(contract)))) {
+    throw new Error("read-only sibling contracts are incomplete");
   }
   if (!CHECKPOINT_CONTRACTS.every((contract) =>
     catalog.contracts.includes(contract))) {
@@ -1184,9 +1201,9 @@ export async function loadContractCatalog({
   ].every((contract) => catalog.contracts.includes(contract))) {
     throw new Error("Work-domain resource safety contracts are incomplete");
   }
-  // Catalog 40 adds research inputs without relabeling policy-39 receipts.
+  // Catalogs 40 and 41 add research and sibling policy without relabeling policy-39 receipts.
   // Both immutable catalogs retain the exact legacy evidence policy identity.
-  const evidenceCatalogVersionMatches = [39, 40].includes(catalog.catalog_version) &&
+  const evidenceCatalogVersionMatches = [39, 40, 41].includes(catalog.catalog_version) &&
     EVIDENCE_SAFETY.catalog_id === "flow.contract-catalog/v1@39";
   if (!evidenceCatalogVersionMatches || !isDeepStrictEqual(
     catalog.flow_runtime?.evidence_safety,

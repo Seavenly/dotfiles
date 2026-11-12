@@ -289,7 +289,7 @@ access facts are not transferable evidence and do not carry paths, credentials,
 capability secrets, the prepared bundle, or ambient transcripts.
 When a predecessor join is declared, `predecessor_evidence` is the exact
 RunAuthority-materialized, issue-79-compatible evidence receipt and binding;
-the enclosing public catalog is `flow.contract-catalog/v1@40`, while the
+the enclosing public catalog is `flow.contract-catalog/v1@41`, while the
 unchanged legacy evidence-safety policy and transferable-evidence receipts bind
 exactly to `flow.contract-catalog/v1@39`.
 
@@ -446,3 +446,21 @@ GREEN-only command for supervised feature verify. Its separate
 `flow.operation/project-check/v2` runs after exact capture and supplies a bound
 result to critique, verification and seal. The v1 fixed Node test-first recipe
 and receipts are unchanged. See the [operator registration and recovery guide](../../docs/flow/project-checks.md).
+
+
+Explicit local review concurrency uses `flow.read-only-sibling-policy/v1` in the
+trusted prepared graph. Its confirmed security/correctness members have exact
+read-only WorkspaceAuthority references and independent attempts. The shared
+kernel/projection rule admits at most two recorded unsettled sibling intents;
+caller-shaped dynamic graphs, managed reusable delegates, mutating routes,
+unrelated effects and uncertain settlement cannot gain concurrency. The existing
+critic joins every selected accepted lens, including reverse-order completion.
+
+`flow start --delegate-capacity 2 --json` starts an explicitly selected owner
+runner with two delegate slots. An already-running capacity-one owner is refused
+and must be explicitly stopped after its original work settles. This is the
+owner runner's global bound, separate from RunAuthority's per-run group bound;
+manually issued public commands retain their existing semantics. Omitted review
+execution policy and startup flags retain old serial behavior and identities.
+Old generated clients stay pinned until the supported stopped/settled runtime
+upgrade; installing a frontend does not silently rebind their authority.

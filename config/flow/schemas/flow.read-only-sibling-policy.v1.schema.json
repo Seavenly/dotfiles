@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.read-only-sibling-policy.v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "max_in_flight",
+    "card_ids"
+  ],
+  "properties": {
+    "schema": {
+      "const": "flow.read-only-sibling-policy/v1"
+    },
+    "max_in_flight": {
+      "enum": [
+        1,
+        2
+      ]
+    },
+    "card_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "review-lens-security",
+          "review-lens-correctness"
+        ]
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "max_in_flight": {
+            "const": 2
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "card_ids": {
+            "minItems": 2,
+            "type": "array"
+          }
+        }
+      }
+    }
+  ]
+}

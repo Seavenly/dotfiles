@@ -32,7 +32,9 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 40);
+  assert.equal(catalog.catalog_version, 41);
+  assert.equal(catalog.flow_runtime.read_only_siblings.maximum, 2);
+  assert.equal(catalog.flow_runtime.read_only_siblings.authority, "RunAuthority");
   for (const contract of [
     "flow.release-manifest/v1",
     "flow.dark-opt-in/v1",

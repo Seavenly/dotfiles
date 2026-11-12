@@ -149,6 +149,17 @@ test("omitted review policy keeps the original serial fold shape and settlement 
   assert.ok(!fresh.legal_actions.some(action => action.type === "delegate_execute"));
 });
 
+test("explicit serial review selection still serializes its two confirmed lenses", () => {
+  const { run, initial } = parallelReviewFoldFixture({ maxInFlight: 1 });
+  const action = initial.legal_actions.find(value => value.card_id === "review-lens-security");
+  const intent = decideLifecycle(initial, action).effect_intents[0];
+  run.events.push({ type: "effect_intent_recorded", intent });
+  const fresh = foldRun(run);
+  assert.ok(!fresh.legal_actions.some(value => value.type === "delegate_execute"));
+  assert.equal(decideLifecycle(fresh, action).code, "stale_authority_watermark", "lost admission reply cannot admit the same physical attempt again");
+  assert.equal(fresh.effect_intents.length, 1);
+});
+
 test("pending siblings, uncertainty, route conflicts and unrelated effects remain fenced", () => {
   const { run, initial } = parallelReviewFoldFixture();
   const first = initial.legal_actions.find(action => action.card_id === "review-lens-security");
@@ -210,11 +221,11 @@ test("forged group routes, writable references, managed agents and third members
   }
 });
 
-function parallelReviewFoldFixture({ execution = true, definition = createReviewDefinition() } = {}) {
+function parallelReviewFoldFixture({ execution = true, definition = createReviewDefinition(), maxInFlight = 2 } = {}) {
   const candidate = reviewCandidate(), facts = reviewRuntimeFacts();
   const inputs = reviewInputsForCandidate(candidate);
   inputs.lenses = ["security", "correctness"];
-  if (execution) inputs.execution = { schema: "flow.read-only-sibling-policy/v1", max_in_flight: 2,
+  if (execution) inputs.execution = { schema: "flow.read-only-sibling-policy/v1", max_in_flight: maxInFlight,
     card_ids: ["review-lens-security", "review-lens-correctness"] };
   for (const role of ["security", "correctness", "critic"]) {
     const description = executionDescription({

@@ -233,6 +233,20 @@ test("release transition contracts validate the managed manifest and receipt", a
   }), false);
 });
 
+test("the published sibling policy schema accepts only finite confirmed local lens groups", async () => {
+  const schema = JSON.parse(await readFile(join(root, "schemas", "flow.read-only-sibling-policy.v1.schema.json"), "utf8"));
+  const validate = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
+  const policy = { schema: "flow.read-only-sibling-policy/v1", max_in_flight: 2,
+    card_ids: ["review-lens-security", "review-lens-correctness"] };
+  assert.equal(validate(policy), true, JSON.stringify(validate.errors));
+  for (const invalid of [
+    { ...policy, max_in_flight: 3 }, { ...policy, card_ids: ["review-lens-security"] },
+    { ...policy, card_ids: ["review-lens-security", "review-critic"] },
+    { ...policy, resource_authority: "caller" },
+  ]) assert.equal(validate(invalid), false);
+  assert.equal(validate({ ...policy, max_in_flight: 1 }), true);
+});
+
 test("public host schemas accept exact frames, status, and ordinary preparation", async () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const names = [

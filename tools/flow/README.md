@@ -209,6 +209,24 @@ envelope and correlation fields (`attempt_id`, `input_key`, `sequence`, and
 with different bytes. The prepared bundle and live mixed-harness qualification
 remain out of scope; the latter is tracked by issue #44.
 
+A trusted local review definition may additionally emit the closed
+`flow.read-only-sibling-policy/v1` graph policy for explicitly confirmed security
+and correctness lenses. Both projection and kernel use the same pure eligibility
+rule; each recorded pending intent consumes a per-run slot before any Adapter
+await. The exact registered definition is reproduced at launch, and admission
+and invocation check the current WorkspaceAuthority generation, mutation epoch,
+fingerprint, taint and claims. Dynamic graphs and managed reusable resources
+cannot opt in. Absent policy preserves the original serial identities.
+
+The autonomous runner separately applies its explicit owner-wide capacity,
+including cancelled but unsettled admitted delegates. Its next sibling command
+comes from a fresh authority projection. This runner limit does not replace the
+per-run authority bound or add a host scheduler to manual public commands.
+Cancellation resolves each stop intent back to its exact original admitted
+read-only delegate before inheriting that resource identity. Positive retirement
+of every admitted sibling is still required; a cancelled fold can conservatively
+retain quarantined dispositions and does not imply reuse or approval.
+
 GitHub review lenses and the critic select their exact remote pull-request
 snapshot and send no local workspace resource reference. They never inherit an
 ambient workspace path; local review targets alone receive a read-only
