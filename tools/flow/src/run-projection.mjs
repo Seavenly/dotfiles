@@ -1,4 +1,4 @@
-import { canAdmitReadOnlySibling } from "./read-only-sibling-policy.mjs";
+import { canAdmitReadOnlySibling, siblingCardIds } from "./read-only-sibling-policy.mjs";
 import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
 import {
   effectClassPolicy,
@@ -640,7 +640,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
         ...revisionActions,
         ...operationActions,
         ...delegateActions.filter(action => activePlan.execution_policy === undefined ||
-          !activePlan.execution_policy.card_ids.includes(action.card_id) || siblingActions.some(sibling => sibling.card_id === action.card_id)),
+          !siblingCardIds(activePlan).includes(action.card_id) || siblingActions.some(sibling => sibling.card_id === action.card_id)),
         ...delegateDispositionActions,
         ...subrunActions,
         ...recoveryActions,

@@ -1,3 +1,5 @@
+import { validateDeepResearchSelection, researchQuestion } from "./deep-research-contract.mjs";
+import { validateDeepTerminalSet } from "./deep-research-evidence.mjs";
 import { validateResearchSourcePacket } from "./research-source-packet.mjs";
 import { createHash } from "node:crypto";
 
@@ -203,11 +205,17 @@ export function validateDelegateTaskInputs(taskInputs, outputRequirements) {
     );
   }
   assertTransferableShape(taskInputs, "task_inputs");
+  const deepResearch = taskInputs.flow === "spike/v3" && taskInputs.role === "angle" && taskInputs.phase === "research" &&
+    [1, 2].includes(taskInputs.cycle) && researchQuestion(taskInputs.question?.text)?.id === taskInputs.question?.id &&
+    validateDeepResearchSelection({ schema: "flow.project-deep-research-selection/v1", angles: taskInputs.angles, parallel: 2, max_cycles: 2 }) &&
+    taskInputs.angles.some(angle => digest(angle) === digest(taskInputs.angle)) &&
+    outputRequirements?.schemas?.length === 1 && outputRequirements.schemas[0] === "flow.deep-research-angle-output/v1" &&
+    outputRequirements.validator_contracts?.length === 1 && outputRequirements.validator_contracts[0] === "flow.validator/deep-research-angle/v1" && validateResearchSourcePacket(taskInputs.packet);
   const research = taskInputs.flow === "spike/v2" && taskInputs.role === "researcher" && taskInputs.phase === "research" &&
     outputRequirements?.schemas?.length === 1 && outputRequirements.schemas[0] === "flow.spike-research-evidence/v2" &&
     outputRequirements.validator_contracts?.length === 1 && outputRequirements.validator_contracts[0] === "flow.validator/spike-research-evidence/v2" &&
     validateResearchSourcePacket(taskInputs.packet);
-  validateDelegateTransferValue(taskInputs, "task_inputs", research);
+  validateDelegateTransferValue(taskInputs, "task_inputs", research || deepResearch);
   return taskInputs;
 }
 
@@ -590,6 +598,12 @@ function normalizeOutputRequirements(requirements) {
 }
 
 function normalizePredecessorEvidence(evidence) {
+  if (evidence?.schema === "flow.deep-research-terminal-set/v1") {
+    if (!validateDeepTerminalSet(evidence)) throw new DelegateInputEnvelopeError("invalid_predecessor_evidence", "deep research terminal evidence is not exact");
+    assertTransferableShape(evidence, "predecessor_evidence");
+    validateDelegateTransferValue(projectDelegateTaskInputSafety(evidence), "predecessor_evidence");
+    return evidence;
+  }
   if (!isPlainRecord(evidence) ||
       !["flow.authority-materialized-evidence/v1",
         "flow.authority-materialized-delegate-evidence/v1"].includes(

@@ -156,11 +156,12 @@ function inspectPrepared(path) {
   process.stdout.write(`${JSON.stringify({ status: "inspection_only", prepared_file: realpathSync(path),
     bundle_digest: prepared.bundle_digest, confirmation_digest: prepared.confirmation_digest,
     ...(prepared.graph.execution_policy === undefined ? {} : { execution_policy: prepared.graph.execution_policy }),
+    ...(prepared.selection.inputs.deep === undefined ? {} : { deep: { selection: prepared.selection.inputs.deep, initial_graph_cards: prepared.graph.cards.length, max_graph_cards: prepared.explicit_facts.limits.max_cards, max_native_attempts: prepared.selection.inputs.deep.max_cycles * 3, whole_cycle_cards: { one_angle: 4, both_angles: 5 }, source_packet_digest: prepared.selection.inputs.packet.packet_digest } }),
     definition: prepared.definition.id, mode: prepared.selection.inputs.mode ?? "local_review",
     brief: prepared.selection.inputs.brief ?? null,
     project_check: prepared.selection.inputs.project_check ?? null, trust_posture: prepared.trust_posture,
     requested_authority: prepared.requested_authority, limits: prepared.explicit_facts.limits,
-    routes: prepared.graph.cards.filter(card => card.executor.kind === "delegate")
+    routes: (prepared.selection.inputs.deep === undefined ? prepared.graph.cards.filter(card => card.executor.kind === "delegate") : Object.entries(prepared.selection.inputs.delegation).map(([id, binding]) => ({ id, inputs: { description: binding.description } })))
       .map(card => ({ card_id: card.id, launch: card.inputs.description?.launch,
         executable: card.inputs.description?.backend?.executable,
         requested_permissions: card.inputs.description?.effective_authority })),

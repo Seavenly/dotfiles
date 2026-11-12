@@ -49,7 +49,7 @@ export function manualRunInspection(selection, runId) {
 export async function ownerStart(selection, call, emit) {
   const before = requirePublic(await call(selection, ["status", "--json"]), "Owner status");
   if (!["running", "stopped"].includes(before.state)) failRun(`Selected owner is ${before.state}; inspect its public status before continuing.`, "owner_unavailable", 1);
-  const parallel = selection.execution?.parallel === 2;
+  const parallel = selection.execution?.parallel === 2 || selection.deep?.parallel === 2;
   const requireCapacity = status => {
     if (parallel && !(status.runner?.delegates?.capacity >= 2)) failRun(
       `The selected owner has insufficient delegate capacity. After all original work settles, stop that exact owner with ${quoteShell(selection.client)} stop --json, then start it with ${quoteShell(selection.client)} start --delegate-capacity 2 --json. No running owner was reconfigured.`,
@@ -171,7 +171,7 @@ export async function submitDecision(selection, runId, selectedDigest, call) {
 }
 
 /** Observe only public projections; the owner remains the sole executor. */
-export async function followProjectSession(selection, runId, { options, call, emit, interactive, prompts, stdout, isInterrupted, finish, renderResult }) {
+export async function followProjectSession(selection, runId, { options, call, emit, interactive, prompts, stdout, isInterrupted, finish, renderResult, renderDecisionContext }) {
   let currentRun;
   const deadline = Date.now() + Number(options["--follow-seconds"] ?? 1800) * 1000;
     let previous, lastProjectionFile;
@@ -198,7 +198,7 @@ export async function followProjectSession(selection, runId, { options, call, em
         if (answer.trim()) {
           const action = decisions[Number(answer) - 1];
           if (!action) failRun("Choose a displayed authority action; no decision was submitted.");
-          stdout.write(JSON.stringify(action.command, null, 2) + "\n");
+          stdout.write(renderDecisionContext?.(currentRun, action) ?? JSON.stringify(action.command, null, 2) + "\n");
           if (["y", "yes"].includes((await prompts.question("Submit this exact decision? [y/N] ")).trim().toLowerCase())) { await submitDecision(selection, runId, action.digest, call); previous = null; continue; }
         }
         detachedChoice = true;

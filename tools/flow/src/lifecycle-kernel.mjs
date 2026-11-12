@@ -1,4 +1,5 @@
-import { canAdmitReadOnlySibling } from "./read-only-sibling-policy.mjs";
+import { createDeepTerminalSet } from "./deep-research-evidence.mjs";
+import { canAdmitReadOnlySibling, siblingCardIds } from "./read-only-sibling-policy.mjs";
 import { acceptedDelegateEvidenceEntry, transferableDelegateEvidence } from "./delegate-evidence.mjs";
 import { digest, freezeCanonical, isPlainRecord } from "./canonical.mjs";
 import { operationEffectIdentity } from "./effect-identity.mjs";
@@ -159,7 +160,7 @@ export function decideLifecycle(fold, command) {
     receipts: new Map((fold.effects ?? []).filter(effect => effect.receipt != null).map(effect => [effect.effect_id, effect.receipt])),
     observations: new Map((fold.effects ?? []).filter(effect => effect.last_observation != null).map(effect => [effect.effect_id, effect.last_observation])),
   }, command.card_id);
-  if (command.type === "delegate_execute" && fold.active_plan.execution_policy?.card_ids.includes(command.card_id) && !siblingAdmission) {
+  if (command.type === "delegate_execute" && siblingCardIds(fold.active_plan).includes(command.card_id) && !siblingAdmission) {
     return reject(fold, command, "read_only_sibling_not_actionable");
   }
   // Only an exact trusted read-only sibling admission can cross this barrier.
@@ -581,7 +582,7 @@ function delegateDecision(fold, command, delegate) {
         retry_resource_strategy: retryResourceStrategy,
       }),
       resource_claims: card.resource_claims,
-      ...(fold.active_plan.execution_policy?.card_ids.includes(card.id) ? {
+      ...(siblingCardIds(fold.active_plan).includes(card.id) ? {
         read_only_sibling_policy: { policy: fold.active_plan.execution_policy, plan_fingerprint: fold.plan_fingerprint },
       } : {}),
       terminal_disposition_policy: {
@@ -930,6 +931,11 @@ function bindOperationIdentity(identity, operationInput) {
 }
 
 function materializeAuthorityEvidence(fold, card) {
+  if (card?.inputs?.deep_terminal_card_ids !== undefined) {
+    if (fold.execution_policy_authority?.kind !== "predefined" || fold.execution_policy_authority?.definition?.id !== "spike/v3" || fold.execution_policy_authority?.definition?.contract !== "flow.definition/spike/v3") return { code: "untrusted_deep_terminal_join", evidence: null };
+    const evidence = createDeepTerminalSet(fold, card);
+    return evidence ? { code: null, evidence } : { code: "deep_terminal_evidence_unavailable", evidence: null };
+  }
   const inputs = card?.inputs ?? {};
   if (Object.hasOwn(inputs, "authority_materialized_evidence") ||
       Object.hasOwn(inputs, "predecessor_evidence") ||

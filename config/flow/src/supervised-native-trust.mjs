@@ -63,6 +63,7 @@ export function supervisedAdmissionIssue({ request, route, executionTrust, backe
   }
   if (!(route.flow === "feature" && ["verify", "test"].includes(route.mode) ||
       route.flow === "review" && route.mode === "local" ||
+      route.flow === "spike" && route.mode === "deep" && (request.schema === "flow.deep-research-preparation-request/v1" || request.prepared?.definition?.id === "spike/v3") ||
       route.flow === "spike" && route.mode === "quick" && (request.schema === "flow.research-preparation-request/v1" || request.prepared?.definition?.id === "spike/v2"))) {
     return "supervised_route_unsupported";
   }

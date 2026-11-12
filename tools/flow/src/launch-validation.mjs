@@ -1,3 +1,4 @@
+import { compileDeepResearchSelection } from "./deep-research-flow.mjs";
 import { compileReviewSelection } from "./review-flow.mjs";
 import { isDeepStrictEqual } from "node:util";
 
@@ -113,7 +114,7 @@ function assertPreparedBundle(prepared) {
     if (prepared.graph.execution_policy !== undefined) {
       // A caller cannot turn a dynamic graph into a trusted review by copying
       // its definition label. Reproduce the immutable trusted definition.
-      const expected = compileReviewSelection({ inputs: prepared.selection.inputs, explicit_facts: prepared.explicit_facts });
+      const expected = (prepared.definition.id === "spike/v3" ? compileDeepResearchSelection : compileReviewSelection)({ inputs: prepared.selection.inputs, explicit_facts: prepared.explicit_facts });
       if (digest(canonicalizeDynamicGraph(expected.graph)) !== digest(prepared.graph) ||
           digest(expected.requested_authority) !== digest(prepared.requested_authority) ||
           digest(expected.revision_templates) !== digest(prepared.revision_templates)) {

@@ -1,3 +1,6 @@
+import { createDeepResearchDefinition, createDeepResearchOutputValidators, DEEP_ANGLE_VALIDATOR, DEEP_CRITIC_VALIDATOR, DEEP_CYCLE_CONTRACT, DEEP_CYCLE_VALIDATOR, deepAngleCardId, deepCriticCardId } from "../../../tools/flow/src/deep-research-flow.mjs";
+import { createDeepCycleOperation } from "../../../tools/flow/src/deep-research-cycle.mjs";
+import { validateDeepResearchSelection } from "../../../tools/flow/src/deep-research-contract.mjs";
 import { readOnlySiblingPolicyIssue } from "../../../tools/flow/src/read-only-sibling-policy.mjs";
 import { createResearchDefinition, createResearchOutputValidators, RESEARCH_VALIDATOR, REPORT_VALIDATOR } from "../../../tools/flow/src/research-flow.mjs";
 import { validateResearchSourcePacket } from "../../../tools/flow/src/research-source-packet.mjs";
@@ -179,7 +182,7 @@ export function createProductionComposition({
     env,
   });
   operations = mergeRegistrations({
-    defaults: featureOperationRegistrations(featureOperations.operations),
+    defaults: { ...featureOperationRegistrations(featureOperations.operations), [DEEP_CYCLE_CONTRACT]: createDeepCycleOperation() },
     overrides: registeredOperations,
   });
   const definitions = mergeRegistrations({
@@ -187,6 +190,7 @@ export function createProductionComposition({
       "feature/v1": supervisedTrustPosture(createFeatureDefinition({ independentCritique: true }), executionTrust, { gitIdentity, projectCheck: featureTestCheck?.schema === "flow.production-project-check/v2" }),
       "review/v1": supervisedTrustPosture(createReviewDefinition(), executionTrust),
       "spike/v2": supervisedTrustPosture(createResearchDefinition(), executionTrust),
+      "spike/v3": supervisedTrustPosture(createDeepResearchDefinition(), executionTrust),
     },
     overrides: predefinedDefinitions,
   });
@@ -212,6 +216,7 @@ export function createProductionComposition({
     validators: mergeRegistrations({
       defaults: {
         ...createResearchOutputValidators(),
+        ...createDeepResearchOutputValidators(),
         [FEATURE_DELEGATE_OUTPUT_VALIDATOR]: {
           validate: validateDelegateOutput,
           evidenceSafety: validateDelegateEvidenceSafety,
@@ -327,6 +332,9 @@ export function createProductionComposition({
         return { available: valid && delegatedAgentPort.backend === "direct" && definitions["spike/v2"]?.contract === "flow.definition/spike/v2",
           source: "supervised_quick_research", contracts: ["flow.definition/spike/v2", "flow.delegated-agent-port/v1"], missing: valid ? [] : ["unlisted_research_executor"] };
       }
+      if (route?.flow === "spike" && route.mode === "deep" && (request?.schema === "flow.deep-research-preparation-request/v1" || request?.prepared?.definition?.id === "spike/v3")) {
+        return { available: delegatedAgentPort.backend === "direct" && definitions["spike/v3"]?.contract === "flow.definition/spike/v3", source: "supervised_deep_research", contracts: ["flow.definition/spike/v3", DEEP_CYCLE_CONTRACT], missing: [] };
+      }
       return {
         available: false,
         source: "production_composition",
@@ -335,14 +343,14 @@ export function createProductionComposition({
       };
     },
     isPreparationRequest(request) {
-      return request?.schema === "flow.research-preparation-request/v1" || request?.schema === PREPARATION_SCHEMA ||
+      return request?.schema === "flow.deep-research-preparation-request/v1" || request?.schema === "flow.research-preparation-request/v1" || request?.schema === PREPARATION_SCHEMA ||
         request?.brief !== undefined && request?.repository !== undefined;
     },
     async prepare(request, compileSelection) {
       if (typeof compileSelection !== "function") {
         throw new TypeError("production preparation requires the core compiler");
       }
-      const prepared = await (request?.schema === "flow.research-preparation-request/v1" ? buildResearchPreparationSelection : buildPreparationSelection)({
+      const prepared = await (request?.schema === "flow.deep-research-preparation-request/v1" ? buildDeepResearchPreparationSelection : request?.schema === "flow.research-preparation-request/v1" ? buildResearchPreparationSelection : buildPreparationSelection)({
         request,
         delegatedAgentPort,
         gitWorkspaceObservationAdapter,
@@ -381,7 +389,7 @@ export function createProductionComposition({
     beforeLaunch(request, authority) {
       const prepared = request?.prepared;
       const inputs = prepared?.selection?.inputs;
-      if (prepared?.definition?.id === "spike/v2") {
+      if (["spike/v2", "spike/v3"].includes(prepared?.definition?.id)) {
         if (!validateResearchSourcePacket(inputs?.packet)) throw new ProductionPreparationError("research_packet_changed", "Prepared source packet failed exact validation");
         const workspace = inputs.workspace, repository = resolveProductionWorkspace(workspace?.subject_id);
         const live = currentWorkspaceProjection(authority, workspace?.subject_id);
@@ -2151,6 +2159,33 @@ async function buildResearchPreparationSelection(options) {
       capability_envelopes: [], operation_contracts: [], validator_contracts: validators,
       resource_claims: [resource], block_observations: [], time_facts: timeAdapter.observe(), subject_generations: [{ schema: "flow.subject-generation/v1", contract: "work.workspace/v1", subject_id: workspace.subject_id, generation: workspace.generation, fingerprint: workspace.fingerprint }],
       elapsed_seconds: 0, limits: { max_cards: 2, max_revisions: 0, max_cards_per_revision: 0, max_capabilities: 0, max_resources: 1, max_elapsed_seconds: seconds } } } };
+}
+
+async function buildDeepResearchPreparationSelection(options) {
+  const { request, delegatedAgentPort, timeAdapter, runAuthority } = options;
+  if (!exactObject(request, ["schema", "repository", "packet", "deep", "limits", "routes"]) || !validateResearchSourcePacket(request.packet) || !validateDeepResearchSelection(request.deep)) throw new ProductionPreparationError("invalid_deep_research_request", "Select two exact safe angles and one immutable supplied source packet");
+  const { repositoryPath, workspace } = prepareProductionWorkspace(options);
+  const existing = currentWorkspaceProjection(runAuthority, workspace.subject_id);
+  if (existing && (existing.taint !== null || existing.claims.length)) throw new ProductionPreparationError("workspace_already_claimed", "Settle original workspace claims before research");
+  const delegation = {};
+  for (let cycle = 1; cycle <= request.deep.max_cycles; cycle++) {
+    for (const cardId of [...request.deep.angles.map(angle => deepAngleCardId(cycle, angle.angle_id)), deepCriticCardId(cycle)]) {
+      const validator = cardId.startsWith("deep-angle-") ? DEEP_ANGLE_VALIDATOR : DEEP_CRITIC_VALIDATOR;
+      delegation[cardId] = await describedRoute({ delegatedAgentPort, workspacePath: repositoryPath,
+        input: request.routes?.[cardId] ?? { harness: "codex", model: "gpt-6.1-sol", effort: "high", capability: "read-only", role: cardId },
+        capability: "read-only", role: cardId, flow: "spike/v3", validator });
+    }
+  }
+  const seconds = request.limits?.max_elapsed_seconds ?? 600;
+  if (!exactObject(request.limits ?? {}, ["max_elapsed_seconds", "max_revisions"]) || request.limits?.max_revisions !== request.deep.max_cycles - 1 || !Number.isSafeInteger(seconds) || seconds < 1 || seconds > 3600) throw new ProductionPreparationError("invalid_limits", "Deep research requires its exact shared elapsed and whole-cycle policy");
+  const validators = [DEEP_ANGLE_VALIDATOR, DEEP_CRITIC_VALIDATOR, "flow.validator/operation-receipt/v1", "flow.validator/checkpoint-decision/v1", DEEP_CYCLE_VALIDATOR];
+  const resource = { kind: "workspace", id: workspace.subject_id, generation: workspace.generation, mutation_epoch: workspace.mutation_epoch, fingerprint: workspace.fingerprint };
+  const bindings = Object.entries(delegation).map(([card_id, binding]) => ({ card_id, route: binding.route }));
+  return { selection: { schema: "flow.predefined-flow-selection/v1", definition: "spike/v3", inputs: { mode: "deep", packet: request.packet, deep: request.deep, workspace, delegation },
+    explicit_facts: { catalog_fingerprint: digest({ definition: "spike/v3", validators }), route_snapshot: { watermark: digest(bindings), bindings },
+      capability_envelopes: [], operation_contracts: [DEEP_CYCLE_CONTRACT, "flow.checkpoint/confirmation/v1"], validator_contracts: validators,
+      resource_claims: [resource], block_observations: [], time_facts: timeAdapter.observe(), subject_generations: [{ schema: "flow.subject-generation/v1", contract: "work.workspace/v1", subject_id: workspace.subject_id, generation: workspace.generation, fingerprint: workspace.fingerprint }],
+      elapsed_seconds: 0, limits: { max_cards: request.deep.max_cycles * 5, max_revisions: request.deep.max_cycles - 1, max_cards_per_revision: 5, max_capabilities: 0, max_resources: 1, max_elapsed_seconds: seconds } } } };
 }
 
 function currentWorkspaceProjection(runAuthority, subjectId) {

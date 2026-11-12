@@ -579,7 +579,7 @@ export function validateDynamicPlan(proposal, {
   [TRUSTED_SIBLING_COMPILATION]: policyDefinition = null,
 } = {}) {
   if (proposal?.graph?.execution_policy !== undefined &&
-      (policyDefinition?.id !== "review/v1" || policyDefinition?.contract !== "flow.definition/review/v1")) {
+      (![["review/v1", "flow.definition/review/v1"], ["spike/v3", "flow.definition/spike/v3"]].some(([id, contract]) => policyDefinition?.id === id && policyDefinition?.contract === contract))) {
     invalidPlan("untrusted_read_only_sibling_policy", "dynamic plans cannot grant sibling concurrency");
   }
   if (proposal?.schema !== "flow.dynamic-plan-proposal/v1") {

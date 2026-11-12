@@ -1,0 +1,52 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { digest } from '../../../tools/flow/src/canonical.mjs';
+import { executionDescription } from '../../../tools/flow/src/execution-contract.mjs';
+import { readResearchSourcePacket } from '../src/research-source-files.mjs';
+import { materializeDelegateInputEnvelope } from '../../../tools/flow/src/delegate-input-envelope.mjs';
+import { directOutputContract } from '../../../tools/flow/src/direct-output-contract.mjs';
+import { createFlowRuntime, closeFlowRuntime } from '../src/runtime.mjs';
+import { getWorkspaceAuthority } from '../../../tools/flow/src/work-authority.mjs';
+import { flowRuntimeAuthority } from '../src/production-runtime.mjs';
+import { foldRun } from '../../../tools/flow/src/run-projection.mjs';
+import { decideLifecycle } from '../../../tools/flow/src/lifecycle-kernel.mjs';
+import { compileDynamicPlan } from '../../../tools/flow/src/plan-compiler.mjs';
+const acknowledgment={schema:'flow.supervised-native-cli/v1',acknowledgment:'trust-official-cli-permissions'};
+function fixture(t) {
+ const root=mkdtempSync(join(tmpdir(),'research-prep-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const repository=join(root,'repository');mkdirSync(repository);writeFileSync(join(repository,'notes'),'Research fixture.\n');
+ const git=args=>execFileSync('/usr/bin/git',['-c','core.hooksPath=/dev/null','-c','commit.gpgSign=false','-c','user.name=Fixture','-c','user.email=fixture@example.test','-C',repository,...args],{env:{PATH:'/usr/bin:/bin',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_NOSYSTEM:'1'},encoding:'utf8'});
+ git(['init','-q','--initial-branch=main']);git(['add','.']);git(['commit','-qm','fixture']);
+ const files=[];for(let i=0;i<4;i++){const file=join(root,`source-${i}`);writeFileSync(file,(`Source ${i}: a stable bounded observation with unresolved comparison.\n`).repeat(600).slice(0,32768));files.push(file);}
+ const {packet}=readResearchSourcePacket({question:('Which observation follows from these supplied notes? ').repeat(100).slice(0,4096),sources:files});
+ const executable={path:'/usr/bin/true',version:'fixture-not-native-proof',sha256:'sha256:'+createHash('sha256').update(readFileSync('/usr/bin/true')).digest('hex')};
+ const port={backend:'direct',contract:'flow.delegated-agent-port/v1',async describe(request){const description=executionDescription({callerMetadata:request.caller_metadata??{},launch:{harness:'codex',model:'fixture-model',effort:'high',...request.launch,trust_posture:'supervised-native-cli'},backend:{contract:'flow.direct-task/v1',id:'direct',harness:'codex',adapter:'codex',adapter_version:'2',executable,native_session_strategy:'fresh_ephemeral',trust_contract:'flow.supervised-native-cli/v1'}});return {status:'compatible',description};}};
+ const runtime=createFlowRuntime({env:{FLOW_EXECUTION_TRUST:'supervised-native-cli',FLOW_REPOSITORY_ROOT:repository},authorityDirectory:join(root,'authority'),delegatedAgentPort:port,autonomous:false});t.after(()=>closeFlowRuntime(runtime));
+ return {root,repository,packet,runtime,port};
+}
+test('public preparation binds two independent deep angles, every future route and complete cycle card bounds',async t=>{
+ const f=fixture(t),deep={schema:'flow.project-deep-research-selection/v1',angles:[{angle_id:'angle:1',text:'Delivery guarantees'},{angle_id:'angle:2',text:'Integrity limitations'}],parallel:2,max_cycles:2};
+ const prepared=await f.runtime.prepare({schema:'flow.deep-research-preparation-request/v1',repository:f.repository,packet:f.packet,deep,limits:{max_elapsed_seconds:600,max_revisions:1},execution_trust:acknowledgment});
+ assert.equal(prepared.schema,'flow.prepared-run/v1',JSON.stringify(prepared));
+ assert.equal(prepared.definition.id,'spike/v3');
+ assert.equal(prepared.graph.cards.length,5);assert.equal(prepared.explicit_facts.limits.max_cards,10);
+ assert.equal(prepared.explicit_facts.route_snapshot.bindings.length,6);
+ const angles=prepared.graph.cards.filter(card=>card.inputs?.task_inputs?.role==='angle');assert.equal(angles.length,2);
+ for(const card of angles)assert.equal(card.inputs.task_inputs.packet.sources[3].content,f.packet.sources[3].content);
+ assert.deepEqual(prepared.requested_authority.mutations,['flow.research-cycle/v1']);assert.equal((await f.runtime.query({})).runs.length,0);
+ const run={run_id:'run:deep-fixture',prepared,events:[{type:'run_launched'}]};
+ const initial=foldRun(run),first=initial.legal_actions.find(action=>action.card_id==='deep-angle-1-cycle-1');
+ const stale=initial.legal_actions.find(action=>action.card_id==='deep-angle-2-cycle-1');assert.ok(first);assert.ok(stale);
+ const admitted=decideLifecycle(initial,first);assert.equal(admitted.schema,'flow.decision/v1');
+ run.events.push({type:'effect_intent_recorded',intent:admitted.effect_intents[0]});
+ const fresh=foldRun(run),second=fresh.legal_actions.find(action=>action.card_id===stale.card_id);assert.ok(second);
+ assert.equal(decideLifecycle(fresh,stale).code,'stale_authority_watermark');assert.equal(decideLifecycle(fresh,second).schema,'flow.decision/v1');
+ assert.ok(!fresh.legal_actions.some(action=>action.card_id==='deep-critic-cycle-1'));
+ const copied={schema:'flow.dynamic-plan-proposal/v1',graph:prepared.graph,requested_authority:prepared.requested_authority,explicit_facts:prepared.explicit_facts,revision_templates:[]};
+ assert.throws(()=>compileDynamicPlan(copied),error=>error.reason==='untrusted_read_only_sibling_policy');
+});

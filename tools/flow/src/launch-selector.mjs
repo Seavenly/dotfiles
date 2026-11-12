@@ -169,6 +169,7 @@ export function resolvePublicLaunchPolicy({
 export function classifyPublicRoute(value) {
   const prepared = value?.prepared;
   if (isPlainRecord(prepared)) return classifyPreparedRoute(prepared);
+  if (value?.schema === "flow.deep-research-preparation-request/v1") return { flow: "spike", mode: "deep" };
   if (value?.schema === "flow.research-preparation-request/v1") return { flow: "spike", mode: "quick" };
   if (value?.schema === "flow.feature-preparation-request/v1") {
     return { flow: "feature", mode: value.mode ?? "unknown" };
@@ -283,7 +284,7 @@ function classifyDefinitionRoute(definition, inputs = {}) {
           : "unknown",
     };
   }
-  if (["spike/v1", "spike/v2"].includes(definition)) {
+  if (["spike/v1", "spike/v2", "spike/v3"].includes(definition)) {
     return { flow: "spike", mode: inputs?.depth ?? inputs?.mode ?? "quick" };
   }
   if (definition === "epic/v1") return { flow: "epic", mode: "default" };

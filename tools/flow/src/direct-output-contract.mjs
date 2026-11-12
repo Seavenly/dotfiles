@@ -21,6 +21,11 @@ export function directOutputContract(intent) {
   } else if (task?.phase === "critique") {
     const source = JSON.parse(readFileSync(new URL("../../../config/flow/schemas/flow.feature-critique-output.v1.schema.json", import.meta.url), "utf8"));
     const { $id, $schema, ...shape } = source; schema = shape;
+  } else if (task?.flow === "spike/v3" && task.schema === "flow.delegate-task-inputs/v1" && ["angle", "critic"].includes(task.role) && intent.delegate_output_schemas?.length === 1 && intent.delegate_output_schemas[0] === (task.role === "angle" ? "flow.deep-research-angle-output/v1" : "flow.deep-research-critic-output/v1")) {
+    const source = JSON.parse(readFileSync(new URL(`../../../config/flow/schemas/flow.deep-research-${task.role}-output.v1.schema.json`, import.meta.url), "utf8"));
+    const { $id, $schema, ...shape } = source; schema = shape;
+    schema.properties.question_id = { const: task.question.id }; schema.properties.cycle = { const: task.cycle };
+    if (task.role === "angle") schema.properties.angle_id = { const: task.angle.angle_id };
   } else if (task?.flow === "spike/v2" && task.schema === "flow.delegate-task-inputs/v1" &&
       ["research", "synthesis"].includes(task.phase) &&
       intent.delegate_output_schemas?.length === 1 && intent.delegate_output_schemas[0] ===
