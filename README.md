@@ -247,7 +247,7 @@ incomplete, or foreign-environment phase keeps admission withheld.
 
 Canonical evidence crossing the delegate, artifact, or resource-handoff
 boundary is validated by the pure versioned evidence-safety contract in
-`tools/flow/src/evidence-safety.mjs`. Catalog v40 preserves the legacy policy
+`tools/flow/src/evidence-safety.mjs`. Catalog v41 preserves the legacy policy
 `flow.evidence-safety-policy/v1` and its exact receipt catalog identity
 `flow.contract-catalog/v1@39`. Quick research uses the distinct bounded input
 policy `flow.research-input-safety-policy/v1` for supplied source contents;
