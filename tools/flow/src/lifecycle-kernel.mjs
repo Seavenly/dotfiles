@@ -1,3 +1,4 @@
+import { canAdmitReadOnlySibling } from "./read-only-sibling-policy.mjs";
 import { acceptedDelegateEvidenceEntry, transferableDelegateEvidence } from "./delegate-evidence.mjs";
 import { digest, freezeCanonical, isPlainRecord } from "./canonical.mjs";
 import { operationEffectIdentity } from "./effect-identity.mjs";
@@ -152,9 +153,17 @@ export function decideLifecycle(fold, command) {
   const hasUnresolvedEffects = fold.effects?.some(
     ({ status }) => !["quarantined", "succeeded"].includes(status),
   );
-  // This one-operation slice serializes completion-changing commands behind
-  // effect settlement. Revisit the allow-list before admitting sibling effects.
-  if (hasUnresolvedEffects &&
+  const siblingAdmission = command.type === "delegate_execute" && canAdmitReadOnlySibling({
+    plan: fold.active_plan, authority: fold.execution_policy_authority, phase: fold.phase,
+    intents: fold.effect_intents,
+    receipts: new Map((fold.effects ?? []).filter(effect => effect.receipt != null).map(effect => [effect.effect_id, effect.receipt])),
+    observations: new Map((fold.effects ?? []).filter(effect => effect.last_observation != null).map(effect => [effect.effect_id, effect.last_observation])),
+  }, command.card_id);
+  if (command.type === "delegate_execute" && fold.active_plan.execution_policy?.card_ids.includes(command.card_id) && !siblingAdmission) {
+    return reject(fold, command, "read_only_sibling_not_actionable");
+  }
+  // Only an exact trusted read-only sibling admission can cross this barrier.
+  if (hasUnresolvedEffects && !siblingAdmission &&
       !["capability_grant", "recovery", "terminal_disposition"].includes(
         command.type,
       )) {
@@ -572,6 +581,9 @@ function delegateDecision(fold, command, delegate) {
         retry_resource_strategy: retryResourceStrategy,
       }),
       resource_claims: card.resource_claims,
+      ...(fold.active_plan.execution_policy?.card_ids.includes(card.id) ? {
+        read_only_sibling_policy: { policy: fold.active_plan.execution_policy, plan_fingerprint: fold.plan_fingerprint },
+      } : {}),
       terminal_disposition_policy: {
         schema: "flow.delegate-terminal-disposition-policy/v1",
         accepted_proofs: [

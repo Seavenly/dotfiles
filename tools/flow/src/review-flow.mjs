@@ -1,3 +1,4 @@
+import { readOnlySiblingPolicyIssue } from "./read-only-sibling-policy.mjs";
 import { isDirectDescription, directDescriptionIssue } from "./execution-contract.mjs";
 import {
   digest,
@@ -343,6 +344,7 @@ export function compileReviewSelection({ inputs, explicit_facts: explicitFacts }
     graph: {
       schema: "flow.run-plan/v1",
       cards,
+      ...(selection.execution === undefined ? {} : { execution_policy: selection.execution }),
     },
     requested_authority: {
       commands: [
@@ -459,6 +461,12 @@ export function validateReviewInputs(inputs, explicitFacts) {
       "review/v1 requires isolated finding-lens and critic routes",
     );
   }
+  if (inputs.execution !== undefined && (readOnlySiblingPolicyIssue(inputs.execution) !== null ||
+      targetKind !== "local" ||
+      digest([...inputs.execution.card_ids].sort()) !== digest(inputs.lenses.map(lens => `review-lens-${lens}`).sort()) ||
+      inputs.preparation_selection !== undefined && digest(inputs.preparation_selection.execution ?? null) !== digest(inputs.execution))) {
+    invalidReview("invalid_read_only_sibling_policy", "explicit review execution must bind exactly the selected local read-only lenses");
+  }
   const bindings = validateDelegation(inputs.delegation, inputs.lenses, explicitFacts);
   if (targetKind === "local" &&
       (!Array.isArray(explicitFacts.resource_claims) ||
@@ -524,6 +532,7 @@ export function validateReviewInputs(inputs, explicitFacts) {
     target,
     target_kind: targetKind,
     lenses: [...inputs.lenses].sort(),
+    ...(inputs.execution === undefined ? {} : { execution: inputs.execution }),
     delegation: bindings,
     finding_cap: findingCap,
     urgency,

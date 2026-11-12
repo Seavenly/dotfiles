@@ -530,7 +530,10 @@ test("autonomous cancellation closes a live delegate without admitting new work"
     assert.equal(cancelledProjection.phase, "cancelled");
     assert.equal(cancelledProjection.legal_actions.some(({ type }) =>
       type === "delegate_execute"), false);
-    assert.equal(statusAutonomousFlowRuntime(runtime).delegates.active, 0);
+    // Cancellation settlement is not the original delegate settlement. Its
+    // unresolved admitted effect continues to occupy global capacity.
+    assert.equal(cancelledProjection.effects.find(effect => effect.effect_kind === "delegate").receipt, null);
+    assert.equal(statusAutonomousFlowRuntime(runtime).delegates.active, 1);
   });
 
 test("autonomous runner observes a settling delegate and runs its newly ready operation",

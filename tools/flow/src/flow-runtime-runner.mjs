@@ -554,7 +554,7 @@ export function createFlowRuntimeRunner({
     let delegates = 0;
     let operations = 0;
     for (const projection of projections) {
-      if (projection.phase !== "active") continue;
+      // Cancelled runs can still own admitted workers until positive settlement.
       for (const effect of projection.effects ?? []) {
         if (effect.receipt !== null ||
             TERMINAL_EFFECT_STATUSES.has(effect.status)) continue;

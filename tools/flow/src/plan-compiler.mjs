@@ -1,3 +1,4 @@
+import { readOnlySiblingPlanIssue } from "./read-only-sibling-policy.mjs";
 import { isDirectDescription, directDescriptionIssue } from "./execution-contract.mjs";
 import {
   digest,
@@ -55,6 +56,7 @@ import {
 } from "./delegate-input-envelope.mjs";
 import { flowGrantIdsForDrovrCapability } from "./delegate-capabilities.mjs";
 
+const TRUSTED_SIBLING_COMPILATION = Symbol("trusted predefined sibling compilation");
 const EXECUTOR_KINDS = ["delegate", "operation", "checkpoint", "subrun"];
 const CHECKPOINT_CONTRACT = "flow.checkpoint/confirmation/v1";
 const CHECKPOINT_VALIDATOR = "flow.validator/checkpoint-decision/v1";
@@ -238,6 +240,7 @@ export function compilePredefinedFlowSelection(
   const validatedRevisionTemplates = validateDynamicPlan(proposal, {
     registeredOperations,
     allowUnboundResourceSelections: true,
+    [TRUSTED_SIBLING_COMPILATION]: registration.identity,
   });
 
   let requiredAuthorities;
@@ -262,6 +265,11 @@ export function compilePredefinedFlowSelection(
   }
 
   validatePreparedDelegateResourceBindings(proposal, requiredAuthorities);
+  if (proposal.graph.execution_policy !== undefined) {
+    const issue = readOnlySiblingPlanIssue(proposal.graph, { kind: "predefined",
+      definition: registration.identity, required_authorities: requiredAuthorities });
+    if (issue !== null) invalidPredefined(issue, "read-only sibling policy requires exact trusted review routes and observed workspace authority");
+  }
 
   const graph = canonicalizeDynamicGraph(proposal.graph);
   const explicitFacts = canonicalizeExplicitFacts(proposal.explicit_facts);
@@ -546,13 +554,34 @@ function validatePreparedDelegateResourceBindings(proposal, bindings) {
   }
 }
 
+/** Validate a retained envelope without granting the dynamic compiler an opt-in. */
+export function validatePreparedPlan(prepared) {
+  if (prepared.graph?.execution_policy !== undefined) {
+    const issue = readOnlySiblingPlanIssue(prepared.graph, prepared);
+    if (issue !== null) invalidPlan(issue, "prepared sibling policy lacks trusted definition and workspace bindings");
+  }
+  return validateDynamicPlan({
+    schema: "flow.dynamic-plan-proposal/v1", graph: prepared.graph,
+    requested_authority: prepared.requested_authority, explicit_facts: prepared.explicit_facts,
+    revision_templates: prepared.revision_templates,
+  }, {
+    allowUnboundResourceSelections: prepared.kind === "predefined",
+    [TRUSTED_SIBLING_COMPILATION]: prepared.kind === "predefined" ? prepared.definition : null,
+  });
+}
+
 export function validateDynamicPlan(proposal, {
   registeredOperations = null,
   skipRevisionTemplates = false,
   supersededCardIds = [],
   replacementBindings = new Map(),
   allowUnboundResourceSelections = false,
+  [TRUSTED_SIBLING_COMPILATION]: policyDefinition = null,
 } = {}) {
+  if (proposal?.graph?.execution_policy !== undefined &&
+      (policyDefinition?.id !== "review/v1" || policyDefinition?.contract !== "flow.definition/review/v1")) {
+    invalidPlan("untrusted_read_only_sibling_policy", "dynamic plans cannot grant sibling concurrency");
+  }
   if (proposal?.schema !== "flow.dynamic-plan-proposal/v1") {
     invalidPlan("invalid_proposal_contract", "dynamic plan proposal contract is invalid");
   }

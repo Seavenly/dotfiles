@@ -4,6 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { executionDescription } from "../src/execution-contract.mjs";
+import { decideLifecycle } from "../src/lifecycle-kernel.mjs";
+import { readOnlySiblingWorkspaceIssue } from "../src/read-only-sibling-policy.mjs";
+import { foldRun } from "../src/run-projection.mjs";
+import { validateLaunchRequest } from "../src/launch-validation.mjs";
 
 import { canonicalize, digest, idempotencyCommandDigest } from "../src/canonical.mjs";
 import {
@@ -12,6 +17,7 @@ import {
   snapshotRegisteredAuthorities,
 } from "../src/authority-bindings.mjs";
 import {
+  compileDynamicPlan,
   compilePredefinedFlowSelection,
   snapshotPredefinedDefinitions,
 } from "../src/plan-compiler.mjs";
@@ -94,6 +100,142 @@ import {
 
 const DIGEST = (byte) => `sha256:${byte.repeat(64)}`;
 const EMPTY_WATERMARK = DIGEST("0");
+
+test("confirmed read-only review siblings require a fresh action after the first recorded intent", () => {
+  const { run, initial } = parallelReviewFoldFixture();
+  const first = initial.legal_actions.find(action => action.card_id === "review-lens-security");
+  const staleSecond = initial.legal_actions.find(action => action.card_id === "review-lens-correctness");
+  const decision = decideLifecycle(initial, first);
+  assert.equal(decision.schema, "flow.decision/v1", JSON.stringify(decision));
+  run.events.push({ type: "effect_intent_recorded", intent: decision.effect_intents[0] });
+  const fresh = foldRun(run);
+  const second = fresh.legal_actions.find(action => action.card_id === "review-lens-correctness");
+  assert.ok(second, "the second confirmed sibling remains legal while the first intent is pending");
+  assert.equal(decideLifecycle(fresh, staleSecond).code, "stale_authority_watermark");
+  assert.equal(decideLifecycle(fresh, second).schema, "flow.decision/v1");
+  assert.ok(!fresh.legal_actions.some(action => action.card_id === "review-critic"));
+});
+
+test("caller-shaped dynamic policies cannot grant concurrency", () => {
+  const proposal = dynamicCheckpointProposal();
+  proposal.graph.execution_policy = { schema: "flow.read-only-sibling-policy/v1", max_in_flight: 2,
+    card_ids: ["review-lens-security", "review-lens-correctness"] };
+  assert.throws(() => compileDynamicPlan(proposal), error => error.reason === "untrusted_read_only_sibling_policy");
+});
+
+test("confirmed sibling launch reproduces the immutable trusted definition rather than trusting a copied label", () => {
+  const { prepared } = parallelReviewFoldFixture();
+  assert.equal(validateLaunchRequest(reviewLaunchRequest(prepared)).accepted, true);
+  const original = createReviewDefinition();
+  const forged = parallelReviewFoldFixture({ definition: { ...original, compile(context) {
+    const proposal = original.compile(context);
+    proposal.graph.cards.find(card => card.id === "review-critic").inputs.prompt = "caller replacement";
+    return proposal;
+  } } }).prepared;
+  const rejected = validateLaunchRequest(reviewLaunchRequest(forged));
+  assert.equal(rejected.accepted, false);
+  assert.equal(rejected.reason, "untrusted_read_only_sibling_policy");
+});
+
+test("omitted review policy keeps the original serial fold shape and settlement barrier", () => {
+  const { run, initial } = parallelReviewFoldFixture({ execution: false });
+  assert.equal(Object.hasOwn(initial, "execution_policy_authority"), false);
+  assert.equal(Object.hasOwn(initial.active_plan, "execution_policy"), false);
+  const action = initial.legal_actions.find(action => action.card_id === "review-lens-security");
+  const intent = decideLifecycle(initial, action).effect_intents[0];
+  assert.equal(Object.hasOwn(intent, "read_only_sibling_policy"), false);
+  run.events.push({ type: "effect_intent_recorded", intent });
+  const fresh = foldRun(run);
+  assert.ok(!fresh.legal_actions.some(action => action.type === "delegate_execute"));
+});
+
+test("pending siblings, uncertainty, route conflicts and unrelated effects remain fenced", () => {
+  const { run, initial } = parallelReviewFoldFixture();
+  const first = initial.legal_actions.find(action => action.card_id === "review-lens-security");
+  const intent = decideLifecycle(initial, first).effect_intents[0];
+  run.events.push({ type: "effect_intent_recorded", intent });
+  const pending = foldRun(run);
+  const second = pending.legal_actions.find(action => action.card_id === "review-lens-correctness");
+  const secondIntent = decideLifecycle(pending, second).effect_intents[0];
+  const both = foldRun({ ...run, events: [...run.events, { type: "effect_intent_recorded", intent: secondIntent }] });
+  assert.equal(both.effect_intents.length, 2);
+  assert.ok(!both.legal_actions.some(action => action.type === "delegate_execute"));
+  assert.equal(decideLifecycle(both, second).code, "stale_authority_watermark");
+  const invoked = foldRun({ ...run, events: [...run.events,
+    { type: "effect_intent_recorded", intent: secondIntent },
+    ...[intent, secondIntent].map(value => ({ type: "effect_invocation_started", effect_id: value.effect_id })),
+  ] });
+  const cancelled = decideLifecycle(invoked, invoked.legal_actions.find(action => action.type === "cancel"));
+  assert.equal(cancelled.effect_intents.length, 2, "both admitted siblings receive their own cancellation intent");
+  assert.equal(new Set(cancelled.effect_intents.map(effect => effect.delegate_effect_id)).size, 2);
+  assert.ok(cancelled.events[0].resource_dispositions.every(value => value.disposition === "quarantined"), "invoked siblings retain the shared claim until positive settlement");
+  for (const conflicting of [
+    { ...intent, effect_kind: "operation", card_id: "unrelated" },
+    { ...intent, route_binding: { ...intent.route_binding, agent_id: "different" } },
+  ]) {
+    const blocked = foldRun({ ...run, events: [run.events[0], { type: "effect_intent_recorded", intent: conflicting }] });
+    assert.ok(!blocked.legal_actions.some(action => action.type === "delegate_execute"));
+  }
+  const uncertain = foldRun({ ...run, events: [...run.events, { type: "effect_observation_recorded", effect_id: intent.effect_id,
+    observation: { schema: "flow.effect-observation/v1", effect_id: intent.effect_id, idempotency_key: intent.idempotency_key,
+      presence: "indeterminate", causation: null, provider_observation: { schema: "flow.provider-observation/v1", status: "uncertain_external_outcome" } } }] });
+  assert.ok(!uncertain.legal_actions.some(action => action.type === "delegate_execute"));
+});
+
+test("read-only sharing requires exact current workspace authority and excludes held or tainted claims", () => {
+  const git = { head: "fixture" };
+  const claim = { id: "workspace:fixture", generation: 2, mutation_epoch: 3, fingerprint: digest({ git }) };
+  const workspace = { schema: "work.workspace-projection/v1", subject_id: claim.id, generation: 2, mutation_epoch: 3, git, claims: [], taint: null };
+  assert.equal(readOnlySiblingWorkspaceIssue(workspace, claim), null);
+  for (const changed of [{ generation: 4 }, { mutation_epoch: 5 }, { git: { head: "changed" } }]) {
+    assert.equal(readOnlySiblingWorkspaceIssue({ ...workspace, ...changed }, claim), "workspace_claim_stale");
+  }
+  for (const changed of [{ claims: [{ holder: "other" }] }, { taint: { reason: "uncertain" } }]) {
+    assert.equal(readOnlySiblingWorkspaceIssue({ ...workspace, ...changed }, claim), "workspace_claim_conflict");
+  }
+  assert.equal(readOnlySiblingWorkspaceIssue(null, claim), "workspace_claim_missing");
+});
+
+test("forged group routes, writable references, managed agents and third members cannot admit siblings", () => {
+  const { run } = parallelReviewFoldFixture();
+  for (const mutate of [
+    plan => { plan.execution_policy.card_ids.push("review-critic"); },
+    plan => { plan.cards.find(card => card.id === "review-lens-security").inputs.resource_references[0].access = "workspace_write"; },
+    plan => { plan.cards.find(card => card.id === "review-lens-security").inputs.managed_agent = {}; },
+    plan => { plan.cards.find(card => card.id === "review-lens-security").resource_claims[0].generation += 1; },
+  ]) {
+    const prepared = structuredClone(run.prepared); mutate(prepared.graph);
+    const rejected = foldRun({ ...run, prepared });
+    assert.ok(!rejected.legal_actions.some(action => action.type === "delegate_execute"));
+  }
+});
+
+function parallelReviewFoldFixture({ execution = true, definition = createReviewDefinition() } = {}) {
+  const candidate = reviewCandidate(), facts = reviewRuntimeFacts();
+  const inputs = reviewInputsForCandidate(candidate);
+  inputs.lenses = ["security", "correctness"];
+  if (execution) inputs.execution = { schema: "flow.read-only-sibling-policy/v1", max_in_flight: 2,
+    card_ids: ["review-lens-security", "review-lens-correctness"] };
+  for (const role of ["security", "correctness", "critic"]) {
+    const description = executionDescription({
+      launch: { harness: "codex", model: "fixture", role, capability: "read-only" },
+      callerMetadata: {}, backend: { contract: "flow.direct-task/v1", id: "direct", harness: "codex",
+        adapter: "codex", adapter_version: "fixture", executable: { path: "/owned/fixture", version: "fixture", sha256: DIGEST("1") },
+        native_session_strategy: "fresh_ephemeral" },
+    });
+    const binding = { description, route: reviewRoute(`agent:${role}`, description) };
+    if (role === "critic") inputs.delegation.critic = binding;
+    else inputs.delegation.lenses[role] = binding;
+  }
+  inputs.preparation_facts = reviewPreparationFactsFor(candidate, inputs);
+  const runtime = createFlowRuntime({ runAuthority: createInMemoryRunAuthority(),
+    registeredAuthorities: shippedAuthorityRegistrations({ current: shippedAuthorityStateFromFacts(facts) }),
+    predefinedDefinitions: { "review/v1": definition } });
+  const prepared = runtime.prepare({ schema: "flow.predefined-flow-selection/v1", definition: "review/v1", inputs, explicit_facts: facts });
+  const run = { run_id: "run:parallel-fixture", prepared, events: [{ type: "run_launched" }] };
+  const initial = foldRun(run);
+  return { run, initial, prepared };
+}
 
 function withReviewRecordRetryCapacity(definition) {
   return {

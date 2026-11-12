@@ -49,12 +49,21 @@ export function manualRunInspection(selection, runId) {
 export async function ownerStart(selection, call, emit) {
   const before = requirePublic(await call(selection, ["status", "--json"]), "Owner status");
   if (!["running", "stopped"].includes(before.state)) failRun(`Selected owner is ${before.state}; inspect its public status before continuing.`, "owner_unavailable", 1);
+  const parallel = selection.execution?.parallel === 2;
+  const requireCapacity = status => {
+    if (parallel && !(status.runner?.delegates?.capacity >= 2)) failRun(
+      `The selected owner has insufficient delegate capacity. After all original work settles, stop that exact owner with ${quoteShell(selection.client)} stop --json, then start it with ${quoteShell(selection.client)} start --delegate-capacity 2 --json. No running owner was reconfigured.`,
+      "owner_delegate_capacity_insufficient", 1);
+  };
+  if (before.state === "running") requireCapacity(before);
   emit({ schema: "flow.project-run-owner/v1", state: before.state,
     recovery_disclosure: "Starting/reusing this exact owner may recover previously authorized work. A new task still requires exact launch confirmation." });
   // Public start is also the runtime/module/check identity fence for a running
   // owner. Status alone cannot establish compatible reuse on a shared authority.
-  const result = requirePublic(await call(selection, ["start", "--json"]), "Owner start/reuse");
+  const result = requirePublic(await call(selection, parallel
+    ? ["start", "--delegate-capacity", "2", "--json"] : ["start", "--json"]), "Owner start/reuse");
   if (result.state !== "running") failRun(`Selected owner did not become running (${result.state}).`, "owner_unavailable", 1);
+  requireCapacity(result);
   return before.state === "stopped" && result.started !== false;
 }
 

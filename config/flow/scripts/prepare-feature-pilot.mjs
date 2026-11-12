@@ -17,7 +17,7 @@ try {
   if (command === "setup") setup(args);
   else if (command === "inspect-prepared" && args.length === 1) inspectPrepared(args[0]);
   else if (command === "accept-prepared" && args.length === 2) acceptPrepared(...args);
-  else if (command === "review-request" && args.length === 2) reviewRequest(...args);
+  else if (command === "review-request" && args.length >= 2) reviewRequest(args[0], args[1], args.slice(2));
   else throw new Error("Usage: prepare-feature-pilot.mjs setup [--mode test|verify] [--parent DIRECTORY] [--execution-trust supervised-native-cli --codex-executable ABSOLUTE_PATH]\n       prepare-feature-pilot.mjs review-request PILOT_DIRECTORY PRODUCER_RUN_ID");
 } catch (error) {
   process.stderr.write(`${error.message}\n`);
@@ -155,6 +155,7 @@ function inspectPrepared(path) {
   const prepared = readPrepared(path);
   process.stdout.write(`${JSON.stringify({ status: "inspection_only", prepared_file: realpathSync(path),
     bundle_digest: prepared.bundle_digest, confirmation_digest: prepared.confirmation_digest,
+    ...(prepared.graph.execution_policy === undefined ? {} : { execution_policy: prepared.graph.execution_policy }),
     definition: prepared.definition.id, mode: prepared.selection.inputs.mode ?? "local_review",
     brief: prepared.selection.inputs.brief ?? null,
     project_check: prepared.selection.inputs.project_check ?? null, trust_posture: prepared.trust_posture,
@@ -166,7 +167,19 @@ function inspectPrepared(path) {
     instruction: "Inspect the complete retained confirmation before accepting this exact prepared file. This summary grants no authority." }, null, 2)}\n`);
 }
 
-function reviewRequest(directory, runId) {
+function reviewRequest(directory, runId, options = []) {
+  const explicit = options.length > 0;
+  const selectedLenses = [];
+  let parallel = 1, seenParallel = false;
+  for (let index = 0; index < options.length; index += 2) {
+    const flag = options[index], value = options[index + 1];
+    if (flag === "--lens" && ["security", "correctness"].includes(value) && !selectedLenses.includes(value)) selectedLenses.push(value);
+    else if (flag === "--parallel" && ["1", "2"].includes(value) && !seenParallel) { parallel = Number(value); seenParallel = true; }
+    else throw new Error("Use unique --lens security|correctness and one --parallel 1|2");
+  }
+  const lenses = selectedLenses.length ? ["security", "correctness"].filter(lens => selectedLenses.includes(lens)) : ["security"];
+  if (parallel > lenses.length) throw new Error("Parallel 2 requires both security and correctness lenses");
+  const execution = { schema: "flow.read-only-sibling-policy/v1", max_in_flight: parallel, card_ids: lenses.map(lens => `review-lens-${lens}`) };
   directory = realpathSync(directory);
   if (!/^run:[a-f0-9]{64}$/u.test(runId)) throw new Error("Use the exact run_id returned by feature launch");
   const pilot = json(join(directory, "pilot.json"));
@@ -184,8 +197,9 @@ function reviewRequest(directory, runId) {
   if (candidate.schema !== "work.review-candidate-projection/v1" || candidate.status !== "sealed" || candidate.candidate?.candidate_id !== run.review_candidate_reference.candidate_id || candidate.candidate_fingerprint !== candidate.candidate?.candidate_fingerprint) throw new Error("Candidate is not sealed and exact");
   const target = { candidate_id: candidate.candidate.candidate_id, candidate_fingerprint: candidate.candidate_fingerprint };
   const selection = {
-    schema: "flow.review-preparation-selection/v1", target, lenses: ["security"],
-    routes: { lenses: { security: { launch: { harness: "codex", role: "lens:security", capability: "read-only" } } }, critic: { launch: { harness: "codex", role: "critic", capability: "read-only" } } },
+    schema: "flow.review-preparation-selection/v1", target, lenses,
+    ...(explicit ? { execution } : {}),
+    routes: { lenses: Object.fromEntries(lenses.map(lens => [lens, { launch: { harness: "codex", role: `lens:${lens}`, capability: "read-only" } }])), critic: { launch: { harness: "codex", role: "critic", capability: "read-only" } } },
   };
   const facts = query({ schema: "flow.query/v1", query: "review_preparation_facts", ...target, selection });
   if (facts.schema !== "flow.review-preparation-facts/v1" || facts.candidate?.candidate_id !== target.candidate_id || facts.candidate?.candidate_fingerprint !== target.candidate_fingerprint) throw new Error("Review preparation facts do not bind the exact candidate");
@@ -201,7 +215,8 @@ function reviewRequest(directory, runId) {
       schema: "flow.review-request/v1",
       target: { schema: "flow.review-local-candidate/v1", candidate: candidate.candidate, candidate_fingerprint: target.candidate_fingerprint, candidate_authority_watermark: candidate.watermark, lifecycle_generation: candidate.generation },
       lenses: selection.lenses, preparation_selection: selection, preparation_facts: facts,
-      delegation: { schema: "flow.review-delegation-bindings/v1", lenses: { security: binding("review-lens-security") }, critic: binding("review-critic") },
+      ...(explicit ? { execution } : {}),
+      delegation: { schema: "flow.review-delegation-bindings/v1", lenses: Object.fromEntries(lenses.map(lens => [lens, binding(`review-lens-${lens}`)])), critic: binding("review-critic") },
     },
     ...(pilot.execution_trust ? { execution_trust: pilot.execution_trust } : {
       dark_opt_in: json(join(directory, "prepare-request.json")).dark_opt_in,

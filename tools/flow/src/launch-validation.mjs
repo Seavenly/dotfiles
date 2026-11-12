@@ -1,3 +1,4 @@
+import { compileReviewSelection } from "./review-flow.mjs";
 import { isDeepStrictEqual } from "node:util";
 
 import {
@@ -12,8 +13,9 @@ import {
   canonicalizeRevisionTemplates,
   canonicalizePredefinedSelection,
   DynamicPlanValidationError,
+  PredefinedFlowValidationError,
   predefinedRoutes,
-  validateDynamicPlan,
+  validatePreparedPlan,
 } from "./plan-compiler.mjs";
 import {
   createDynamicPlanConfirmation,
@@ -107,20 +109,19 @@ function assertPreparedBundle(prepared) {
     invalidLaunch("plan_fingerprint_mismatch", "prepared plan fingerprint mismatch");
   }
   try {
-    validateDynamicPlan({
-      schema: "flow.dynamic-plan-proposal/v1",
-      graph: prepared.graph,
-      requested_authority: prepared.requested_authority,
-      explicit_facts: prepared.explicit_facts,
-      revision_templates: prepared.revision_templates,
-    }, {
-      // Predefined bundles carry the authority bindings that were prepared
-      // and digest-bound before confirmation. Dynamic callers have no such
-      // bindings and therefore keep the fail-closed resource policy.
-      allowUnboundResourceSelections: prepared.kind === "predefined",
-    });
+    validatePreparedPlan(prepared);
+    if (prepared.graph.execution_policy !== undefined) {
+      // A caller cannot turn a dynamic graph into a trusted review by copying
+      // its definition label. Reproduce the immutable trusted definition.
+      const expected = compileReviewSelection({ inputs: prepared.selection.inputs, explicit_facts: prepared.explicit_facts });
+      if (digest(canonicalizeDynamicGraph(expected.graph)) !== digest(prepared.graph) ||
+          digest(expected.requested_authority) !== digest(prepared.requested_authority) ||
+          digest(expected.revision_templates) !== digest(prepared.revision_templates)) {
+        invalidLaunch("untrusted_read_only_sibling_policy", "prepared graph is not the trusted selected review definition");
+      }
+    }
   } catch (error) {
-    if (error instanceof DynamicPlanValidationError) {
+    if (error instanceof DynamicPlanValidationError || error instanceof PredefinedFlowValidationError) {
       invalidLaunch(error.reason, error.message);
     }
     throw error;

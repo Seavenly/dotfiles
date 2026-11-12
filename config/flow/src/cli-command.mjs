@@ -256,7 +256,19 @@ async function runLifecycle(command, { env, ownerOptions, stderr, stdout }) {
   try {
     let result;
     if (command.type === "start") {
-      result = await startFlowOwner({ env, ...ownerOptions });
+      result = await startFlowOwner({ env, ...ownerOptions,
+        ...(command.delegateCapacity === undefined ? {} : {
+          runnerOptions: { ...ownerOptions?.runnerOptions, delegateCapacity: command.delegateCapacity },
+        }),
+      });
+      if (command.delegateCapacity !== undefined && result.state === "running") {
+        result = await includeRunnerStatus(result, { env, ownerOptions });
+        if (!(result.runner?.delegates?.capacity >= command.delegateCapacity)) {
+          const error = new Error("Existing owner capacity is insufficient; stop the settled owner explicitly before restarting with the requested capacity.");
+          error.code = "owner_delegate_capacity_insufficient";
+          throw error;
+        }
+      }
     } else if (command.type === "status") {
       result = await statusFlowOwner({ env, ...ownerOptions });
       result = await includeRunnerStatus(result, { env, ownerOptions });
@@ -383,6 +395,10 @@ function isRecord(value) {
 
 function parseLifecycle(args) {
   if (!["start", "status", "stop"].includes(args[0])) return null;
+  if (args[0] === "start" && args.length === 4 && args[1] === "--delegate-capacity" &&
+      ["1", "2"].includes(args[2]) && args[3] === "--json") {
+    return { type: "start", delegateCapacity: Number(args[2]) };
+  }
   if (args.length === 1 || args.length === 2 && args[1] === "--json") {
     return { type: args[0] };
   }

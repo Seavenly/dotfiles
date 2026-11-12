@@ -1,3 +1,4 @@
+import { readOnlySiblingPolicyIssue } from "../../../tools/flow/src/read-only-sibling-policy.mjs";
 import { createResearchDefinition, createResearchOutputValidators, RESEARCH_VALIDATOR, REPORT_VALIDATOR } from "../../../tools/flow/src/research-flow.mjs";
 import { validateResearchSourcePacket } from "../../../tools/flow/src/research-source-packet.mjs";
 import { PROJECT_CHECK_CONTRACT, PROJECT_CHECK_VALIDATOR } from "../../../tools/flow/src/project-check.mjs";
@@ -1463,6 +1464,10 @@ function reviewPreparationSelection(request) {
       "review preparation requires one exact lens and route selection",
     );
   }
+  if (selection.execution !== undefined && (readOnlySiblingPolicyIssue(selection.execution) !== null ||
+      digest([...selection.execution.card_ids].sort()) !== digest(selection.lenses.map(lens => `review-lens-${lens}`).sort()))) {
+    return rejectedReviewPreparation("invalid_read_only_sibling_policy", "execution policy must bind the exact selected review lenses");
+  }
   const lensKeys = Object.keys(selection.routes.lenses);
   if (lensKeys.some((lens) => !selection.lenses.includes(lens)) ||
       selection.lenses.some((lens) => !Object.hasOwn(selection.routes.lenses, lens))) {
@@ -1483,6 +1488,7 @@ function reviewPreparationSelection(request) {
   return {
     accepted: true,
     lenses: [...selection.lenses].sort(),
+    ...(selection.execution === undefined ? {} : { execution: selection.execution }),
     routes: {
       lenses: Object.fromEntries([...selection.lenses].sort().map((lens) => [
         lens,

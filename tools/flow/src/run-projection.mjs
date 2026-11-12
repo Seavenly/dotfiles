@@ -1,3 +1,4 @@
+import { canAdmitReadOnlySibling } from "./read-only-sibling-policy.mjs";
 import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
 import {
   effectClassPolicy,
@@ -616,11 +617,19 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       expected_watermark: watermark,
     }] : [];
   const hasUnresolvedEffects = effectIntents.size > effectReceipts.size;
+  const executionPolicyAuthority = activePlan.execution_policy === undefined ? undefined : {
+    kind: run.prepared.kind, definition: run.prepared.definition, required_authorities: run.prepared.required_authorities,
+  };
+  const siblingActions = executionPolicyAuthority === undefined ? [] : delegateActions.filter(action => canAdmitReadOnlySibling({
+    plan: activePlan, authority: executionPolicyAuthority, phase, intents: [...effectIntents.values()],
+    receipts: effectReceipts, observations: effectObservations,
+  }, action.card_id));
   const legalActions = phase === "cancelled"
     ? recoveryActions
     : phase === "active"
     ? hasUnresolvedEffects
       ? [
+          ...siblingActions,
           ...capabilityActions,
           ...recoveryActions,
           ...cancellationActions,
@@ -630,7 +639,8 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
         ...capabilityActions,
         ...revisionActions,
         ...operationActions,
-        ...delegateActions,
+        ...delegateActions.filter(action => activePlan.execution_policy === undefined ||
+          !activePlan.execution_policy.card_ids.includes(action.card_id) || siblingActions.some(sibling => sibling.card_id === action.card_id)),
         ...delegateDispositionActions,
         ...subrunActions,
         ...recoveryActions,
@@ -903,6 +913,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     current_revision: currentRevision,
     revisions,
     active_plan: activePlan,
+    ...(executionPolicyAuthority === undefined ? {} : { execution_policy_authority: executionPolicyAuthority }),
     superseded_cards: supersededCards,
     cards,
     blocks,

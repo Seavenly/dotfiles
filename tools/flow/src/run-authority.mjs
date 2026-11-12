@@ -1,3 +1,4 @@
+import { readOnlySiblingWorkspaceIssue } from "./read-only-sibling-policy.mjs";
 import { isProjectCheckAbsenceReceipt, validateProjectCheckReceipt, PROJECT_CHECK_CONTRACT } from "./project-check.mjs";
 import { validateFeatureCaptureReceipt, FEATURE_CAPTURE_OPERATION_CONTRACT } from "./feature-capture.mjs";
 import { isDeepStrictEqual } from "node:util";
@@ -1604,6 +1605,9 @@ export function createDurableRunAuthority({
               runOwnership: currentFold.run_ownership,
               runId: canonicalCommand.run_id,
             }));
+          for (const intent of effectIntents) {
+            if (intent.read_only_sibling_policy !== undefined) assertEffectWorkspaceAuthority(database, intent);
+          }
           appendAuthorityEvents(database, {
             streamId: canonicalCommand.run_id,
             streamKind: "run",
@@ -4565,6 +4569,14 @@ function readStream(database, streamId) {
 }
 
 function assertEffectWorkspaceAuthority(database, intent) {
+  if (intent.read_only_sibling_policy !== undefined) {
+    for (const claim of intent.resource_claims ?? []) {
+      const identity = workStreamIdentity("work.workspace/v1", claim.id);
+      const projection = identity ? readStream(database, identity.streamId)?.fold ?? null : null;
+      const issue = readOnlySiblingWorkspaceIssue(projection, claim);
+      if (issue !== null) throw new AuthorityFenceError(issue, "read-only sibling workspace authority changed before admission or invocation");
+    }
+  }
   const readOnlyWorkspaceClaimIds = delegateReadOnlyWorkspaceClaimIds(intent);
   const workspaceClaims = (intent?.resource_claims ?? [])
     .filter(({ kind, id }) => kind === "workspace" &&
