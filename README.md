@@ -458,7 +458,9 @@ no tests, owner or model work. Continue with
 task, follow implementation/check/critique progress, and act on fresh authority
 decisions without assembling JSON.
 Use [`flow-supervised review`](docs/flow/guided-review.md) for a separately
-confirmed independent review of the exact retained candidate.
+confirmed independent review of the exact retained candidate. Explicit
+`--lens security --lens correctness --parallel 2` selects two read-only lenses
+and one fresh critic; the original security-only review remains the default.
 Use [`flow-supervised research`](docs/flow/guided-research.md) for a bounded
 question over explicit local source files. `init --purpose research` needs no
 feature brief or project check. Two separately routed read-only delegates produce

@@ -22,12 +22,33 @@ export function reviewPolicy(options) {
   return { max_elapsed_seconds: seconds, max_revisions: revisions };
 }
 
-function selectionIdentity(client, producerId, target, policy) {
+/** An explicit choice is separate from historical limits and intent identities. */
+export function reviewExecution(options) {
+  if (options["--lens"] === undefined && options["--parallel"] === undefined) return undefined;
+  if (options["--parallel"] !== undefined && !["1", "2"].includes(options["--parallel"])) failRun("Use --parallel 1 or 2 for the confirmed read-only lens bound.");
+  return validateReviewExecution({ schema: "flow.project-review-execution/v1",
+    lenses: options["--lens"] ?? ["security"], parallel: Number(options["--parallel"] ?? 1) });
+}
+
+function validateReviewExecution(execution) {
+  if (!execution || Object.keys(execution).sort().join(",") !== "lenses,parallel,schema" ||
+      execution.schema !== "flow.project-review-execution/v1" || !Array.isArray(execution.lenses) ||
+      execution.lenses.length < 1 || execution.lenses.length > 2 || new Set(execution.lenses).size !== execution.lenses.length ||
+      execution.lenses.some(lens => !["security", "correctness"].includes(lens))) failRun("Choose at most two distinct --lens security or --lens correctness values.");
+  if (![1, 2].includes(execution.parallel)) failRun("Use --parallel 1 or 2 for the confirmed read-only lens bound.");
+  if (execution.parallel === 2 && execution.lenses.length !== 2) failRun("--parallel 2 requires both --lens security and --lens correctness.");
+  return { schema: execution.schema, lenses: ["security", "correctness"].filter(lens => execution.lenses.includes(lens)), parallel: execution.parallel };
+}
+
+const sameExecution = (left, right) => left === undefined && right === undefined ||
+  left !== undefined && right !== undefined && digest(left) === digest(right);
+
+function selectionIdentity(client, producerId, target, policy, execution) {
   return { schema: "flow.project-review-intent/v1", repository: client.repository,
     profile: client.profile, directory: client.directory, client: client.client,
     authority_directory: client.authority_directory, runtime_root: client.runtime_root,
     node: client.node, client_digest: client.client_digest, pilot_digest: client.pilot_digest,
-    producer_run_id: producerId, target, policy };
+    producer_run_id: producerId, target, policy, ...(execution === undefined ? {} : { execution }) };
 }
 
 // Inspect existing ancestors before recursive mkdir, including broken symlinks.
@@ -42,8 +63,9 @@ function assertCanonicalReviewPath(path) {
   }
 }
 
-export function reviewSelection(client, producerId, target, policy, { create = false } = {}) {
-  const identity = selectionIdentity(client, producerId, target, policy);
+export function reviewSelection(client, producerId, target, policy, { create = false, execution } = {}) {
+  if (execution !== undefined) execution = validateReviewExecution(execution);
+  const identity = selectionIdentity(client, producerId, target, policy, execution);
   const key = digest(identity).slice(7);
   const intentDirectory = join(client.directory, "receipts", "guided-review", key);
   const intentPath = join(intentDirectory, "intent.json");
@@ -71,7 +93,7 @@ export function findReviewAttachment(clients, runId, producerId) {
       if (!/^[a-f0-9]{64}$/u.test(name)) failRun("Unknown retained review intent; inspect the original client.", "review_intent_changed", 1);
       const intent = readRunJson(join(root, name, "intent.json"));
       if (producerId && intent.producer_run_id !== producerId) continue;
-      const selection = reviewSelection(client, intent.producer_run_id, intent.target, intent.policy);
+      const selection = reviewSelection(client, intent.producer_run_id, intent.target, intent.policy, { execution: intent.execution });
       if (dirname(selection.retained_directory) !== join(root, name) || digest(intent) !== selection.selection_digest) failRun("Retained review/client binding changed.", "review_intent_changed", 1);
       const path = join(selection.retained_directory, "preview.json");
       if (!existsSync(path)) continue;
@@ -86,7 +108,7 @@ export function findReviewAttachment(clients, runId, producerId) {
 }
 
 /** Confirmation selects already-retained bytes, never fresh facts or another bundle. */
-export function findReviewConfirmation(clients, confirmation, producerId, policy) {
+export function findReviewConfirmation(clients, confirmation, producerId, policy, execution) {
   const found = [];
   for (const client of clients) {
     const root = join(client.directory, "receipts", "guided-review");
@@ -95,8 +117,8 @@ export function findReviewConfirmation(clients, confirmation, producerId, policy
     for (const name of readdirSync(root).sort()) {
       if (!/^[a-f0-9]{64}$/u.test(name)) failRun("Unknown retained review intent.", "review_intent_changed", 1);
       const intent = readRunJson(join(root, name, "intent.json"));
-      if (producerId && intent.producer_run_id !== producerId || digest(intent.policy) !== digest(policy)) continue;
-      const selection = reviewSelection(client, intent.producer_run_id, intent.target, intent.policy);
+      if (producerId && intent.producer_run_id !== producerId || digest(intent.policy) !== digest(policy) || !sameExecution(intent.execution, execution)) continue;
+      const selection = reviewSelection(client, intent.producer_run_id, intent.target, intent.policy, { execution: intent.execution });
       if (dirname(selection.retained_directory) !== join(root, name) || digest(intent) !== selection.selection_digest) failRun("Retained review/client binding changed.", "review_intent_changed", 1);
       if (!existsSync(join(selection.retained_directory, "preview.json"))) continue;
       const retained = loadRetainedPreview(selection);

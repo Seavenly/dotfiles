@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { digest } from "../../../tools/flow/src/canonical.mjs";
@@ -9,6 +9,26 @@ import { input, requirePublic, requireRun } from "./project-session.mjs";
 import { summarizeProjectRun } from "./project-run-view.mjs";
 
 const sha = value => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(value ?? "");
+const executionPolicy = execution => ({ schema: "flow.read-only-sibling-policy/v1", max_in_flight: execution.parallel,
+  card_ids: execution.lenses.map(lens => `review-lens-${lens}`) });
+
+export function validateReviewExecutionPreview(selection, retained) {
+  if (!selection.execution) return;
+  const expected = executionPolicy(selection.execution);
+  if (digest(retained.prepared.graph?.execution_policy ?? null) !== digest(expected) ||
+      digest(retained.preview.inspection?.execution_policy ?? null) !== digest(expected)) failRun("The prepared execution policy does not match the exact selected read-only lenses and concurrency. Retain it for inspection; no review was launched.", "review_execution_changed", 1);
+}
+
+/** Capability detection is only a refusal aid; trusted preparation still validates policy. */
+export function requireReviewExecutionRuntime(selection) {
+  if (!selection.execution) return;
+  const module = join(selection.runtime_root, "tools/flow/src/read-only-sibling-policy.mjs");
+  let supported = false;
+  try { supported = lstatSync(module).isFile() && realpathSync(module) === resolve(module); }
+  catch (error) { if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error; }
+  if (!supported) failRun("The selected original client runtime cannot prepare explicit review lenses/concurrency. Preserve its exact pins and history. Use the stopped, settled explicit init --upgrade-runtime yes procedure, then select the resulting compatible --client DIRECTORY.", "review_parallel_runtime_unsupported", 1);
+}
+
 export async function observeReviewCandidate(client, producerId, call) {
   const producer = requireRun(await call(client, input("query", { run_id: producerId })), producerId);
   if (producer.phase !== "succeeded" || !producer.review_candidate_reference?.candidate_id) failRun("Producer has no completed retained candidate. Finish or inspect that exact run first.", "producer_incomplete", 1);
@@ -57,7 +77,15 @@ export async function materializeReviewRequest(selection, { call }) {
   const observed = await observeReviewCandidate(selection, selection.producer_run_id, call);
   if (digest(observed.target) !== digest(selection.target)) failRun("Candidate identity/currency changed after selection. Refresh an unlaunched review and confirm its new exact preparation.", "candidate_changed", 1);
   const comparison = await boundedCandidateDiff(selection.repository, observed.producer, observed.candidate);
-  const bridge = requirePublic(await call(selection, ["local", "review-request", selection.directory, selection.producer_run_id]), "Public review request");
+  const execution = selection.execution;
+  let ownerCapacity;
+  if (execution) {
+    const owner = requirePublic(await call(selection, ["status", "--json"]), "Original owner capacity");
+    ownerCapacity = owner.runner?.delegates?.capacity;
+    if (owner.state !== "running" || !Number.isSafeInteger(ownerCapacity) || ownerCapacity < execution.parallel) failRun("The original owner does not expose sufficient delegate capacity for this confirmed review. Inspect its exact status and use the stopped, settled owner startup procedure; no live owner was reconfigured.", "owner_delegate_capacity_insufficient", 1);
+  }
+  const choices = execution ? [...execution.lenses.flatMap(lens => ["--lens", lens]), "--parallel", String(execution.parallel)] : [];
+  const bridge = requirePublic(await call(selection, ["local", "review-request", selection.directory, selection.producer_run_id, ...choices]), "Public review request");
   if (bridge.status !== "request_only" || typeof bridge.directory !== "string" ||
       dirname(bridge.directory) !== join(selection.directory, "receipts") || !bridge.directory.startsWith(join(selection.directory, "receipts", "review-")) ||
       bridge.request !== join(bridge.directory, "prepare-request.json") || realpathSync(bridge.directory) !== resolve(bridge.directory)) failRun("Public review bridge returned an unexpected retained request.", "review_request_changed", 1);
@@ -68,12 +96,17 @@ export async function materializeReviewRequest(selection, { call }) {
       target.candidate_fingerprint !== selection.target.candidate_fingerprint || target.lifecycle_generation !== selection.target.lifecycle_generation ||
       target.candidate_authority_watermark !== selection.target.candidate_authority_watermark || facts?.source_run?.run_id !== selection.producer_run_id ||
       digest(original.execution_trust) !== digest(selection.pilot.execution_trust)) failRun("Public review request does not bind the selected producer/candidate/client. Preserve it for inspection.", "review_request_changed", 1);
+  if (execution) {
+    const expected = executionPolicy(execution);
+    if (digest(original.inputs.lenses) !== digest(execution.lenses) || digest(original.inputs.execution ?? null) !== digest(expected)) failRun("The original runtime did not return the exact selected lenses and execution policy. Preserve the client; use an explicitly compatible runtime under the stopped, settled upgrade procedure.", "review_execution_unsupported", 1);
+  } else if (original.inputs.execution !== undefined) failRun("The original bridge changed the historical serial review policy. Preserve its request for inspection.", "review_request_changed", 1);
   const request = { ...original, inputs: { ...original.inputs, limits: { ...original.inputs.limits, ...selection.policy } } };
   mkdirSync(selection.retained_directory, { recursive: true, mode: 0o700 });
   if (existsSync(selection.request)) failRun("This exact review already retained a preparation request. Refresh only proven unlaunched work.", "review_request_changed", 1);
   retainRunJson(selection.request, request);
   retainRunJson(join(selection.retained_directory, "public-bridge.json"), { ...bridge, original_request_digest: digest(original), policy: selection.policy });
   return { producer_run_id: selection.producer_run_id, target: selection.target, comparison,
+    ...(execution ? { execution: { ...execution, owner_delegate_capacity: ownerCapacity } } : {}),
     inherited_checks: { ...summarizeProjectRun(observed.producer, { selection, status: "succeeded" }).checks, rerun: false },
     public_bridge: bridge.request };
 }

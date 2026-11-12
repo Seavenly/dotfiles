@@ -35,6 +35,40 @@ and Mac native execution remain separate unfinished tracks.
 Use [`flow-supervised runs`](project-runs.md) to find retained tasks and exact
 original commands without starting or recovering an owner.
 
+## Select two read-only lenses
+
+The default remains the original security-only review. To request security and
+correctness together, explicitly select both lenses and their concurrency bound:
+
+```sh
+flow-supervised review --producer run:EXACT_PRODUCER_ID \
+  --lens security --lens correctness --parallel 2
+```
+
+At most two distinct lenses are supported. `--parallel 2` requires both;
+`--parallel 1` runs the selected lenses serially. `--lens correctness` alone
+selects correctness plus the fresh critic at concurrency one. An explicit lens choice without
+`--parallel` uses one. The preview shows the exact routes, read-only permissions,
+per-run bound, observed original owner capacity, total attempts and shared budget.
+Two selected lenses mean three native attempts: one per lens and one fresh critic.
+The critic waits for the complete required lens evidence; incomplete or uncertain
+work does not become complete coverage. Findings remain valid review results.
+
+New choices require a compatible original runtime and sufficient owner capacity.
+A running owner is never resized or replaced. Inspect the exact refusal and only
+stop an owned owner after work and workers are positively settled; use its
+printed supported startup command for the requested capacity. Older clients keep
+their original default review path. To add support, follow the explicit stopped,
+settled [runtime upgrade](guided-setup.md) procedure and select the resulting
+immutable client. Nothing upgrades a client or changes a check automatically.
+
+Repeat every explicit lens and concurrency choice when confirming. They bind the
+retained intent and prepared policy, so a different choice requires its own
+preview and confirmation. Attachment and cancellation use saved choices; omit
+`--lens` and `--parallel` there. Ctrl-C still detaches from the same review.
+Cancelled phase or one retired sibling does not establish full retirement or
+release a shared workspace claim. No automated result grants human approval.
+
 ## Scripts and exact confirmation
 
 Select concrete paths and IDs printed by the preview or selection error:
@@ -58,7 +92,9 @@ promise that a cancelled worker has already retired.
 
 The existing public review-request bridge owns the target, facts, registered
 routes and execution trust. Guided review retains that original request and
-copies only the selected supported limits. A separate private review journal
+copies only the selected supported limits when the new flags are omitted.
+Explicit lens/concurrency choices go through that same trusted bridge; the
+frontend checks the returned policy and does not invent routes or authority facts. A separate private review journal
 retains the exact request, prepared confirmation, accepted launch intent,
 projections and results. Repeating a preview or confirmation reuses that intent;
 it never silently creates a second review. The short submission mutex and exact
@@ -89,8 +125,8 @@ flow-supervised review --client /private/client --attach run:EXACT_REVIEW_RUN_ID
 
 Attachment finds the saved journal before starting any owner. It uses the saved
 policy even when nondefault and never derives fresh review facts or prepares a
-replacement bundle. Omit `--timeout-seconds` and `--max-revisions` on attachment
-or cancellation. An unknown run, lost owner or unavailable authority remains an
+replacement bundle. Omit `--timeout-seconds`, `--max-revisions`, `--lens` and `--parallel` on
+attachment or cancellation. An unknown run, lost owner or unavailable authority remains an
 error with retained evidence and exact resume guidance.
 
 Current supported checkpoint and recovery choices come directly from authority.

@@ -22,6 +22,12 @@ task, confirm it and follow implementation, checks and critique. This is
 supervised CLI trust, not strict native qualification; Mac native
 execution remains unsupported.
 
+After a successful task seals a candidate, use [guided review](guided-review.md).
+Explicit two-lens review needs a compatible pinned client and sufficient original
+owner capacity. It never silently upgrades a retained runtime, changes a checker
+or resizes a running owner. The default security-only review remains available
+through its original supported client.
+
 ## Set up supplied-source research
 
 For a question over explicit local text files, use

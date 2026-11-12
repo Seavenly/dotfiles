@@ -7,6 +7,12 @@ export function reviewAttachCommand(selection, runId) {
   return `flow-supervised review --repository ${quoteShell(selection.repository)} --client ${quoteShell(selection.directory)} --attach ${quoteShell(runId)}`;
 }
 
+export function reviewConfirmCommand(selection, confirmation) {
+  const execution = selection.execution;
+  const choices = execution ? execution.lenses.map(lens => ` --lens ${lens}`).join("") + ` --parallel ${execution.parallel}` : "";
+  return `flow-supervised review --repository ${quoteShell(selection.repository)} --client ${quoteShell(selection.directory)} --producer ${quoteShell(selection.producer_run_id)}${choices} --timeout-seconds ${selection.policy.max_elapsed_seconds} --max-revisions ${selection.policy.max_revisions} --confirm ${confirmation}`;
+}
+
 function structuredLines(label, value, indent = "  ") {
   if (value === null || typeof value !== "object") return [`${label}: ${value ?? "not supplied; inspect full confirmation"}`];
   return [`${label}:`, ...JSON.stringify(value, null, 2).split("\n").map(line => indent + line)];
@@ -40,6 +46,11 @@ export function renderReviewPreview(preview) {
     `Strict qualification: ${trust.qualification ?? "not claimed"}`,
     `Overall prepared-run budget: ${inspection.limits?.max_elapsed_seconds ?? "see full confirmation"} seconds; revisions: ${inspection.limits?.max_revisions ?? "see full confirmation"}`,
     "These are overall run limits, not independent per-role timers.",
+    ...(preview.execution ? [`Selected lenses: ${preview.execution.lenses.join(", ")}`,
+      `Confirmed read-only lens concurrency: ${preview.execution.parallel}; total native attempts: ${preview.execution.lenses.length + 1} (one per lens and one fresh critic)`,
+      `Effective original owner delegate capacity: ${preview.execution.owner_delegate_capacity ?? "unavailable; inspect original owner status"}`,
+      ...structuredLines("Prepared execution policy", inspection.execution_policy),
+      "The critic waits for every selected lens; findings do not grant human approval."] : []),
     ...structuredLines("Requested authority", inspection.requested_authority), "Review roles:", ...roles,
     `Authority: ${preview.authority_directory}`, `Full exact confirmation: ${preview.prepared_file}`,
     `Confirmation digest: ${preview.confirmation_digest}`, preview.recovery_disclosure,

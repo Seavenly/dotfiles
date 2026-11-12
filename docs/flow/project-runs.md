@@ -46,6 +46,12 @@ approval. Review checks are inherited producer evidence, not a rerun. A cancelle
 phase or stopped owner does not release held or quarantined workspace claims.
 Claim identity, generation and mutation epoch remain visible where supplied.
 
+For an explicitly selected two-lens review, use its retained confirmation command
+with the original lens/concurrency choices. Once admitted, attachment uses saved
+policy and accepts no replacement selection. The overview starts no owner and
+changes no concurrency or capacity; a cancelled review can still have unresolved
+sibling workers and held claims.
+
 Research rows show the question, exact source-packet digest, observed report
 status, lower assurance and residual-gap count. A research-only initialized
 client can appear without a feature request. A prepared packet is not a completed

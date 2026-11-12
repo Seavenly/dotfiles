@@ -1,18 +1,23 @@
 import { createInterface } from "node:readline/promises";
-import { quoteShell } from "../scripts/feature-client-files.mjs";
 import { failRun } from "./project-run-state.mjs";
 import { runDecisionActions, terminalText } from "./project-run-view.mjs";
-import { discoverReviewClients, findReviewAttachment, findReviewConfirmation, reviewPolicy, reviewSelection } from "./project-review-state.mjs";
-import { materializeReviewRequest, observeReviewCandidate } from "./project-review-preparation.mjs";
-import { renderReviewPreview, renderReviewResult, reviewAttachCommand, summarizeProjectReview } from "./project-review-view.mjs";
+import { discoverReviewClients, findReviewAttachment, findReviewConfirmation, reviewPolicy, reviewExecution, reviewSelection } from "./project-review-state.mjs";
+import { materializeReviewRequest, observeReviewCandidate, requireReviewExecutionRuntime, validateReviewExecutionPreview } from "./project-review-preparation.mjs";
+import { renderReviewPreview, renderReviewResult, reviewAttachCommand, reviewConfirmCommand, summarizeProjectReview } from "./project-review-view.mjs";
 import { callProjectClient, followProjectSession, input, ownerStart, preparePreview, requirePublic, requireRun, submitDecision, submitPrepared } from "./project-session.mjs";
 
 export const REVIEW_USAGE = `Usage:
   flow-supervised review [--repository PATH] [--client DIRECTORY] [--producer RUN_ID] [--json]
+  flow-supervised review --lens security --lens correctness --parallel 2 [same selection]
   flow-supervised review [same selection] --confirm sha256:DIGEST [--no-follow] [--json]
   flow-supervised review [--client DIRECTORY] --attach REVIEW_RUN_ID [--action sha256:DIGEST] [--json]
   flow-supervised review [--client DIRECTORY] --cancel REVIEW_RUN_ID [--json]
 
+Select up to two distinct --lens security / --lens correctness values and an
+explicit --parallel 1|2 bound. Omitted flags preserve the original security-only
+review. --lens correctness alone uses one lens plus the fresh critic at one.
+Parallel two requires both lenses. Selection, read-only roles and capacity are
+confirmed before launch.
 Review selects an exact completed producer and current sealed candidate. It starts
 or reuses that original client's owner, which may recover already authorized work.
 The exact independent review launches only after explicit confirmation. No runtime
@@ -27,12 +32,13 @@ bounds observation only. Ctrl-C detaches; use --attach to resume the SAME review
 
 export function parseReviewArguments(args) {
   const options = {}, flags = new Set(["--json", "--no-follow", "--refresh", "--help", "-h"]);
-  const values = new Set(["--repository", "--client", "--producer", "--confirm", "--attach", "--cancel", "--action", "--follow-seconds", "--timeout-seconds", "--max-revisions"]);
+  const values = new Set(["--repository", "--client", "--producer", "--confirm", "--attach", "--cancel", "--action", "--follow-seconds", "--timeout-seconds", "--max-revisions", "--lens", "--parallel"]);
   for (let index = 0; index < args.length; index++) {
     const flag = args[index];
-    if (Object.hasOwn(options, flag) || !flags.has(flag) && !values.has(flag)) failRun(`Unknown or repeated review option: ${flag}`);
-    options[flag] = flags.has(flag) ? true : args[++index];
-    if (!options[flag] || typeof options[flag] === "string" && options[flag].startsWith("--")) failRun(`Missing value for ${flag}`);
+    if (flag !== "--lens" && Object.hasOwn(options, flag) || !flags.has(flag) && !values.has(flag)) failRun(`Unknown or repeated review option: ${flag}`);
+    const value = flags.has(flag) ? true : args[++index];
+    if (!value || typeof value === "string" && value.startsWith("--")) failRun(`Missing value for ${flag}`);
+    if (flag === "--lens") (options[flag] ??= []).push(value); else options[flag] = value;
   }
   if ([options["--confirm"], options["--attach"], options["--cancel"]].filter(Boolean).length > 1 || options["--refresh"] && (options["--confirm"] || options["--attach"] || options["--cancel"])) failRun("Choose preview/refresh, confirm, attach, or cancel separately.");
   if ((options["--attach"] || options["--cancel"]) && (options["--timeout-seconds"] || options["--max-revisions"])) failRun("Attach/cancel uses the exact saved policy. Omit --timeout-seconds and --max-revisions; they cannot change an existing run.");
@@ -41,6 +47,8 @@ export function parseReviewArguments(args) {
   for (const flag of ["--producer", "--attach", "--cancel"]) if (options[flag] && !/^run:[a-f0-9]{64}$/u.test(options[flag])) failRun(`Use the exact ${flag} RUN_ID.`);
   const seconds = Number(options["--follow-seconds"] ?? 1800);
   if (!Number.isInteger(seconds) || seconds < 1 || seconds > 3600) failRun("Use --follow-seconds 1..3600 for observation only.");
+  if ((options["--attach"] || options["--cancel"]) && (options["--lens"] || options["--parallel"])) failRun("Attach/cancel uses the exact saved policy. Omit --lens and --parallel; they cannot change an existing review.");
+  reviewExecution(options);
   reviewPolicy(options);
   return options;
 }
@@ -59,7 +67,7 @@ export async function reviewProject(args, { env = process.env, cwd = process.cwd
   const onInterrupt = () => { interrupted = true; prompts?.close(); };
   process.on("SIGINT", onInterrupt);
   try {
-    const options = parseReviewArguments(args);
+    const options = parseReviewArguments(args), execution = reviewExecution(options);
     if (options["--help"] || options["-h"]) { stdout.write(REVIEW_USAGE); return 0; }
     const interactive = Boolean(stdin.isTTY && stdout.isTTY && !options["--json"]);
     if (interactive) prompts = createInterface({ input: stdin, output: stdout });
@@ -70,6 +78,8 @@ export async function reviewProject(args, { env = process.env, cwd = process.cwd
     if (runId) {
       ({ selection, retained } = findReviewAttachment(clients, runId, options["--producer"]));
       intendedRunId = runId;
+      requireReviewExecutionRuntime(selection);
+      validateReviewExecutionPreview(selection, retained);
       // Validate journal ownership before owner startup, including old-client recovery.
       await ownerStart(selection, call, emit);
       const run = requireRun(await call(selection, input("query", { run_id: runId })), runId);
@@ -80,10 +90,12 @@ export async function reviewProject(args, { env = process.env, cwd = process.cwd
         if (action) await submitDecision(selection, runId, action.digest, call);
       } else if (options["--action"]) await submitDecision(selection, runId, options["--action"], call);
     } else {
-      if (options["--confirm"]) ({ selection, retained } = findReviewConfirmation(clients, options["--confirm"], options["--producer"], reviewPolicy(options)));
+      if (options["--confirm"]) ({ selection, retained } = findReviewConfirmation(clients, options["--confirm"], options["--producer"], reviewPolicy(options), execution));
       else {
         const client = await choose(clients, { interactive, prompts, stdout, heading: "Choose the original initialized client:", label: item => `${item.directory} [runtime ${item.runtime_root}]`, prompt: "Client number: ", refusal: "Several initialized clients exist. Select --client DIRECTORY; no owner was started." });
-        await ownerStart(client, call, emit);
+        const selectedClient = execution ? { ...client, execution } : client;
+        requireReviewExecutionRuntime(selectedClient);
+        await ownerStart(selectedClient, call, emit);
         let observed;
         if (options["--producer"]) observed = await observeReviewCandidate(client, options["--producer"], call);
         else {
@@ -100,14 +112,16 @@ export async function reviewProject(args, { env = process.env, cwd = process.cwd
           if (!eligible.length) failRun("No completed producer has a current sealed candidate. Inspect the original client and finish or settle existing work first.", "producer_required", 1);
           observed = await choose(eligible, { interactive, prompts, stdout, heading: "Choose the exact completed producer:", label: item => `${item.producer.run_id} - ${item.target.candidate_id} (${item.candidate.candidate.git.commit_sha})`, prompt: "Producer number: ", refusal: "Several current retained candidates exist. Select --producer RUN_ID." });
         }
-        selection = reviewSelection(client, observed.producer.run_id, observed.target, reviewPolicy(options), { create: true });
+        selection = reviewSelection(client, observed.producer.run_id, observed.target, reviewPolicy(options), { create: true, execution });
         retained = await preparePreview(selection, { refresh: options["--refresh"], call, emit, materializeRequest: materializeReviewRequest });
       }
+      requireReviewExecutionRuntime(selection);
+      validateReviewExecutionPreview(selection, retained);
       intendedRunId = retained.preview.run_id;
       if (!options["--confirm"]) {
         if (options["--json"]) emit(retained.preview); else stdout.write(renderReviewPreview(retained.preview));
         if (!interactive) {
-          if (!options["--json"]) stdout.write(`Confirm with flow-supervised review --repository ${quoteShell(selection.repository)} --client ${quoteShell(selection.directory)} --producer ${quoteShell(selection.producer_run_id)} --timeout-seconds ${selection.policy.max_elapsed_seconds} --max-revisions ${selection.policy.max_revisions} --confirm ${retained.preview.confirmation_digest}\n`);
+          if (!options["--json"]) stdout.write(`Confirm with ${reviewConfirmCommand(selection, retained.preview.confirmation_digest)}\n`);
           return 0;
         }
         if (!["y", "yes"].includes((await prompts.question("Launch this exact supervised review? [y/N] ")).trim().toLowerCase())) { stdout.write("No new review launched. The selected owner may remain available.\n"); return 0; }
