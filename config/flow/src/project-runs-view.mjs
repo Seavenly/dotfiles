@@ -1,7 +1,7 @@
 import { readResearchReport, researchAttachCommand, researchConfirmCommand } from "./project-research-view.mjs";
 import { quoteShell } from "../scripts/feature-client-files.mjs";
 import { projectRunBlocked, projectRunFacts, terminalText } from "./project-run-view.mjs";
-import { reviewAttachCommand } from "./project-review-view.mjs";
+import { reviewAttachCommand, reviewConfirmCommand } from "./project-review-view.mjs";
 
 const text = value => typeof value === "string" ? value.slice(0, 1024) : value === null || value === undefined ? null : String(value).slice(0, 1024);
 const strings = values => Array.isArray(values) ? values.slice(0, 32).map(text) : [];
@@ -45,9 +45,11 @@ function attemptRow(attempt) {
   const guided = Boolean(retained && attempt.state === "admitted");
   if (guided) commands.push({ kind: "attach", command: attachCommand(attempt, id), disclosure: "Attachment starts/reuses this exact owner and may recover previously accepted work." });
   else if (attempt.state === "prepared") {
+    const explicitReviewCommand = attempt.kind === "review" && selection.execution
+      ? reviewConfirmCommand(selection, retained.preview.confirmation_digest) : null;
     const command = attempt.kind === "research" ? researchConfirmCommand(selection, retained.preview.confirmation_digest) : attempt.kind === "review" ? `flow-supervised review --repository ${quoteShell(selection.repository)} --client ${quoteShell(selection.directory)} --producer ${quoteShell(selection.producer_run_id)} --timeout-seconds ${selection.policy.max_elapsed_seconds} --max-revisions ${selection.policy.max_revisions}` : previewCommand(selection);
     commands.push({ kind: "inspect_preview", command: `${quoteShell(selection.client)} local inspect-prepared ${quoteShell(retained.preview.prepared_file)}` });
-    commands.push({ kind: "confirm", command: attempt.kind === "research" ? command : `${command} --confirm ${quoteShell(retained.preview.confirmation_digest)}`, disclosure: "Explicit confirmation may start/reuse the owner and launch this exact retained task; inspect its current confirmation first." });
+    commands.push({ kind: "confirm", command: explicitReviewCommand ?? (attempt.kind === "research" ? command : `${command} --confirm ${quoteShell(retained.preview.confirmation_digest)}`), disclosure: "Explicit confirmation may start/reuse the owner and launch this exact retained task; inspect its current confirmation first." });
   } else if (attempt.state === "accepted_unknown" && retained) {
     commands.push({ kind: "inspect_intended_run", command: queryCommand(selection.client, { run_id: retained.preview.run_id }) });
     commands.push({ kind: "resume_exact_attempt", command: attachCommand(attempt, retained.preview.run_id), disclosure: "Accepted intent is not proof of admission. This explicit command inspects/reuses the same attempt and may start its owner; it does not authorize a replacement." });

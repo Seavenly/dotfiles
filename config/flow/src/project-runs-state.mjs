@@ -153,7 +153,7 @@ export async function collectProjectRuns(options = {}, { env = process.env, cwd 
             if (result.attempts.length >= limits.attempts) throw failure("attempt_limit", "Attempt limit reached.");
             if (!/^[a-f0-9]{64}$/u.test(name)) throw failure("unknown_review", "Unknown retained review intent.");
             const intent = io.json(join(path, "intent.json"));
-            const selection = reviewSelection(client, intent.producer_run_id, intent.target, intent.policy);
+            const selection = reviewSelection(client, intent.producer_run_id, intent.target, intent.policy, { execution: intent.execution });
             if (selection.intent_directory !== path || digest(intent) !== selection.selection_digest) throw failure("review_changed", "Review intent no longer binds the original client/producer/target.");
             result.attempts.push({ kind: "review", ...journal(selection, io) });
             for (const archive of io.entries(path).filter(name => name.startsWith("session.retained-"))) {
