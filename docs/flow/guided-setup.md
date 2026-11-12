@@ -24,7 +24,7 @@ execution remains unsupported.
 
 After a successful task seals a candidate, use [guided review](guided-review.md).
 Explicit two-lens review needs a compatible pinned client and sufficient original
-owner capacity. It never silently upgrades a retained runtime, changes a checker
+owner runner capacity. It never silently upgrades a retained runtime, changes a checker
 or resizes a running owner. The default security-only review remains available
 through its original supported client.
 

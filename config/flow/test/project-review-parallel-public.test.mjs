@@ -248,7 +248,7 @@ test("explicit two-lens preview binds exact roles and bounds, and real PTY decli
   assert.equal(declined.exit, 0, declined.output);
   assert.match(declined.output, /Selected lenses: security, correctness/u);
   assert.match(declined.output, /concurrency: 2; total native attempts: 3/u);
-  assert.match(declined.output, /owner delegate capacity: 2/u);
+  assert.match(declined.output, /owner runner delegate capacity: 2/u);
   assert.match(declined.output, /600 seconds/u);
   const state = f.state();
   assert.equal(state.launches, 0); assert.equal(state.preparations, 1); assert.equal(state.review_requests, 1);

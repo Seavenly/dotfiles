@@ -48,7 +48,7 @@ export function renderReviewPreview(preview) {
     "These are overall run limits, not independent per-role timers.",
     ...(preview.execution ? [`Selected lenses: ${preview.execution.lenses.join(", ")}`,
       `Confirmed read-only lens concurrency: ${preview.execution.parallel}; total native attempts: ${preview.execution.lenses.length + 1} (one per lens and one fresh critic)`,
-      `Effective original owner delegate capacity: ${preview.execution.owner_delegate_capacity ?? "unavailable; inspect original owner status"}`,
+      `Observed original owner runner delegate capacity: ${preview.execution.owner_delegate_capacity ?? "unavailable; inspect original owner status"}`,
       ...structuredLines("Prepared execution policy", inspection.execution_policy),
       "The critic waits for every selected lens; findings do not grant human approval."] : []),
     ...structuredLines("Requested authority", inspection.requested_authority), "Review roles:", ...roles,

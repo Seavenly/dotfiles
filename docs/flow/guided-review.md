@@ -49,7 +49,9 @@ At most two distinct lenses are supported. `--parallel 2` requires both;
 `--parallel 1` runs the selected lenses serially. `--lens correctness` alone
 selects correctness plus the fresh critic at concurrency one. An explicit lens choice without
 `--parallel` uses one. The preview shows the exact routes, read-only permissions,
-per-run bound, observed original owner capacity, total attempts and shared budget.
+per-run bound, observed original owner runner capacity, total attempts and shared
+budget. The runner capacity bounds its autonomous dispatch; it is not a new
+host-wide authority limit for historical manual commands.
 Two selected lenses mean three native attempts: one per lens and one fresh critic.
 The critic waits for the complete required lens evidence; incomplete or uncertain
 work does not become complete coverage. Findings remain valid review results.
