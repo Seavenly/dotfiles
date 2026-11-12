@@ -2,8 +2,8 @@
   "schema": "flow.production-route-conformance-evidence/v1",
   "release_id": "flow-release-1.0-dark/v1",
   "qualification_base_commit": "a4a9a88a330be2b668339cf1a9b1b7c1b992564e",
-  "candidate_tree_sha": "f57cfa5ea1449586edb810d086b6cb00df15df2a",
-  "release_content_digest": "sha256:f567071b4d8a81f3fb03f90ea24712da19c7b535b825c6e4acb9a6e0823d27bc",
+  "candidate_tree_sha": "aa6d0692f7c424e21f7ad4430705ea38ebf36995",
+  "release_content_digest": "sha256:fc8ecc2b2840483049b2b30ceff0e7325dfac134e3ca81cf6f38f4dccd2230cf",
   "status": "not_run",
   "scope": "production_public_route_conformance",
   "routes": [
@@ -25,7 +25,7 @@
   "generation_id": null,
   "generation_binding_sha256": null,
   "recipe": null,
-  "captured_at": "2026-11-12T12:54:39Z",
+  "captured_at": "2026-11-12T13:01:31Z",
   "environment": {
     "os": "linux",
     "architecture": "x64",
