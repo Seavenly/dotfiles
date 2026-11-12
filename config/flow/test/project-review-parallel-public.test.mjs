@@ -290,6 +290,30 @@ const previewFrom = result => {
   assert.ok(preview, result.stdout); return preview;
 };
 
+test("public runs retains an explicit two-lens preview and its exact confirmation policy without starting work", t => {
+  const f = reviewFixture(t), selected = [...twoLenses, "--parallel", "2"];
+  const preview = previewFrom(f.run([...selected, "--json"]));
+  const before = readFileSync(f.stateFile);
+  const result = spawnSync(process.execPath, [cli, "runs", "--repository", f.repository, "--json"], {
+    env: f.env, cwd: f.root, encoding: "utf8", timeout: 15000, maxBuffer: 1024 * 1024,
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const overview = JSON.parse(result.stdout);
+  assert.equal(overview.complete, true);
+  assert.deepEqual(overview.diagnostics, []);
+  const review = overview.attempts.find(attempt => attempt.kind === "review");
+  assert.ok(review, result.stdout);
+  assert.equal(review.state, "prepared");
+  assert.equal(review.intended_run_id, preview.run_id);
+  assert.equal(review.observation, "retained");
+  const command = review.next_commands.find(item => item.kind === "confirm")?.command;
+  assert.equal(typeof command, "string");
+  assert.ok(command.includes("--lens security --lens correctness --parallel 2"), command);
+  assert.ok(command.includes(`--confirm ${preview.confirmation_digest}`), command);
+  assert.deepEqual(readFileSync(f.stateFile), before, "Overview must not invoke the controlled owner/client transport for this retained-only journal");
+  assert.equal(f.state().launches, 0);
+});
+
 test("serial two-lens choice has a distinct confirmation and cannot reuse parallel confirmation", t => {
   const f = reviewFixture(t), single = previewFrom(f.run(["--lens", "correctness", "--json"]));
   assert.deepEqual(single.execution.lenses, ["correctness"]); assert.equal(single.execution.parallel, 1);
