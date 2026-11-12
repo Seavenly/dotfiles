@@ -247,7 +247,7 @@ incomplete, or foreign-environment phase keeps admission withheld.
 
 Canonical evidence crossing the delegate, artifact, or resource-handoff
 boundary is validated by the pure versioned evidence-safety contract in
-`tools/flow/src/evidence-safety.mjs`. Catalog v41 preserves the legacy policy
+`tools/flow/src/evidence-safety.mjs`. Catalog v42 preserves the legacy policy
 `flow.evidence-safety-policy/v1` and its exact receipt catalog identity
 `flow.contract-catalog/v1@39`. Quick research uses the distinct bounded input
 policy `flow.research-input-safety-policy/v1` for supplied source contents;
@@ -463,8 +463,12 @@ confirmed independent review of the exact retained candidate. Explicit
 and one fresh critic; the original security-only review remains the default.
 Use [`flow-supervised research`](docs/flow/guided-research.md) for a bounded
 question over explicit local source files. `init --purpose research` needs no
-feature brief or project check. Two separately routed read-only delegates produce
-a lower-assurance cited report with residual gaps; sources are never fetched.
+feature brief or project check. The default quick mode uses two separately routed
+read-only delegates. Explicit `--mode deep` confirms two independent angles and
+bounded parallel investigation, with a fresh gap critic and at most one whole
+revision cycle. Scope widening requires a same-run operator checkpoint. Both
+modes produce lower-assurance cited reports with residual gaps; sources are
+never fetched.
 
 `flow local setup --execution-trust supervised-native-cli --repository PATH
 --brief JSON_FILE --codex-executable PATH` creates a private, reusable client for
