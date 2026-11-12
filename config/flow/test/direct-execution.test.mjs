@@ -92,13 +92,23 @@ const canonical=(v)=>Array.isArray(v)?v.map(canonical):v&&typeof v==="object"?Ob
 const digest=v=>"sha256:"+createHash("sha256").update(JSON.stringify(canonical(v))).digest("hex");
 const evidence={kind:"git_file_equals",target:"feature.txt",expected:"after\\n"};
 let output={schema:"flow.delegate-evidence/v1",observation:"owned subprocess evidence"};
-if(task.flow==="review/v1") {output={schema:"flow.review-result/v1",findings:[],posture:"no_findings",coverage:"produced"};}
+if(task.flow==="review/v1") {
+ if(existsSync(${JSON.stringify(join(scratch,"parallel-mode"))})) {
+  const mode=readFileSync(${JSON.stringify(join(scratch,"parallel-mode"))},"utf8");
+  const prefix=${JSON.stringify(scratch)}+"/parallel-"+mode;
+  appendFileSync(prefix+"-events",task.role+":"+(task.lens??"critic")+"\\n");
+  writeFileSync(prefix+"-"+(task.lens??"critic")+"-input.json",JSON.stringify(envelope));
+  if(task.role==="lens") while(!existsSync(prefix+"-release-"+task.lens)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);
+ }
+ output={schema:"flow.review-result/v1",findings:[],posture:"no_findings",coverage:"produced"};
+}
 else if(task.phase==="apply") {if(${scenario !== "success"})while(!existsSync(${JSON.stringify(join(scratch,"release"))}))Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20);writeFileSync("feature.txt","after\\n");output.feature_evidence={schema:"flow.feature-criterion-evidence/v1",criteria:task.brief.acceptance.map(criterion=>({criterion,...evidence}))};}
 else {if(readFileSync("feature.txt","utf8")!=="after\\n")process.exit(17);output.feature_critique={schema:"flow.feature-critique-output/v1",candidate_digest:task.candidate_digest,predecessor_evidence_digest:task.predecessor_evidence_digest,task_inputs_digest:digest(task),criteria:task.brief.acceptance.map(criterion=>({criterion,evidence,evidence_digest:digest({criterion,evidence,verdict:"passed"}),verdict:"passed"})),findings:[]};}
 const text=JSON.stringify(output);writeFileSync(process.argv[process.argv.indexOf("--output-last-message")+1],text);
-for(const event of [{type:"thread.started",thread_id:"thread-"+(task.phase ?? task.role)},{type:"turn.started"},{type:"item.completed",item:{id:"final",type:"agent_message",text}},{type:"turn.completed",usage:{}}])console.log(JSON.stringify(event));
+for(const event of [{type:"thread.started",thread_id:"thread-"+(task.phase ?? task.role)+(task.lens??"")},{type:"turn.started"},{type:"item.completed",item:{id:"final",type:"agent_message",text}},{type:"turn.completed",usage:{}}])console.log(JSON.stringify(event));
 `);
   await chmod(executable,0o700);
+  execFileSync(process.execPath, ["--check", executable]);
   const authorityDirectory=join(scratch,"authority");
   const env={HOME:scratch,PATH:process.env.PATH};
   const production=createFlowRuntime({authorityDirectory,env,directExecutionOptions:{executables:{codex:executable}},autonomous:false});
@@ -120,6 +130,7 @@ for(const event of [{type:"thread.started",thread_id:"thread-"+(task.phase ?? ta
   assert.equal(owner.state,"running");assert.notEqual(owner.pid,process.pid);
   ownerCleanup=async()=>{
     await writeFile(join(scratch,"release"),"release");
+    for (const mode of ["reverse", "restart", "cancel"]) for (const lens of ["security", "correctness"]) await writeFile(join(scratch, `parallel-${mode}-release-${lens}`), "release");
     const retirement=await stopFlowOwner({env:ownerEnv,pid:owner.pid,processStartIdentity:owner.process_start_identity,waitMs:3000,force:true});
     assert.equal(retirement.state,"stopped",JSON.stringify(retirement));
     await retainPublicFixtureEvidence(`owner-retirement-${scenario}`,{fixture_owner_retirement:{pid:owner.pid,process_start_identity:owner.process_start_identity,retirement}});
@@ -142,6 +153,8 @@ for(const event of [{type:"thread.started",thread_id:"thread-"+(task.phase ?? ta
   }
   const runtime=Object.fromEntries(["prepare","launch","command","query"].map(operation=>[operation,request=>requestFlowTransport({socketPath:owner.socket_path,operation,request})]));
   const optIn={schema:"flow.dark-opt-in/v1",release_id:"flow-release-1.0-dark/v1",purpose:"sacrificial_qualification"};
+  const described = await runtime.query({ schema: "flow.query/v1", query: "delegated_agent_description", launch: { harness: "codex", model: "fixture-model", effort: "high", capability: "workspace-write-denied" }, caller_metadata: {} });
+  assert.equal(described.status, "compatible", JSON.stringify(described));
   const prepared=await runtime.prepare({schema:"flow.feature-preparation-request/v1",dark_opt_in:optIn,brief:{schema:"flow.feature-brief/v1",id:"brief:direct",summary:"Change feature.txt to after",acceptance:["feature.txt contains after"]},repository,mode:"verify",routes:{apply:{harness:"codex",model:"fixture-model",effort:"high",capability:"workspace-write-denied"},critique:{harness:"codex",model:"fixture-model",effort:"high",capability:"read-only"}}});
   assert.equal(prepared.schema,"flow.prepared-run/v1",JSON.stringify(prepared));
   assert.ok(prepared.graph.cards.some(card=>card.executor.contract==="flow.operation/feature-direct-commit/v1"));
@@ -315,6 +328,98 @@ for(const event of [{type:"thread.started",thread_id:"thread-"+(task.phase ?? ta
     assert.match(formats.html,/<article data-schema="flow.review-artifact-html\/v1"/);
     assert.equal(JSON.parse(formats.json).approval.integration_authorized,false);
     await retainPublicFixtureEvidence("direct-review-success", {fixture_direct_review:{producer_pid:producerPid,producer_retirement:producerRetirement,review_owner_pid:owner.pid,candidate:review,facts,home_only_control:homeOnlyControl,caller_path_rejections:callerPathRejections,negative_effects:negativeEffects,preflight,revalidation_rejection:staleLaunch,prepared:reviewPrepared,launch:reviewLaunch,review_run:reviewed,inbox}});
+    await exerciseParallelReview();
+
+    async function exerciseParallelReview() {
+      const { runCli } = await import("../src/cli-command.mjs");
+      const output = () => ({ text: "", write(value) { this.text += value; } });
+      const rejectedOut = output(), rejectedError = output();
+      assert.equal(await runCli(["start", "--delegate-capacity", "2", "--json"], { env: ownerEnv, stdout: rejectedOut, stderr: rejectedError }), 1);
+      assert.equal(JSON.parse(rejectedError.text).code, "owner_delegate_capacity_insufficient");
+      const serialPid = owner.pid;
+      const stopped = await stopFlowOwner({ env: ownerEnv, pid: owner.pid, processStartIdentity: owner.process_start_identity, waitMs: 3000, force: true });
+      assert.equal(stopped.state, "stopped");
+      const startedOut = output(), startedError = output();
+      assert.equal(await runCli(["start", "--delegate-capacity", "2", "--json"], { env: ownerEnv, stdout: startedOut, stderr: startedError }), 0, startedError.text);
+      owner = JSON.parse(startedOut.text);
+      assert.equal(owner.runner.delegates.capacity, 2);
+      assert.notEqual(owner.pid, serialPid);
+      const policy = { schema: "flow.read-only-sibling-policy/v1", max_in_flight: 2, card_ids: ["review-lens-security", "review-lens-correctness"] };
+      async function waitFor(predicate, label) {
+        const deadline = Date.now() + 10000;
+        while (Date.now() < deadline) { const value = await predicate(); if (value) return value; await new Promise(resolve => setTimeout(resolve, 10)); }
+        assert.fail(label);
+      }
+      const readEvents = mode => readFile(join(scratch, `parallel-${mode}-events`), "utf8").catch(() => "");
+      const release = (mode, lens) => writeFile(join(scratch, `parallel-${mode}-release-${lens}`), "release");
+      async function launchParallel(mode) {
+        await writeFile(join(scratch, "parallel-mode"), mode);
+        const selection = { schema: "flow.review-preparation-selection/v1", lenses: ["security", "correctness"], execution: policy,
+          routes: { lenses: Object.fromEntries(["security", "correctness"].map(lens => [lens, { launch: { harness: "codex", model: "fixture-model", effort: "high", capability: "read-only", role: `lens:${lens}` } }])),
+            critic: { launch: { harness: "codex", model: "fixture-model", effort: "high", capability: "read-only", role: "critic" } } } };
+        const observed = await runtime.query({ ...factsRequest, selection });
+        assert.equal(observed.schema, "flow.review-preparation-facts/v1", JSON.stringify(observed));
+        const route = id => { const entry = observed.route.bindings.find(value => value.card_id === id); return { description: entry.description, route: entry.route }; };
+        const prepared = await runtime.prepare({ schema: "flow.predefined-flow-selection/v1", definition: "review/v1", dark_opt_in: optIn,
+          inputs: { schema: "flow.review-request/v1", target: reviewPrepared.selection.inputs.target,
+            lenses: selection.lenses, execution: policy, preparation_selection: selection, preparation_facts: observed,
+            delegation: { schema: "flow.review-delegation-bindings/v1", lenses: Object.fromEntries(selection.lenses.map(lens => [lens, route(`review-lens-${lens}`)])), critic: route("review-critic") } } });
+        assert.equal(prepared.schema, "flow.prepared-run/v1", JSON.stringify(prepared));
+        assert.deepEqual(prepared.graph.execution_policy, policy);
+        const admitted = await runtime.launch({ prepared, dark_opt_in: optIn,
+          confirmation: { schema: "flow.predefined-flow-confirmation-decision/v1", decision: "accept", bundle_digest: prepared.bundle_digest, confirmation_digest: prepared.confirmation_digest },
+          closed_facts: { schema: "flow.closed-fact-observation/v1", bundle_digest: prepared.bundle_digest, facts: prepared.explicit_facts } });
+        assert.equal(admitted.schema, "flow.launch-receipt/v1", JSON.stringify(admitted));
+        await waitFor(async () => { const events = await readEvents(mode); return events.includes("lens:security") && events.includes("lens:correctness"); }, "both independent lenses must overlap before either release");
+        const pending = await runtime.query({ run_id: admitted.run_id });
+        assert.equal(pending.effects.filter(effect => effect.effect_kind === "delegate" && effect.receipt === null).length, 2);
+        assert.ok(!pending.legal_actions.some(action => action.card_id === "review-critic"));
+        return admitted.run_id;
+      }
+      const firstRun = await launchParallel("reverse");
+      await release("reverse", "correctness");
+      await waitFor(async () => (await runtime.query({ run_id: firstRun })).delegate_attempts.some(attempt => attempt.card_id === "review-lens-correctness" && attempt.status === "accepted"), "correctness completes first");
+      assert.equal((await readEvents("reverse")).includes("critic:"), false);
+      await release("reverse", "security");
+      const complete = await waitFor(async () => { const value = await runtime.query({ run_id: firstRun }); return value.phase === "succeeded" && value; }, "all-lens critic and review record complete");
+      assert.equal(complete.delegate_attempts.length, 3);
+      const criticInput = JSON.parse(await readFile(join(scratch, "parallel-reverse-critic-input.json"), "utf8"));
+      assert.deepEqual(criticInput.predecessor_evidence.accepted_delegates.map(value => value.card_id).sort(), policy.card_ids.toSorted());
+      assert.equal((await readEvents("reverse")).split("\n").filter(value => value === "critic:critic").length, 1);
+      const restarting = await launchParallel("restart");
+      const priorPid = owner.pid;
+      assert.equal((await stopFlowOwner({ env: ownerEnv, pid: owner.pid, processStartIdentity: owner.process_start_identity, waitMs: 1000, force: true })).state, "stopped");
+      owner = await startFlowOwner({ env: ownerEnv, runnerOptions: { delegateCapacity: 2 } });
+      assert.notEqual(owner.pid, priorPid);
+      await release("restart", "security"); await release("restart", "correctness");
+      const adopted = await waitFor(async () => { const value = await runtime.query({ run_id: restarting }); return value.phase === "succeeded" && value; }, "replacement owner adopts both exact tasks");
+      assert.equal(adopted.delegate_attempts.length, 3);
+      const events = (await readEvents("restart")).trim().split("\n");
+      assert.deepEqual(events.toSorted(), ["critic:critic", "lens:correctness", "lens:security"]);
+      const cancelling = await launchParallel("cancel");
+      const beforeCancel = await runtime.query({ run_id: cancelling });
+      const cancel = beforeCancel.legal_actions.find(action => action.type === "cancel");
+      assert.equal((await runtime.command(cancel)).accepted, true);
+      try {
+        await waitFor(async () => { const value = await runtime.query({ run_id: cancelling }); return value.effects.filter(effect => effect.effect_kind === "delegate_cancellation" && effect.receipt !== null).length === 2 && value; }, "both sibling cancellation effects positively settle");
+      } catch (error) {
+        await retainPublicFixtureEvidence("parallel-cancellation-failure", { projection: await runtime.query({ run_id: cancelling }) });
+        throw error;
+      }
+      const cancelled = await runtime.query({ run_id: cancelling });
+      assert.equal(cancelled.phase, "cancelled");
+      assert.equal((await readEvents("cancel")).includes("critic:"), false);
+      assert.ok(!cancelled.legal_actions.some(action => action.type === "delegate_execute"));
+      const tasks = await captureDirectTasks();
+      const descriptors = tasks.map(task => ({ task, descriptor: JSON.parse(Buffer.from(task.files["descriptor.json"].base64, "base64").toString()) }));
+      for (const runId of [firstRun, restarting, cancelling]) {
+        const matching = descriptors.filter(value => value.descriptor.run_id === runId);
+        assert.equal(matching.length, runId === cancelling ? 2 : 3);
+        for (const { task } of matching) assert.equal(JSON.parse(Buffer.from(task.files["receipt.json"].base64, "base64").toString()).tree_retired, true);
+      }
+      await retainPublicFixtureEvidence("direct-parallel-review", { fixture_parallel_review: { firstRun, complete, adopted, cancelled, policy } });
+    }
+
   }
 
 });

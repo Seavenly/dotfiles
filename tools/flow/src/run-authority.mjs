@@ -4577,7 +4577,21 @@ function assertEffectWorkspaceAuthority(database, intent) {
       if (issue !== null) throw new AuthorityFenceError(issue, "read-only sibling workspace authority changed before admission or invocation");
     }
   }
-  const readOnlyWorkspaceClaimIds = delegateReadOnlyWorkspaceClaimIds(intent);
+  let readOnlyWorkspaceClaimIds = delegateReadOnlyWorkspaceClaimIds(intent);
+  if (intent?.effect_kind === "delegate_cancellation") {
+    const source = readStream(database, intent.run_id)?.fold?.effect_intents?.find(
+      value => value.effect_id === intent.delegate_effect_id);
+    // A stop-only intent inherits no resource exemption from its own labels.
+    // Resolve its exact original admitted delegate and compare every binding.
+    if (source?.effect_kind === "delegate" && source.run_id === intent.run_id &&
+        source.attempt_id === intent.delegate_attempt_id && source.card_id === intent.card_id &&
+        digest(source.route_binding) === digest(intent.route_binding) &&
+        digest(source.resource_claims) === digest(intent.resource_claims) &&
+        digest(source.delegate_input?.description ?? null) === digest(intent.delegate_input?.description ?? null) &&
+        digest(source.delegate_input?.resource_references ?? null) === digest(intent.delegate_input?.resource_references ?? null)) {
+      readOnlyWorkspaceClaimIds = delegateReadOnlyWorkspaceClaimIds(source);
+    }
+  }
   const workspaceClaims = (intent?.resource_claims ?? [])
     .filter(({ kind, id }) => kind === "workspace" &&
       !readOnlyWorkspaceClaimIds.has(id));

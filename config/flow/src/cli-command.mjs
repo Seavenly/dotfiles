@@ -29,7 +29,7 @@ const USAGE = `Usage:
   flow run --attach RUN_ID [--json]
   flow init [--summary TEXT --acceptance TEXT ...] [--json]
   flow init [same selections] --confirm sha256:DIGEST [--json]
-  flow start [--json]
+  flow start [--delegate-capacity 1|2] [--json]
   flow status [--json]
   flow stop [--json]
   flow pilot setup --execution-trust supervised-native-cli [--mode test|verify] [--parent DIRECTORY]
@@ -39,7 +39,7 @@ const USAGE = `Usage:
   flow local setup --execution-trust supervised-native-cli --repository PATH --brief JSON_FILE --codex-executable PATH [--mode verify|test --check JSON_FILE] [--reconfigure-check yes] [--upgrade-runtime yes] [--client-link PATH]
   flow local accept-prepared CLIENT_DIRECTORY PREPARED_JSON_FILE
   flow local inspect-prepared PREPARED_JSON_FILE
-  flow local review-request CLIENT_DIRECTORY PRODUCER_RUN_ID
+  flow local review-request CLIENT_DIRECTORY PRODUCER_RUN_ID [--lens security|correctness ...] [--parallel 1|2]
   flow prepare (--input JSON | --input-file PATH) [--json]
   flow launch (--input JSON | --input-file PATH) [--json]
   flow command (--input JSON | --input-file PATH) [--json]

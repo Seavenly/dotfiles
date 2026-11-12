@@ -1,3 +1,4 @@
+import { readOnlySiblingPolicyIssue } from "./read-only-sibling-policy.mjs";
 import { digest, freezeCanonical } from "./canonical.mjs";
 import {
   applyRevisionGraphChanges,
@@ -1302,7 +1303,7 @@ function isPublicReviewPreparationSelection(selection) {
       !isRecord(selection.routes) || !isRecord(selection.routes.lenses) ||
       !isRecord(selection.routes.critic) ||
       selectionKeys.some((key) =>
-        !["schema", "target", "lenses", "routes"].includes(key)) ||
+        !["schema", "target", "lenses", "routes", "execution"].includes(key)) ||
       selection.target !== undefined &&
         (!isRecord(selection.target) ||
          Object.keys(selection.target).sort().join(",") !==
@@ -1312,6 +1313,8 @@ function isPublicReviewPreparationSelection(selection) {
          !isDigest(selection.target.candidate_fingerprint))) {
     return false;
   }
+  if (selection.execution !== undefined && (readOnlySiblingPolicyIssue(selection.execution) !== null ||
+      digest([...selection.execution.card_ids].sort()) !== digest(selection.lenses.map(lens => `review-lens-${lens}`).sort()))) return false;
   if (selection.lenses.some((lens) =>
     typeof lens !== "string" || lens.length === 0)) {
     return false;
