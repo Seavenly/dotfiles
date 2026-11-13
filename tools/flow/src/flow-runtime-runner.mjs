@@ -1,3 +1,4 @@
+import { isAutomaticDeepContinuation } from "./deep-research-continuation.mjs";
 import { digest } from "./canonical.mjs";
 import { effectClassPolicy } from "./operation-effects.mjs";
 import { SUBRUN_CONTRACT } from "./subrun-effects.mjs";
@@ -291,7 +292,7 @@ export function createFlowRuntimeRunner({
       if (recoveryIssued) continue;
 
       const action = projection.legal_actions
-        .filter((candidate) => EXECUTION_COMMANDS.has(candidate.type))
+        .filter((candidate) => EXECUTION_COMMANDS.has(candidate.type) || isAutomaticDeepContinuation(projection, candidate))
         .sort(compareActions)
         .find((candidate) => {
           if (isPending(projection, candidate)) return false;

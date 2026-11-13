@@ -1,3 +1,4 @@
+import { decorateDeepResearchFold } from "./deep-research-continuation.mjs";
 import { canAdmitReadOnlySibling, siblingCardIds } from "./read-only-sibling-policy.mjs";
 import { digest, freezeCanonical, uniqueCanonical } from "./canonical.mjs";
 import {
@@ -896,7 +897,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
       };
     });
 
-  return freezeCanonical({
+  return freezeCanonical(decorateDeepResearchFold({
     schema: "flow.run-fold/v1",
     ...(run.prepared.trust_posture?.execution_contract === "flow.supervised-native-cli/v1" &&
       run.prepared.trust_posture.verification_scope?.schema === "flow.supervised-verification-scope/v1"
@@ -947,7 +948,7 @@ export function foldRun(run, { watermark = runWatermark(run) } = {}) {
     revision_templates: run.prepared.revision_templates,
     effect_intents: [...effectIntents.values()],
     legal_actions: legalActions,
-  });
+  }, run.prepared, run.events));
 }
 
 function sanitizeHistoricalEffectObservation(observation, intent) {
@@ -1018,6 +1019,7 @@ export function projectRun({ authorityEventStreamDigest, events, fold } = {}) {
     revisions: fold.revisions,
     revision_outcomes: fold.revision_outcomes,
     active_plan: fold.active_plan,
+    ...(fold.deep_research === undefined ? {} : { deep_research: fold.deep_research }),
     cards: fold.cards,
     checkpoints: views.operator.checkpoints,
     blocks: fold.blocks,
@@ -1102,6 +1104,7 @@ export function applyExecutionTimeObservation(
       )) return false;
       if (action.type === "checkpoint_decision" &&
           action.decision === "approve") return false;
+      if (action.type === "revision_decision" && fold.deep_research !== undefined && action.decision === "accept") return false;
       if (action.type !== "recovery") return true;
       const effect = fold.effects.find(({ effect_id: effectId }) =>
         effectId === action.effect_id);

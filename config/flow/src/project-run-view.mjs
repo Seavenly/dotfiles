@@ -19,6 +19,7 @@ export function projectRunProgress(run) {
       contract: effect.operation_contract ?? effect.effect_kind ?? null, status: effect.status,
       outcome: effect.receipt?.provider_receipt?.outcome ?? effect.last_observation?.provider_observation?.code ?? null })),
     blocks: run.blocks ?? [], legal_actions: runDecisionActions(run).map(({ command: _command, ...action }) => action),
+    ...(run.deep_research ? { deep_research: run.deep_research } : {}),
   };
 }
 
@@ -36,6 +37,10 @@ export function renderRunPreview(preview) {
 
 export function renderRunProgress(progress) {
   return [`Run ${progress.run_id}: ${progress.phase}`,
+    ...(progress.deep_research ? [`  Deep cycle: ${progress.deep_research.cycle ?? "unavailable"}; remaining cycles: ${progress.deep_research.remaining_cycles ?? "unavailable"}; operationally blocked: ${progress.deep_research.operationally_blocked}`,
+      `  Effective question: ${progress.deep_research.scope?.text ?? "unavailable"}`,
+      ...(progress.deep_research.scope_proposal ? [`  Scope checkpoint: ${progress.deep_research.scope_proposal.checkpoint_id}; explicit approval required; remaining original seconds: ${progress.deep_research.scope_proposal.remaining_elapsed_seconds ?? "unavailable"}`] : []),
+      ...(progress.deep_research.report?.cap_exhausted ? ["  Research cycle cap exhausted; findings and residual gaps remain in the cited report."] : [])] : []),
     ...progress.cards.map(card => `  ${card.id}: ${card.status}`),
     ...progress.effects.filter(effect => ["reconciling", "quarantined"].includes(effect.status)).map(effect => `  Effect ${effect.effect_id}: ${effect.status} (${effect.outcome ?? "outcome unresolved"})`),
     ...progress.blocks.map(block => `  Blocked: ${block.type ?? block.quarantine_reason ?? "authority decision required"}`), ""].map(terminalText).join("\n");

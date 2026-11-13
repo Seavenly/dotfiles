@@ -2,6 +2,7 @@ import { readResearchReport, researchAttachCommand, researchConfirmCommand } fro
 import { quoteShell } from "../scripts/feature-client-files.mjs";
 import { projectRunBlocked, projectRunFacts, terminalText } from "./project-run-view.mjs";
 import { reviewAttachCommand, reviewConfirmCommand } from "./project-review-view.mjs";
+import { readDeepResearchReport } from "../../../tools/flow/src/deep-research-report.mjs";
 
 const text = value => typeof value === "string" ? value.slice(0, 1024) : value === null || value === undefined ? null : String(value).slice(0, 1024);
 const strings = values => Array.isArray(values) ? values.slice(0, 32).map(text) : [];
@@ -83,16 +84,23 @@ function attemptRow(attempt) {
   }
   let research = null;
   if (attempt.kind === "research") {
-    const packet = selection.packet ?? run?.active_plan?.cards?.find(card => card.id === "spike-research")?.inputs?.task_inputs?.packet;
+    const deep = selection.deep ?? run?.active_plan?.deep_research?.deep;
+    const packet = selection.packet ?? run?.active_plan?.deep_research?.packet ?? run?.active_plan?.cards?.find(card => card.id === "spike-research")?.inputs?.task_inputs?.packet;
     let report = null;
     if (packet && run) {
-      try { report = readResearchReport(run, packet); }
+      try { report = deep ? readDeepResearchReport(run, packet, deep) : readResearchReport(run, packet); }
       catch { attention.push("Research report does not bind the exact accepted source/evidence attempt; inspect original public evidence."); }
     }
     research = { question: text(packet?.question?.text), packet_digest: text(packet?.packet_digest),
       report_status: report ? "validated_report" : "not_observed", assurance: report?.assurance ?? null,
       finding_count: report?.findings.length ?? null, residual_gap_count: report?.residual_gaps.length ?? null,
-      research_evidence_digest: text(report?.research_evidence_digest) };
+      research_evidence_digest: text(report?.research_evidence_digest),
+      ...(deep ? { mode: "deep", effective_question: text(run?.deep_research?.scope?.text ?? packet?.question?.text),
+        cycle: run?.deep_research?.cycle ?? null, max_cycles: deep.max_cycles,
+        cap_exhausted: report?.cap_exhausted ?? false, operationally_blocked: run?.deep_research?.operationally_blocked ?? false,
+        scope_checkpoint: text(run?.deep_research?.scope_proposal?.checkpoint_id), retained_evidence_digest: text(report?.retained_evidence_digest) } : {}) };
+    if (research.operationally_blocked) attention.push("Deep research has a settled operational failure; diagnostic critique is not a successful report.");
+    if (research.scope_checkpoint) attention.push("A supplied-source question change awaits an explicit decision on the original run.");
     checks = null; critique = null;
   }
   const candidate = attempt.kind === "research" ? null : attempt.candidate;
@@ -142,6 +150,8 @@ export function renderProjectRuns(report) {
   for (const row of report.attempts) {
     lines.push("", `${row.kind}: ${row.summary?.slice(0, 160) ?? "retained task"}`, `  ID: ${row.run_id ?? row.intended_run_id ?? "not admitted"}`, `  ${row.state}${row.phase ? `; phase ${row.phase}` : ""}; ${row.observation}`, `  Client runtime: ${row.runtime_root}`, `  Retained: ${row.retained_directory ?? row.request ?? "public authority"}`);
     if (row.research) lines.push(`  Research packet: ${row.research.packet_digest ?? "unavailable"}; report ${row.research.report_status}; assurance ${row.research.assurance ?? "not observed"}; residual gaps ${row.research.residual_gap_count ?? "unknown"}`, "  Supplied-source research only; no candidate, human approval or publication.");
+    if (row.research?.mode === "deep") lines.push(`  Deep cycle: ${row.research.cycle ?? "not admitted"}/${row.research.max_cycles}; cycle cap exhausted: ${row.research.cap_exhausted}; operationally blocked: ${row.research.operationally_blocked}`,
+      `  Effective question: ${row.research.effective_question ?? "not observed"}`, ...(row.research.scope_checkpoint ? [`  Scope decision: ${row.research.scope_checkpoint}; reattach to inspect the fresh authority proposal.`] : []));
     if (row.checks) lines.push(`  Checks: ${row.checks.kind}; ${row.checks.outcome ?? row.checks.status ?? row.checks.project_checks ?? "not observed"}; test count ${row.checks.test_count}${row.checks.rerun === false ? " (inherited; not rerun)" : ""}`);
     if (row.critique) lines.push(`  Feature critique: ${row.critique}`);
     if (row.candidate) lines.push(`  Candidate: ${row.candidate.id}; ${row.candidate.status}; ${row.candidate.fingerprint}`);

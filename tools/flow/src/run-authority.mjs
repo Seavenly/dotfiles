@@ -1,3 +1,4 @@
+import { withDeepExecutionTime } from "./deep-research-continuation.mjs";
 import { readOnlySiblingWorkspaceIssue } from "./read-only-sibling-policy.mjs";
 import { isProjectCheckAbsenceReceipt, validateProjectCheckReceipt, PROJECT_CHECK_CONTRACT } from "./project-check.mjs";
 import { validateFeatureCaptureReceipt, FEATURE_CAPTURE_OPERATION_CONTRACT } from "./feature-capture.mjs";
@@ -5369,6 +5370,7 @@ function fencedRunFold(
     ...(revalidation === null ? {} : { reboot_revalidation: revalidation }),
     execution_time: executionProjection.executionTime,
     legal_actions: retryProjection.legalActions,
+    ...withDeepExecutionTime(stream.fold, executionProjection.executionTime, retryProjection.legalActions),
     ...(trackerProgress === undefined ? {} : {
       tracker_progress: {
         ...trackerProgress,

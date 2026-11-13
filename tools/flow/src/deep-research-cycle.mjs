@@ -10,7 +10,7 @@ export function deriveDeepCycleReceipt(intent) {
   const critics = evidence.entries.filter(entry => entry.card_id === deepCriticCardId(input.cycle));
   if (critics.length !== 1 || critics[0].disposition !== "accepted") throw new Error("deep_critic_evidence_unavailable");
   const critic = critics[0], output = JSON.parse(critic.output);
-  const previousIdentity = { schema: evidence.schema, run_id: evidence.run_id, cycle: evidence.cycle,
+  const previousIdentity = { schema: evidence.schema, input_safety_policy_id: evidence.input_safety_policy_id, run_id: evidence.run_id, cycle: evidence.cycle,
     question: evidence.question, scope_digest: evidence.scope_digest, entries: evidence.entries.filter(entry => entry.card_id !== critic.card_id) };
   const predecessor = { ...previousIdentity, evidence_digest: digest(previousIdentity) };
   const task = input.critic_task_inputs;

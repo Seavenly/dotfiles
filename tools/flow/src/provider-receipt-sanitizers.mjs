@@ -1,4 +1,5 @@
 import { DIRECT_RECEIPT_SCHEMA_FIELDS, DIRECT_NESTED_FIELDS } from "./provider-receipt-policies/delegate-direct.mjs";
+import { DEEP_RESEARCH_RECEIPT_SCHEMA_FIELDS, DEEP_RESEARCH_CHILD_FIELDS } from "./provider-receipt-policies/deep-research.mjs";
 /**
  * The generic provider receipt boundary composes versioned domain policies.
  * Domain modules own their schema fields; this module owns only recursive
@@ -36,6 +37,7 @@ const PROVIDER_RECEIPT_SCHEMA_FIELDS = new Map([
   ...FEATURE_WORK_RECEIPT_SCHEMA_FIELDS,
   ...REVIEW_RECEIPT_SCHEMA_FIELDS,
   ...TRACKER_SUBRUN_RESOURCE_RECEIPT_SCHEMA_FIELDS,
+  ...DEEP_RESEARCH_RECEIPT_SCHEMA_FIELDS,
 ]);
 
 const SAFE_PROVIDER_RECEIPT_NESTED_FIELDS = new Set([
@@ -95,10 +97,14 @@ export function isCredentialShapedString(value) {
 }
 
 export function sanitizeProviderReceiptValue(value, { root = true } = {}) {
+  return sanitizeValue(value, { root });
+}
+
+function sanitizeValue(value, { root, parentSchema, parentField } = {}) {
   if (Array.isArray(value)) {
     return value.flatMap((candidate) => {
       if (isCredentialShapedString(candidate)) return [];
-      const sanitized = sanitizeProviderReceiptValue(candidate, { root: false });
+      const sanitized = sanitizeValue(candidate, { root: false, parentSchema, parentField });
       return sanitized === null || sanitized === undefined ? [] : [sanitized];
     });
   }
@@ -121,7 +127,7 @@ export function sanitizeProviderReceiptValue(value, { root = true } = {}) {
     ? rootFields
     : schema !== null && PROVIDER_RECEIPT_SCHEMA_FIELDS.has(schema)
       ? new Set([...PROVIDER_RECEIPT_SCHEMA_FIELDS.get(schema), ...(schema === "flow.delegate-evidence/v1" || schema === "flow.delegate-quarantine/v1" ? ["execution_watermark"] : [])])
-      : SAFE_PROVIDER_RECEIPT_NESTED_FIELDS;
+      : DEEP_RESEARCH_CHILD_FIELDS.get(`${parentSchema}:${parentField}`) ?? SAFE_PROVIDER_RECEIPT_NESTED_FIELDS;
   const result = {};
   for (const [key, candidate] of Object.entries(value)) {
     const normalizedKey = key.toLowerCase().replaceAll("_", "").replaceAll("-", "");
@@ -129,7 +135,7 @@ export function sanitizeProviderReceiptValue(value, { root = true } = {}) {
         !allowedFields.has(key) || isCredentialShapedString(candidate)) {
       continue;
     }
-    const sanitized = sanitizeProviderReceiptValue(candidate, { root: false });
+    const sanitized = sanitizeValue(candidate, { root: false, parentSchema: schema, parentField: key });
     if (sanitized === undefined ||
         sanitized === null && candidate !== null) continue;
     if (isRecord(candidate) && isRecord(sanitized) &&

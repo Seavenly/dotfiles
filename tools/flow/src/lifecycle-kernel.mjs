@@ -1,3 +1,4 @@
+import { decideDeepResearchContinuation } from "./deep-research-continuation.mjs";
 import { createDeepTerminalSet } from "./deep-research-evidence.mjs";
 import { canAdmitReadOnlySibling, siblingCardIds } from "./read-only-sibling-policy.mjs";
 import { acceptedDelegateEvidenceEntry, transferableDelegateEvidence } from "./delegate-evidence.mjs";
@@ -151,6 +152,7 @@ export function decideLifecycle(fold, command) {
           : "execution_deadline_exhausted",
     );
   }
+  if (fold.deep_research && command.type === "revision_decision" && command.decision === "accept" && ["exhausted", "uncertain", "unobserved"].includes(executionDeadline)) return reject(fold, command, "execution_deadline_exhausted");
   const hasUnresolvedEffects = fold.effects?.some(
     ({ status }) => !["quarantined", "succeeded"].includes(status),
   );
@@ -170,6 +172,9 @@ export function decideLifecycle(fold, command) {
       )) {
     return reject(fold, command, "effect_settlement_required");
   }
+  const deepContinuation = decideDeepResearchContinuation(fold, command);
+  if (deepContinuation?.code) return reject(fold, command, deepContinuation.code);
+  if (deepContinuation) return deepContinuation;
   if (command.type === "capability_grant") {
     const legalGrant = fold.legal_actions.find((action) =>
       action.type === "capability_grant" && digest(action) === digest(command));

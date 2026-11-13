@@ -119,7 +119,7 @@ export function materializeDelegateInputEnvelope({
   const requirements = normalizeOutputRequirements(outputRequirements);
   const evidence = predecessorEvidence === undefined
     ? undefined
-    : normalizePredecessorEvidence(predecessorEvidence);
+    : normalizePredecessorEvidence(predecessorEvidence, taskInputs, outputRequirements);
   const identity = {
     schema: DELEGATE_INPUT_ENVELOPE_SCHEMA,
     attempt_id: attemptId,
@@ -597,11 +597,15 @@ function normalizeOutputRequirements(requirements) {
   };
 }
 
-function normalizePredecessorEvidence(evidence) {
+function normalizePredecessorEvidence(evidence, taskInputs, outputRequirements) {
   if (evidence?.schema === "flow.deep-research-terminal-set/v1") {
-    if (!validateDeepTerminalSet(evidence)) throw new DelegateInputEnvelopeError("invalid_predecessor_evidence", "deep research terminal evidence is not exact");
+    const role = taskInputs?.role, schema = role === "angle" ? "flow.deep-research-angle-output/v1" : "flow.deep-research-critic-output/v1", validator = role === "angle" ? "flow.validator/deep-research-angle/v1" : "flow.validator/deep-research-critic/v1";
+    const selected = taskInputs?.flow === "spike/v3" && ["angle", "critic"].includes(role) && [1, 2].includes(taskInputs.cycle) && taskInputs.cycle === evidence.cycle && digest(taskInputs.question) === digest(evidence.question) && taskInputs.scope_digest === evidence.scope_digest &&
+      outputRequirements?.schemas?.length === 1 && outputRequirements.schemas[0] === schema && outputRequirements.validator_contracts?.length === 1 && outputRequirements.validator_contracts[0] === validator &&
+      validateDeepResearchSelection({ schema: "flow.project-deep-research-selection/v1", angles: taskInputs.angles, parallel: 2, max_cycles: 2 });
+    if (!selected || !validateDeepTerminalSet(evidence)) throw new DelegateInputEnvelopeError("invalid_predecessor_evidence", "deep research terminal evidence is not exact");
     assertTransferableShape(evidence, "predecessor_evidence");
-    validateDelegateTransferValue(projectDelegateTaskInputSafety(evidence), "predecessor_evidence");
+    validateDelegateTransferValue(projectDelegateTaskInputSafety(evidence), "predecessor_evidence", true);
     return evidence;
   }
   if (!isPlainRecord(evidence) ||

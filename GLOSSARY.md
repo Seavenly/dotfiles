@@ -476,6 +476,29 @@ settlement and retirement evidence. Owner runner capacity is a separate limit;
 read-only labels alone confer no admission authority.
 _Avoid_: Parallel flag, shared agent, unrestricted fan-out, runner slot grant
 
+**Deep research cycle**:
+One bounded investigation of selected confirmed angles followed by a fresh gap
+critic over the complete retained evidence and terminal dispositions. A later
+cycle preserves earlier evidence and consumes the original remaining budget.
+_Avoid_: Operational retry, replacement history, unbounded research loop
+
+**Retained terminal set**:
+The exact settled angle and critic evidence, including historical versions and
+operational failures, considered by one deep research critic or cycle decision.
+An uncertain or unretired attempt is not a terminal disposition.
+_Avoid_: Latest prose, accepted-only summary, assumed completion
+
+**Effective research question**:
+The question currently authorized for a deep research cycle. An explicitly
+approved replacement preserves the original Source packet and fixed angles.
+_Avoid_: Rewritten source question, implicit scope expansion
+
+**Research scope checkpoint**:
+A fresh explicit decision on a proposed replacement research question, its
+unchanged sources and angles, and the complete next-cycle cost within the
+original remaining budget. Decline preserves the original-scope report.
+_Avoid_: Automatic widening, new-run workaround, source replacement
+
 **Authority-materialized delegate evidence**:
 The digest-bound envelope RunAuthority creates from accepted upstream delegate
 evidence for one declared dependent card. It is the only evidence context a

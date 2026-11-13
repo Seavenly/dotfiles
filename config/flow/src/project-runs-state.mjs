@@ -169,7 +169,7 @@ export async function collectProjectRuns(options = {}, { env = process.env, cwd 
             if (result.attempts.length >= limits.attempts) throw failure("attempt_limit", "Attempt limit reached.");
             if (!/^[a-f0-9]{64}$/u.test(name)) throw failure("unknown_research", "Unknown retained research intent.");
             const intent = io.json(join(path, "intent.json"));
-            const selection = researchSelection(client, intent.packet, intent.source_provenance, intent.policy);
+            const selection = researchSelection(client, intent.packet, intent.source_provenance, intent.policy, { deep: intent.deep });
             io.remaining();
             if (selection.intent_directory !== path || digest(intent) !== selection.selection_digest) throw failure("research_changed", "Research intent no longer binds the original client/source packet.");
             result.attempts.push({ kind: "research", ...journal(selection, io) });
@@ -245,7 +245,7 @@ async function inspectAuthorities(result, io, observer, diagnostic, env) {
         if (attempts.length) for (const attempt of attempts) {
           if (attempt.state === "accepted_unknown") attempt.attention = (attempt.attention ?? []).filter(reason => reason !== acceptedWarning);
           attempt.state = "admitted"; attempt.run = run; attempt.observation = row.observation; attempt.query = query; }
-        else if (result.attempts.length < result.limits.attempts) result.attempts.push({ kind: run.active_plan?.cards?.some(card => card.inputs?.task_inputs?.flow === "spike/v2") ? "research" : "manual", state: "admitted", selection: selected, run, observation: row.observation, query, attention: ["No matching validated guided receipt; use the original client's inspection commands."] });
+        else if (result.attempts.length < result.limits.attempts) result.attempts.push({ kind: run.active_plan?.cards?.some(card => ["spike/v2", "spike/v3"].includes(card.inputs?.task_inputs?.flow)) ? "research" : "manual", state: "admitted", selection: selected, run, observation: row.observation, query, attention: ["No matching validated guided receipt; use the original client's inspection commands."] });
         else throw failure("attempt_limit", "Attempt limit reached; some authority work was not displayed.");
       }
       for (const attempt of result.attempts.filter(attempt => attempt.selection.authority_directory === authority)) attempt.observation ??= row.observation;
