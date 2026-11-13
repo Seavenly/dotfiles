@@ -24,6 +24,28 @@ import {
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
+test("published deep research inputs bind exactly two fixed angles and matching complete-cycle bounds", async () => {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const names = ["flow.research-source-packet.v1.schema.json", "flow.project-deep-research-selection.v1.schema.json", "flow.deep-research-preparation-request.v1.schema.json", "flow.research-cohort-policy.v1.schema.json", "flow.deep-research-angle-output.v1.schema.json", "flow.deep-research-critic-output.v1.schema.json"];
+  for (const name of names) ajv.addSchema(JSON.parse(await readFile(join(root, "schemas", name), "utf8")));
+  const selection = ajv.getSchema("https://dotfiles.local/schemas/flow.project-deep-research-selection.v1.schema.json");
+  const deep = { schema: "flow.project-deep-research-selection/v1", angles: [{ angle_id: "angle:1", text: "Delivery guarantees" }, { angle_id: "angle:2", text: "Integrity limitations" }], parallel: 2, max_cycles: 2 };
+  assert.equal(selection(deep), true, JSON.stringify(selection.errors));
+  for (const changed of [{ ...deep, max_cycles: 3 }, { ...deep, angles: [...deep.angles].reverse() }, { ...deep, angles: deep.angles.slice(0, 1) }, { ...deep, parallel: 3 }, { ...deep, template: "caller-shaped" }]) assert.equal(selection(changed), false);
+  const policy = ajv.getSchema("https://dotfiles.local/schemas/flow.research-cohort-policy.v1.schema.json");
+  assert.equal(policy({ schema: "flow.research-cohort-policy/v1", max_in_flight: 2 }), true);
+  assert.equal(policy({ schema: "flow.research-cohort-policy/v1", max_in_flight: 2, card_ids: ["copied"] }), false);
+  const request = ajv.getSchema("https://dotfiles.local/schemas/flow.deep-research-preparation-request.v1.schema.json");
+  const packet = { schema: "flow.research-source-packet/v1", question: { id: "question:" + "a".repeat(64), text: "Which guarantee follows?" },
+    sources: [{ id: "source:" + "b".repeat(64), uri: "urn:sha256:" + "b".repeat(64), digest: "sha256:" + "b".repeat(64), size_bytes: 5, content: "notes" }], packet_digest: "sha256:" + "c".repeat(64) };
+  const value = { schema: "flow.deep-research-preparation-request/v1", repository: "owned-project", packet, deep,
+    limits: { max_elapsed_seconds: 600, max_revisions: 1 }, execution_trust: { schema: "flow.supervised-native-cli/v1", acknowledgment: "trust-official-cli-permissions" } };
+  assert.equal(request(value), true, JSON.stringify(request.errors));
+  assert.equal(request({ ...value, limits: { ...value.limits, max_revisions: 0 } }), false);
+  assert.equal(request({ ...value, deep: { ...deep, max_cycles: 1 }, limits: { ...value.limits, max_revisions: 0 } }), true);
+  assert.equal(request({ ...value, routes: { unrelated: {} } }), false);
+});
+
 test("public host and reboot admission schemas compile in strict mode", async () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
   const names = [

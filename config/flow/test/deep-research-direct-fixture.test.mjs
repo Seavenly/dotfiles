@@ -13,6 +13,8 @@ import { decorateDeepResearchFold } from "../../../tools/flow/src/deep-research-
 import { foldRun } from "../../../tools/flow/src/run-projection.mjs";
 import { decideLifecycle } from "../../../tools/flow/src/lifecycle-kernel.mjs";
 import { DatabaseSync } from "node:sqlite";
+import { readRecordedTaskUsage } from "../../../tools/flow/src/recorded-task-usage.mjs";
+import { digest } from "../../../tools/flow/src/canonical.mjs";
 
 const trust = { schema: "flow.supervised-native-cli/v1", acknowledgment: "trust-official-cli-permissions" };
 // An owned deterministic public-wire executable, never official/native qualification.
@@ -22,6 +24,7 @@ if sys.argv[1:]==['--version']:print('codex-cli 0.166.0');sys.exit(0)
 root=pathlib.Path(__file__).parent; scenario=json.loads((root/'scenario.json').read_text())
 envelope=json.load(sys.stdin);task=envelope['task_inputs'];role=task['role'];cycle=task['cycle']
 card=('deep-angle-'+task['angle']['angle_id'].split(':')[1] if role=='angle' else 'deep-critic')+'-cycle-'+str(cycle)
+with (root/'invocations.jsonl').open('a') as log:log.write(card+'\\n')
 (root/('started-'+card)).write_text('started')
 if scenario.get('hold_initial') and role=='angle' and cycle==1:
  end=time.monotonic()+8
@@ -113,6 +116,9 @@ test("public production deep research completes a coalesced whole revision cycle
   const observed = tasks.map(task => { const path = join(f.authority, "direct-tasks", task); assert.equal(JSON.parse(readFileSync(join(path, "receipt.json"))).tree_retired, true); return JSON.parse(readFileSync(join(path, "observed-input.json"))); });
   const critic = observed.find(input => input.task_inputs.role === "critic" && input.task_inputs.cycle === 2);
   assert.equal(critic.predecessor_evidence.entries.length, 5); assert.equal(new Set(critic.predecessor_evidence.entries.map(entry => entry.card_id)).size, 5);
+  const usage = run.effects.filter(effect => effect.effect_kind === "delegate").map(effect => readRecordedTaskUsage({ authorityDirectory: f.authority, runId: id, effect }));
+  assert.equal(usage.length, 6); assert.equal(new Set(usage.map(attempt => attempt.task_id)).size, 6);
+  assert.ok(usage.every(attempt => attempt.metrics.turns === 1 && attempt.cost.usd === null));
   assert.equal(f.git(["rev-parse", "HEAD"]), f.before); assert.equal(f.git(["status", "--porcelain"]), "");
 });
 
@@ -156,6 +162,7 @@ test("whole-cycle capacity and trusted receipt failures cannot partially reserve
   for (const field of ["run_id", "cycle", "scope_digest", "terminal_set_digest"]) {
     const altered = structuredClone(raw), receipt = altered.events.find(event => event.type === "effect_receipt_recorded" && event.receipt?.provider_receipt?.schema === "flow.deep-research-cycle-receipt/v1")?.receipt.provider_receipt;
     assert.ok(receipt); receipt[field] = field === "cycle" ? 2 : "changed";
+    const { self_digest: _priorDigest, ...identity } = receipt; receipt.self_digest = digest(identity);
     const invalid = foldRun(altered);
     assert.equal(invalid.deep_research.operationally_blocked, true);
     assert.equal(invalid.deep_research.report, null);
@@ -167,6 +174,8 @@ test("whole-cycle capacity and trusted receipt failures cannot partially reserve
   assert.ok(!untrusted.legal_actions.some(action => action.type === "revision_decision"));
   assert.equal((await f.runtime.query({ run_id: id })).active_plan.cards.length, 5);
   assert.equal(readdirSync(join(f.authority, "direct-tasks")).length, 3);
+  const invocations = readFileSync(join(f.root, "invocations.jsonl"), "utf8").trim().split("\n");
+  assert.equal(invocations.length, 3); assert.equal(new Set(invocations).size, 3);
 });
 
 async function queryUntil(f, id, predicate) {
@@ -200,6 +209,8 @@ test("two real angle workers overlap, complete in reverse order and survive owne
   const run = await observe(f, id);
   assert.equal(run.phase, "succeeded", JSON.stringify(run)); assert.equal(run.delegate_attempts.length, 3);
   assert.equal(readdirSync(join(f.authority, "direct-tasks")).length, 3);
+  const invocations = readFileSync(join(f.root, "invocations.jsonl"), "utf8").trim().split("\n");
+  assert.equal(invocations.length, 3); assert.equal(new Set(invocations).size, 3);
   assert.ok(readdirSync(join(f.authority, "direct-tasks")).every(task => JSON.parse(readFileSync(join(f.authority, "direct-tasks", task, "receipt.json"))).tree_retired === true));
 });
 

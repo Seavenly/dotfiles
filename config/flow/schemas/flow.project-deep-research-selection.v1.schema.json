@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.project-deep-research-selection.v1.schema.json",
+  "title": "flow.project-deep-research-selection/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "angles",
+    "parallel",
+    "max_cycles"
+  ],
+  "properties": {
+    "schema": {
+      "const": "flow.project-deep-research-selection/v1"
+    },
+    "angles": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "angle_id",
+            "text"
+          ],
+          "properties": {
+            "angle_id": {
+              "const": "angle:1"
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "angle_id",
+            "text"
+          ],
+          "properties": {
+            "angle_id": {
+              "const": "angle:2"
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          }
+        }
+      ],
+      "items": false
+    },
+    "parallel": {
+      "enum": [
+        1,
+        2
+      ]
+    },
+    "max_cycles": {
+      "enum": [
+        1,
+        2
+      ]
+    }
+  }
+}

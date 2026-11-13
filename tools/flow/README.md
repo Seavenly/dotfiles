@@ -639,6 +639,40 @@ publication authority, prototype or revision loop, tracker action, review or
 approval behavior, or implicit cross-run transfer. Any later resource
 publication remains an explicit handoff outside this flow.
 
+### Deep supplied-source research
+
+The additive trusted `spike/v3` definition binds two confirmed angle texts to
+independent read-only routes and the existing sole RunAuthority. It permits at
+most two cycles, six native attempts and one shared elapsed budget. A registered
+read-only cycle-decision operation consumes the exact host terminal set and
+validated critic request. A narrow trusted continuation compiler then uses the
+existing revision/checkpoint transaction to reserve the complete next subset,
+fresh critic and mechanism cards. No accepted angle or critic is superseded.
+Copied dynamic policies, model card shapes or stale decision receipts confer no
+admission authority.
+
+An explicit same-run scope checkpoint may append a safe effective question,
+preserving the original Source packet and both angle identities/texts. Approval
+reserves both angles and a fresh critic within the original remaining budget;
+decline retains the original-scope report. Both successful outcomes require a
+fresh within-budget authority observation. Semantic cycle-cap exhaustion may
+finish with findings and residual gaps; structural, authority, retirement or
+operational failure remains blocked. A positively settled angle failure is
+typed diagnostic input, never successful research evidence, and whole-run
+cancellation never admits another critic.
+
+The supervised public preparation fixes five initial graph cards and at most
+ten total; `--max-cycles 1` therefore exercises the reachable public semantic
+cap with no partial revision. The one-card-short counterfactual capacity test
+checks the pure atomic reservation mechanism over real owned durable events;
+it is not a public lower-card-limit option. Production tests additionally cover
+real read-only overlap, reverse completion, owner recreation without redispatch,
+coalesced one-angle and both-angle cycles, scope decisions and cancellation.
+The maximum materialization control executes six 8192-byte native fixture
+outputs with a 4 KiB question, two 1 KiB angles and 128 KiB supplied sources,
+then validates the actual second critic and registered cycle-decision receipt.
+These are deterministic wire fixtures, not official native qualification.
+
 ### Verified feature candidate
 
 The trusted `feature/v1` predefined definition turns one accepted

@@ -289,7 +289,7 @@ access facts are not transferable evidence and do not carry paths, credentials,
 capability secrets, the prepared bundle, or ambient transcripts.
 When a predecessor join is declared, `predecessor_evidence` is the exact
 RunAuthority-materialized, issue-79-compatible evidence receipt and binding;
-the enclosing public catalog is `flow.contract-catalog/v1@41`, while the
+the enclosing public catalog is `flow.contract-catalog/v1@42`, while the
 unchanged legacy evidence-safety policy and transferable-evidence receipts bind
 exactly to `flow.contract-catalog/v1@39`.
 
@@ -464,3 +464,36 @@ manually issued public commands retain their existing semantics. Omitted review
 execution policy and startup flags retain old serial behavior and identities.
 Old generated clients stay pinned until the supported stopped/settled runtime
 upgrade; installing a frontend does not silently rebind their authority.
+
+### Bounded supplied-source deep research
+
+The explicit supervised Linux `research --mode deep` path uses trusted
+`spike/v3`: two fixed read-only angles, one fresh gap critic per cycle and at
+most one whole revision cycle. Initial preparation includes five graph cards
+(two angles, critic, internal decision and checkpoint), every future native
+route, a maximum of six attempts and one original shared elapsed budget. A
+one-angle revision appends four cards and two native attempts; both angles or
+an approved replacement question append five cards and three attempts.
+
+The registered `flow.research-cycle/v1` operation is an internal read-only
+decision with no external I/O or resource claims. It appears in the existing
+operation-admission `requested_authority.mutations` vocabulary without granting
+Workspace, Git, candidate or publication authority. Its exact receipt is data
+for the trusted authority continuation compiler, never a model-shaped plan.
+RunAuthority atomically records the checkpoint decision, optional appended
+effective question and complete next-cycle reservation through the existing
+command transaction. Accepted history and the original Source packet remain
+unchanged. A scope proposal always waits for explicit fresh approval; decline
+can finish only the valid original-scope report while time remains authoritative
+and within the original budget. Unknown or exhausted time leaves evidence
+readable and completion blocked.
+
+Each critic consumes an exact digest-bound terminal set including unchanged
+angles, historical versions and positively settled failures. Only this declared
+diagnostic join may consume a failed angle; operational failure remains a
+sticky completion block, and whole-run cancellation starts no critic. Every
+accepted native output stays within the unchanged legacy output-safety policy
+and 8192 UTF-8 byte total. The host terminal set selects the existing larger
+research-input policy only through the exact trusted deep role, schema and
+validator binding. No source is fetched and no original client/runtime is
+upgraded implicitly. See [guided research](../../docs/flow/guided-research.md).

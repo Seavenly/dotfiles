@@ -32,7 +32,7 @@ test("the public catalog exposes the settled interface and forbids legacy import
     "query",
     "watch",
   ]);
-  assert.equal(catalog.catalog_version, 41);
+  assert.equal(catalog.catalog_version, 42);
   assert.equal(catalog.flow_runtime.read_only_siblings.maximum, 2);
   assert.equal(catalog.flow_runtime.read_only_siblings.authority, "RunAuthority");
   for (const contract of [
@@ -57,6 +57,9 @@ test("the public catalog exposes the settled interface and forbids legacy import
   );
   assert.equal(catalog.predefined_flows["spike/v2"].evidence.model_hash_computation, false);
   assert.equal(catalog.predefined_flows["spike/v2"].source_fetch, "never");
+  assert.equal(catalog.predefined_flows["spike/v3"].cycle.max_native_attempts, 6);
+  assert.equal(catalog.predefined_flows["spike/v3"].scope.approval, "fresh_explicit_same_run_checkpoint");
+  assert.equal(catalog.predefined_flows["spike/v3"].operational_retries, 0);
   assert.deepEqual(catalog.flow_runtime.transport, {
     interface: "flow.runtime/v1",
     request: "flow.transport-request/v1",

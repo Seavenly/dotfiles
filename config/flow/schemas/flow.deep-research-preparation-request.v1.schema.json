@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.deep-research-preparation-request.v1.schema.json",
+  "title": "flow.deep-research-preparation-request/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "repository",
+    "packet",
+    "execution_trust",
+    "deep",
+    "limits"
+  ],
+  "properties": {
+    "schema": {
+      "const": "flow.deep-research-preparation-request/v1"
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1
+    },
+    "packet": {
+      "$ref": "flow.research-source-packet.v1.schema.json"
+    },
+    "execution_trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "acknowledgment"
+      ],
+      "properties": {
+        "schema": {
+          "const": "flow.supervised-native-cli/v1"
+        },
+        "acknowledgment": {
+          "const": "trust-official-cli-permissions"
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_elapsed_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "max_revisions": {
+          "enum": [
+            0,
+            1
+          ]
+        }
+      },
+      "required": [
+        "max_elapsed_seconds",
+        "max_revisions"
+      ]
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deep-angle-1-cycle-1": {
+          "$ref": "#/$defs/route"
+        },
+        "deep-angle-2-cycle-1": {
+          "$ref": "#/$defs/route"
+        },
+        "deep-critic-cycle-1": {
+          "$ref": "#/$defs/route"
+        },
+        "deep-angle-1-cycle-2": {
+          "$ref": "#/$defs/route"
+        },
+        "deep-angle-2-cycle-2": {
+          "$ref": "#/$defs/route"
+        },
+        "deep-critic-cycle-2": {
+          "$ref": "#/$defs/route"
+        }
+      }
+    },
+    "deep": {
+      "$ref": "flow.project-deep-research-selection.v1.schema.json"
+    }
+  },
+  "$defs": {
+    "route": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "harness": {
+              "enum": [
+                "codex",
+                "claude"
+              ]
+            },
+            "role": {
+              "type": "string",
+              "minLength": 1
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "effort": {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ]
+            },
+            "capability": {
+              "const": "read-only"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "launch"
+          ],
+          "properties": {
+            "launch": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "harness": {
+                  "enum": [
+                    "codex",
+                    "claude"
+                  ]
+                },
+                "role": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "model": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "effort": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh"
+                  ]
+                },
+                "capability": {
+                  "const": "read-only"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "deep": {
+            "type": "object",
+            "properties": {
+              "max_cycles": {
+                "const": 1
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "limits": {
+            "type": "object",
+            "properties": {
+              "max_revisions": {
+                "const": 0
+              }
+            }
+          },
+          "routes": {
+            "type": "object",
+            "properties": {
+              "deep-angle-1-cycle-2": false,
+              "deep-angle-2-cycle-2": false,
+              "deep-critic-cycle-2": false
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "limits": {
+            "type": "object",
+            "properties": {
+              "max_revisions": {
+                "const": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

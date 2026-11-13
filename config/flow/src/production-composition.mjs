@@ -2164,6 +2164,9 @@ async function buildResearchPreparationSelection(options) {
 async function buildDeepResearchPreparationSelection(options) {
   const { request, delegatedAgentPort, timeAdapter, runAuthority } = options;
   if (!exactObject(request, ["schema", "repository", "packet", "deep", "limits", "routes"]) || !validateResearchSourcePacket(request.packet) || !validateDeepResearchSelection(request.deep)) throw new ProductionPreparationError("invalid_deep_research_request", "Select two exact safe angles and one immutable supplied source packet");
+  const routeIds = Array.from({ length: request.deep.max_cycles }, (_, index) => index + 1).flatMap(cycle =>
+    [...request.deep.angles.map(angle => deepAngleCardId(cycle, angle.angle_id)), deepCriticCardId(cycle)]);
+  if (request.routes !== undefined && !exactObject(request.routes, routeIds)) throw new ProductionPreparationError("invalid_deep_research_route", "Select only the exact confirmed deep research routes");
   const { repositoryPath, workspace } = prepareProductionWorkspace(options);
   const existing = currentWorkspaceProjection(runAuthority, workspace.subject_id);
   if (existing && (existing.taint !== null || existing.claims.length)) throw new ProductionPreparationError("workspace_already_claimed", "Settle original workspace claims before research");

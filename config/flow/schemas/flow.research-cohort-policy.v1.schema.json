@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotfiles.local/schemas/flow.research-cohort-policy.v1.schema.json",
+  "title": "flow.research-cohort-policy/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "max_in_flight"
+  ],
+  "properties": {
+    "schema": {
+      "const": "flow.research-cohort-policy/v1"
+    },
+    "max_in_flight": {
+      "enum": [
+        1,
+        2
+      ]
+    }
+  }
+}

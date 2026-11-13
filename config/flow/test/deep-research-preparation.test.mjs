@@ -49,4 +49,9 @@ test('public preparation binds two independent deep angles, every future route a
  assert.ok(!fresh.legal_actions.some(action=>action.card_id==='deep-critic-cycle-1'));
  const copied={schema:'flow.dynamic-plan-proposal/v1',graph:prepared.graph,requested_authority:prepared.requested_authority,explicit_facts:prepared.explicit_facts,revision_templates:[]};
  assert.throws(()=>compileDynamicPlan(copied),error=>error.reason==='untrusted_read_only_sibling_policy');
+ const badRoute=await f.runtime.prepare({schema:'flow.deep-research-preparation-request/v1',repository:f.repository,packet:f.packet,deep,limits:{max_elapsed_seconds:600,max_revisions:1},routes:{unconfirmed:{}},execution_trust:acknowledgment});
+ assert.equal(badRoute.code,'invalid_deep_research_route');
+ for(const card of angles){assert.match(card.inputs.prompt,/flow\.deep-research-angle-output\/v1/u);assert.match(card.inputs.prompt,/8192 UTF-8 bytes total/u);assert.match(card.inputs.prompt,/task_inputs\.question\.id/u);}
+ const critic=prepared.graph.cards.find(card=>card.id==='deep-critic-cycle-1');
+ for(const name of ['flow.deep-research-critic-output/v1','revise_angles','proposed_question','predecessor_evidence.evidence_digest'])assert.ok(critic.inputs.prompt.includes(name));
 });

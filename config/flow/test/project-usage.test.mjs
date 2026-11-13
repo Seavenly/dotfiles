@@ -38,6 +38,16 @@ test("distinct retries count; actual zero estimate remains known beside unknown 
   const f = fixture(t); f.runs.get(rootRun).effects = [delegate(1, { amount: 10, cost: 0 }), delegate(2, { amount: 20 })];
   const report = await f.collect(); assert.equal(report.attempts.length, 2); assert.equal(report.provider_totals[0].metrics.input_tokens, 30); assert.equal(report.cost.known_list_cost_usd, 0); assert.equal(report.cost.unknown_attempts, 1); assert.equal(report.cost.subtotal_complete, false);
 });
+test("deep research counts immutable angle versions and critics once across whole-cycle revisions", async t => {
+  const f = fixture(t), cards = ["deep-angle-1-cycle-1", "deep-angle-2-cycle-1", "deep-critic-cycle-1", "deep-angle-1-cycle-2", "deep-angle-2-cycle-2", "deep-critic-cycle-2"];
+  const effects = cards.map((card_id, index) => delegate(index + 1, { card_id }));
+  f.runs.get(rootRun).effects = [...effects, effects[0], { effect_kind: "operation", card_id: "deep-decision-cycle-2" }];
+  const report = await f.collect();
+  assert.equal(report.complete, true); assert.equal(report.attempts.length, 6); assert.equal(report.deduplicated_attempts, 1);
+  assert.deepEqual(new Set(report.attempts.map(attempt => attempt.card_id)), new Set(cards));
+  assert.equal(report.provider_totals[0].metrics.input_tokens, 60); assert.equal(report.cost.unknown_attempts, 6);
+  assert.deepEqual(f.queries, [{ run_id: rootRun }]);
+});
 test("only reciprocal admitted descendants join the requested lineage", async t => {
   const f = fixture(t), lineage = { parent_run_id: rootRun, card_id: "sub", card_identity: digest("sub"), revision_ordinal: 0 }, child = deriveChildRunId(lineage);
   f.runs.get(rootRun).subruns = [{ ...lineage, child_run_id: child, child_watermark: digest("child"), status: "succeeded" }];
