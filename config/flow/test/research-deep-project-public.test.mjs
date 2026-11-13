@@ -118,7 +118,7 @@ function completedRun(request){
   run.phase='active';run.progress='waiting';const checkpoint_id='deep-gate-cycle-1';run.cards.find(card=>card.id===checkpoint_id).status='waiting_checkpoint';
   const proposedQuestion=state.mode==='scope_unsafe'?{id:replacement.id,text:'/private/unsafe'}:replacement;
   const proposal={checkpoint_id,old_question:packet.question,new_question:proposedQuestion,unchanged_packet_digest:packet.packet_digest,angle_ids:deep.angles.map(angle=>angle.angle_id),remaining_elapsed_seconds:state.mode==='scope_unknown'?null:583,original_elapsed_limit:request.limits.max_elapsed_seconds,original_time_facts_digest:digest({schema:'fixture-clock/v1'}),remaining_cycles:1,next_cycle_attempts:3,next_cycle_graph_cards:5,proposal_digest:digest({decision_digest:lastReceipt.self_digest,question:proposedQuestion,scope_digest:digest({packet_digest:packet.packet_digest,question:proposedQuestion})})};
-  run.deep_research.scope_proposal=proposal;if(state.mode==='scope_unknown'){run.progress='blocked';run.cards.find(card=>card.id===checkpoint_id).status='blocked';}const {remaining_elapsed_seconds,...draft}=proposal;
+  run.deep_research.scope_proposal=proposal;if(state.mode==='scope_unknown')run.deep_research.completion_block='execution_time_unavailable';const {remaining_elapsed_seconds,...draft}=proposal;
   run.watermark='sha256:'+(state.stale?'9':'8').repeat(64);
   run.legal_actions=[{schema:'flow.command/v1',type:'cancel',run_id:run.run_id,expected_watermark:run.watermark},...(state.mode==='scope_unknown'?[]:['approve','decline']).map(decision=>({schema:'flow.command/v1',type:'checkpoint_decision',run_id:run.run_id,checkpoint_id,decision,expected_watermark:run.watermark,checkpoint_binding:{schema:'flow.checkpoint-binding/v1',checkpoint_id,draft,draft_digest:digest(draft)}}))];
  }
@@ -348,7 +348,7 @@ test("stale or unsafe scope choices submit no decision, and unknown elapsed time
    const tty=terminalResearch(f,['--attach',preview.run_id],[{prompt:'Choice number, or Enter to detach:',answer:'1\n'},{prompt:'Submit this exact decision? [y/N]',answer:'y\n',state:{stale:true}}]);
    assert.equal(tty.exit,1,tty.output);assert.match(tty.output,/decision is no longer offered/iu);assert.equal(f.state().commands??0,0);
   }else{
-   const blocked=f.run(['--attach',preview.run_id]);assert.equal(blocked.status,1,blocked.stdout+blocked.stderr);captureUi('scope-unknown-time.txt',blocked.stdout);assert.match(blocked.stdout,/Remaining original budget: unavailable or exhausted/iu);assert.match(blocked.stdout,/diagnostic evidence, not successful completion/iu);assert.doesNotMatch(blocked.stdout,/Submit this exact decision/u);assert.equal(f.state().commands??0,0);
+   const blocked=f.run(['--attach',preview.run_id,'--follow-seconds','1']);assert.equal(blocked.status,1,blocked.stdout+blocked.stderr);captureUi('scope-unknown-time.txt',blocked.stdout);assert.match(blocked.stdout,/Remaining original budget: unavailable or exhausted/iu);assert.match(blocked.stdout,/diagnostic evidence, not successful completion/iu);assert.doesNotMatch(blocked.stdout,/Submit this exact decision/u);assert.equal(f.state().commands??0,0);
   }
   assert.equal(f.state().launches,1);assert.equal(f.state().preparations,1);
  }
