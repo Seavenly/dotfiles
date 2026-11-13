@@ -24,6 +24,10 @@ test("settled quarantine and authority time blocks remain distinct from unresolv
   assert.match(rendered, /Deep completion blocked: execution_time_unavailable/u);
   assert.doesNotMatch(rendered, /outcome unresolved/u);
   assert.equal(projectRunBlocked({ ...run, effects: [], deep_research: undefined }), false);
+  const evidenceFailure = { ...run, cards: [{ id: "deep-decision-cycle-1", status: "completed" }], effects: [],
+    deep_research: { schema: "flow.deep-research-progress/v1", operationally_blocked: true, report: null, scope_proposal: null, code: "deep_continuation_evidence_changed" } };
+  assert.equal(projectRunBlocked(evidenceFailure), true);
+  assert.match(renderRunProgress(projectRunProgress(evidenceFailure)), /Deep evidence blocked: deep_continuation_evidence_changed/u);
 });
 
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
