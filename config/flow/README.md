@@ -486,7 +486,8 @@ command transaction. Accepted history and the original Source packet remain
 unchanged. A scope proposal always waits for explicit fresh approval; decline
 can finish only the valid original-scope report while time remains authoritative
 and within the original budget. Unknown or exhausted time leaves evidence
-readable and completion blocked.
+readable and new completion blocked. Historical inspection preserves an already
+recorded successful or cancelled outcome; it does not reopen its deadline.
 
 Each critic consumes an exact digest-bound terminal set including unchanged
 angles, historical versions and positively settled failures. Only this declared

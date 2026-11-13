@@ -655,7 +655,9 @@ An explicit same-run scope checkpoint may append a safe effective question,
 preserving the original Source packet and both angle identities/texts. Approval
 reserves both angles and a fresh critic within the original remaining budget;
 decline retains the original-scope report. Both successful outcomes require a
-fresh within-budget authority observation. Semantic cycle-cap exhaustion may
+fresh within-budget authority observation when that completion is recorded.
+Later inspection after the deadline or without a clock preserves the recorded
+terminal outcome and report. Semantic cycle-cap exhaustion may
 finish with findings and residual gaps; structural, authority, retirement or
 operational failure remains blocked. A positively settled angle failure is
 typed diagnostic input, never successful research evidence, and whole-run
