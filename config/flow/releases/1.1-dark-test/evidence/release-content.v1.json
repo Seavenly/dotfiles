@@ -32,10 +32,10 @@
       "config/flow/transition-ledger.v1.json",
       "tools/flow/node_modules/"
     ],
-    "candidate_tree_sha": "449cc9779086c4a2847f8a5a94f69c4db526efee",
+    "candidate_tree_sha": "65caf88a1960ef43d1481c736ff1763466e507ec",
     "qualification_base_commit": "c34c6e881ce375691d4f3e4ca626c1af9eef81cc"
   },
-  "content_digest": "sha256:21a51db6cef0eed8a831c8130d5fc63b50a6f5ddd719fcb3dad333d44050904c",
+  "content_digest": "sha256:0a89837caf7ba51333ae81edebd9285f1b35eddcc4c91f47ef6d81d160560e44",
   "files": [
     {
       "path": "GLOSSARY.md",
@@ -58,8 +58,8 @@
     {
       "path": "config/flow/README.md",
       "mode": "100644",
-      "git_blob_sha": "a1139019d310f4a87ad4232b5767b1feea500794",
-      "sha256": "3987a2da96ddee0eba83dac8aee8f7642e3791d5d0c55a4ba5f5fb2012a40710"
+      "git_blob_sha": "ad07c45dcd7f6280c536ab61e20898f17951d9d5",
+      "sha256": "7bf0483c6d244fb1f0348f57b5b5e58aac280acf3c9e1294ceecd36d21209247"
     },
     {
       "path": "config/flow/contracts/catalog.v1.json",
@@ -970,8 +970,8 @@
     {
       "path": "config/flow/src/project-run-view.mjs",
       "mode": "100644",
-      "git_blob_sha": "234c2a948214997c9596012300859d41b8c0e5ef",
-      "sha256": "818a6e38ed2484e46ff38558105588723f3361de19d84bf1731563fe0f52be5b"
+      "git_blob_sha": "2b6242c14d95a5c10881a46642a4526ed059ff89",
+      "sha256": "3c8cf39d02f92b271486ff12bfeb633ca880f3092214fafbd2e9ff4d0a93bb27"
     },
     {
       "path": "config/flow/src/project-run.mjs",
@@ -1324,8 +1324,8 @@
     {
       "path": "config/flow/test/project-run.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "2dbf0cb7ab9acc7935d33da2eb8a861abe95b947",
-      "sha256": "425d50bb14a97eed64dc0f00f76ce853ba51a7f2dccd073af8869d3321c06086"
+      "git_blob_sha": "c6648e3e60209e5e3928c75aca5792d1402e10f5",
+      "sha256": "b1228355c82d81416d9511606fc6a332d88b986784767c6de61adad6930b8e95"
     },
     {
       "path": "config/flow/test/project-runs.test.mjs",
@@ -1348,8 +1348,8 @@
     {
       "path": "config/flow/test/research-deep-project-public.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "53400d8f9214d834c8dae75ccb99b15d34a61bfb",
-      "sha256": "1a9975186c4992e043e0b898e792eee6665958572a6ecc6799f31f26fd57aa57"
+      "git_blob_sha": "39671007b3a962183dfe090d833438b0fe1493a1",
+      "sha256": "8bd429045b4f7456463ca5ad2aa1e3a40ea5c36dbbcf1cb1e02bfed9c88730cf"
     },
     {
       "path": "config/flow/test/research-direct-fixture.test.mjs",
@@ -1840,8 +1840,8 @@
     {
       "path": "tools/flow/README.md",
       "mode": "100644",
-      "git_blob_sha": "68bbe76a434e69d580d216024cc68aaddb286055",
-      "sha256": "b88401fe1cf26fb5da0f4e5c92aae45b90d8fe5b5cf663acfd05b343497db1c7"
+      "git_blob_sha": "22f3a25d5502a1aff1382bcbd4163c0010fd9d53",
+      "sha256": "138414160a5c281ee088ee8eb94ab3a07839250fbc2e228610a52e0257f58569"
     },
     {
       "path": "tools/flow/benchmarks/linux-plan.v1.json",
@@ -2008,8 +2008,8 @@
     {
       "path": "tools/flow/src/deep-research-continuation.mjs",
       "mode": "100644",
-      "git_blob_sha": "d9ff5fea726a0d40e687e797fcbdb2f1eeb7cbba",
-      "sha256": "485dadc6c39685548ce73b2ef3cdf123bec02ca1436c24cb6199c661dae54a66"
+      "git_blob_sha": "1f4958f51aba61638eba086a0edc5d4e72356499",
+      "sha256": "768aa07ef41fde29b4035eadab5b9125569b1a8da2a7975915f426f9119078b7"
     },
     {
       "path": "tools/flow/src/deep-research-contract.mjs",
@@ -2596,8 +2596,8 @@
     {
       "path": "tools/flow/test/deep-research-continuation.test.mjs",
       "mode": "100644",
-      "git_blob_sha": "af7b0de4be5c075c5bd60fb7d8d757d8d12cf557",
-      "sha256": "9744d338c8c0e72dcd785844abd152a99c3e07f361b0f902eb3b61a1485a8a1d"
+      "git_blob_sha": "19cdc87c0ab915ed184d38c1ff0f45a51513cdc3",
+      "sha256": "cd4eb11c4d73c9c10254466d5513a07bedc613c6608717e4432259d4b5f4ef86"
     },
     {
       "path": "tools/flow/test/deep-research-contract.test.mjs",
