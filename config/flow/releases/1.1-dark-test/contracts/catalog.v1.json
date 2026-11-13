@@ -1,6 +1,6 @@
 {
   "schema": "flow.contract-catalog/v1",
-  "catalog_version": 41,
+  "catalog_version": 42,
   "authority_persistence": {
     "contract": "flow.sqlite-authority-store/v1",
     "journal_mode": "wal",
@@ -738,6 +738,57 @@
       "attempts_per_role": 1,
       "max_revisions": 0,
       "publication": "none"
+    },
+    "spike/v3": {
+      "definition": "flow.definition/spike/v3",
+      "preparation": "flow.deep-research-preparation-request/v1",
+      "selection": "flow.project-deep-research-selection/v1",
+      "mode": "deep",
+      "source_packet": "flow.research-source-packet/v1",
+      "cohort_policy": "flow.research-cohort-policy/v1",
+      "angles": {
+        "count": 2,
+        "max_text_bytes": 1024,
+        "output": "flow.deep-research-angle-output/v1",
+        "validator": "flow.validator/deep-research-angle/v1"
+      },
+      "critic": {
+        "output": "flow.deep-research-critic-output/v1",
+        "validator": "flow.validator/deep-research-critic/v1",
+        "join": "complete_current_and_historical_settled_terminal_evidence"
+      },
+      "cycle": {
+        "operation": "flow.research-cycle/v1",
+        "receipt": "flow.deep-research-cycle-receipt/v1",
+        "validator": "flow.validator/research-cycle/v1",
+        "classification": "read_only",
+        "max_cycles": 2,
+        "max_native_attempts": 6,
+        "whole_subset_reservation": "atomic_with_decision_and_effective_scope",
+        "initial_graph_cards": 5,
+        "next_graph_cards": {
+          "one_angle": 4,
+          "both_angles": 5
+        }
+      },
+      "scope": {
+        "approval": "fresh_explicit_same_run_checkpoint",
+        "question": "append_only_effective_question",
+        "source_and_angles": "immutable",
+        "elapsed_budget": "original_shared_fresh_authority_observation"
+      },
+      "terminal_input": {
+        "schema": "flow.deep-research-terminal-set/v1",
+        "policy_id": "flow.research-input-safety-policy/v1",
+        "accepted_output_policy": "flow.evidence-safety-policy/v1"
+      },
+      "report": "flow.deep-research-report/v1",
+      "workspace": "exact_workspace_authority_read_only_generation_epoch_fingerprint",
+      "assurance": "lower",
+      "source_fetch": "never",
+      "attempts_per_card": 1,
+      "operational_retries": 0,
+      "publication": "none"
     }
   },
   "delegated_agent_port": {
@@ -1365,7 +1416,23 @@
     "flow.validator/spike-research-evidence/v2",
     "flow.validator/spike-report/v2",
     "flow.read-only-sibling-policy/v1",
-    "flow.project-review-execution/v1"
+    "flow.project-review-execution/v1",
+    "flow.definition/spike/v3",
+    "flow.deep-research-preparation-request/v1",
+    "flow.project-deep-research-selection/v1",
+    "flow.research-cohort-policy/v1",
+    "flow.deep-research-angle-output/v1",
+    "flow.deep-research-critic-output/v1",
+    "flow.validator/deep-research-angle/v1",
+    "flow.validator/deep-research-critic/v1",
+    "flow.research-cycle/v1",
+    "flow.validator/research-cycle/v1",
+    "flow.deep-research-cycle-receipt/v1",
+    "flow.deep-research-terminal-set/v1",
+    "flow.deep-research-report/v1",
+    "flow.deep-research-progress/v1",
+    "flow.deep-research-cycle-trigger/v1",
+    "flow.project-deep-research-result/v1"
   ],
   "run_plan": {
     "contract": "flow.run-plan/v1",
