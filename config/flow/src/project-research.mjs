@@ -24,7 +24,7 @@ One question is at most 4 KiB; supply one through four regular UTF-8 sources of
 at most 32 KiB each, 128 KiB total. Files are snapshotted and hashed, never fetched.
 Existing safety policy rejects unsafe source contents without echoing them.
 --timeout-seconds 1..3600 (default 600) selects the overall prepared-run limit;
-one attempt per distinct role and zero revisions. No per-role timer is promised.
+one attempt per card. Quick research permits zero revisions. No per-role timer is promised.
 --refresh explicitly replaces only a proven unlaunched preview, retaining history.
 --follow-seconds 1..3600 (default 1800) bounds observation only; --no-follow detaches.
 Ctrl-C detaches without cancelling. Reattach the SAME exact run. --action selects

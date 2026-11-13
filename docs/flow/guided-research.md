@@ -115,10 +115,15 @@ For scripts, inspect the reported legal actions and use the printed
 
 Approval retains the original packet and appends the approved question identity
 in the same run. Both angles must be investigated under the new question, with
-a fresh critic, using the remaining revision cycle. Decline retains the original
-scope and its honest report. Unsafe, stale or unaffordable proposals cannot start
+a fresh critic, using the remaining revision cycle. Within the original authority
+budget, decline retains the original scope and its honest report. Unsafe, stale
+or unaffordable proposals cannot start
 a partial cycle. Changing source bytes or angle texts requires a separately
 prepared run; it is not a scope-checkpoint shortcut.
+
+Unknown, uncertain or exhausted authority time blocks scope completion by either
+approval or decline. A validated original report remains diagnostic evidence;
+inspect the current cancellation or recovery actions.
 
 ## Confirm, detach and recover the same attempt
 

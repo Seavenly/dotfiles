@@ -43,6 +43,7 @@ export function renderResearchScopeCheckpoint(run,action,selection) {
  const proposal=run.deep_research?.scope_proposal;
  if(!selection.deep||!proposal||action.type!=='checkpoint_decision'||action.command.checkpoint_id!==proposal.checkpoint_id)return null;
  const replacement=deepResearch.researchQuestion(proposal.new_question?.text);
+ const remaining=Number.isSafeInteger(proposal.remaining_elapsed_seconds)&&proposal.remaining_elapsed_seconds>0?`${proposal.remaining_elapsed_seconds} seconds`:'unavailable or exhausted; scope completion is blocked';
  if(proposal.unchanged_packet_digest!==selection.packet.packet_digest||digest(proposal.angle_ids??null)!==digest(selection.deep.angles.map(angle=>angle.angle_id))||
     proposal.old_question?.id!==run.deep_research.scope?.question_id||proposal.old_question?.text!==run.deep_research.scope?.text||
     !replacement||digest(replacement)!==digest(proposal.new_question))
@@ -50,9 +51,9 @@ export function renderResearchScopeCheckpoint(run,action,selection) {
  return ['Same-run research scope checkpoint',`Run: ${run.run_id}`,`Current authority watermark: ${JSON.stringify(run.watermark)}`,`Checkpoint: ${proposal.checkpoint_id}`,
   `Original question: ${selection.packet.question.text}`,`Current question: ${proposal.old_question.text}`,`Proposed replacement question: ${proposal.new_question.text}`,
   `Unchanged supplied source packet: ${proposal.unchanged_packet_digest}`,'Unchanged investigation angles:',...selection.deep.angles.map(angle=>`  ${angle.angle_id}: ${angle.text}`),
-  `Remaining original elapsed budget: ${proposal.remaining_elapsed_seconds} seconds; remaining total cycles: ${proposal.remaining_cycles}. Neither budget resets.`,
+  `Remaining original elapsed budget: ${remaining}; remaining total cycles: ${proposal.remaining_cycles}. Neither budget resets.`,
   `Whole next cycle: both angles plus a fresh critic (${proposal.next_cycle_attempts} native attempts), with its registered decision and checkpoint. Approval reserves all of it before dispatch.`,
-  'Approve only this exact safe replacement question. Decline retains the original scope and its honest findings; no scope is silently widened.',
+  'Within the original authority budget, approve only this exact safe replacement question or decline to retain the original scope and its honest findings. No scope is silently widened.',
   `Selected action: ${action.label} [${action.digest}]`,''].map(terminalText).join('\n');
 }
 function acceptedResearchAttempt(run, cardId) {
@@ -108,6 +109,8 @@ export function renderResearchResult(result) {
 }
 function renderDeepResult(result) {
  const report=result.report,progress=result.deep_research;
+ const scopeRemaining=progress?.scope_proposal?.remaining_elapsed_seconds;
+ const availableScopeTime=Number.isSafeInteger(scopeRemaining)&&scopeRemaining>0;
  const disposition=value=>value!==null&&typeof value==='object'?JSON.stringify(value):String(value);
  return ['Deep research result',`Result: ${result.status}; run phase: ${result.phase}`,`Run: ${result.run_id}`,`Original confirmed question: ${result.original_question.text}`,`Effective question: ${result.question.text}`,`Immutable source packet: ${result.packet_digest}`,
   `Cycle: ${progress?.cycle??'not observed'}; confirmed total-cycle limit: ${result.deep.max_cycles}; confirmed concurrency: ${result.deep.parallel}`,
@@ -115,7 +118,7 @@ function renderDeepResult(result) {
   ...(progress?.history??[]).map(entry=>`Retained disposition ${entry.angle_id??entry.card_id??'inspect exact projection'}: ${disposition(entry.disposition??entry.status??entry.schema)}; cycle ${entry.cycle??'see evidence'}`),
   ...(progress?.operationally_blocked?['Operational or authority failure blocks successful research; a diagnostic critic does not turn it into a complete report.']:[]),
   ...(report?[`Assurance: ${report.assurance}`,`Answer: ${report.answer}`,`Cycles used: ${report.cycles_used} of ${report.max_cycles}; semantic cycle cap exhausted: ${report.cap_exhausted}`,'Exact source citations:',...report.citations.map(cite=>`  ${cite.source_id} ${cite.digest}`),`Complete retained-evidence identity: ${report.retained_evidence_digest}`,...report.findings.map(item=>`Finding: ${item}`),...report.residual_gaps.map(item=>`Residual gap: ${item}`)]:['No validated complete deep report is available; retain exact angle dispositions and authority evidence.']),
-  ...(progress?.scope_proposal?[`Scope decision awaits explicit approval or decline: ${progress.scope_proposal.old_question.text} -> ${progress.scope_proposal.new_question.text}`,`Remaining original budget: ${progress.scope_proposal.remaining_elapsed_seconds} seconds and ${progress.scope_proposal.remaining_cycles} cycles; next whole cycle costs ${progress.scope_proposal.next_cycle_attempts} native attempts.`]:[]),
+  ...(progress?.scope_proposal?[`Retained scope proposal; inspect current legal actions: ${progress.scope_proposal.old_question.text} -> ${progress.scope_proposal.new_question.text}`,`Remaining original budget: ${availableScopeTime?`${scopeRemaining} seconds`:'unavailable or exhausted'} and ${progress.scope_proposal.remaining_cycles} cycles; next whole cycle costs ${progress.scope_proposal.next_cycle_attempts} native attempts.`,...(!availableScopeTime?['Scope completion is blocked by authority time. Any retained original-scope report is diagnostic evidence, not successful completion; inspect current detach, cancel or recovery actions.']:[])]:[]),
   ...result.unresolved_effects.map(id=>`Unresolved effect: ${id}`),...result.quarantined_effects.map(id=>`Quarantined effect: ${id}`),...result.workspace_settlement.map(item=>`Workspace ${item.claim?.id??'unknown'}: ${JSON.stringify(item.disposition)}`),
   ...(result.status==='detached'?['Durable work continues; detachment did not cancel it.']:[]),`Retained evidence: ${result.retained_directory}`,`Reattach: ${result.reattach_command}`,
   'Research covers supplied bytes with lower assurance. It grants no candidate, human approval, external mutation, fetch or publication authority.',''].map(terminalText).join('\n');
