@@ -45,6 +45,9 @@ function publicHistory(fold) {
 /** Pure trusted-definition projection. It never dispatches, owns a timer or writes state. */
 export function decorateDeepResearchFold(fold, prepared, events) {
   if (prepared.definition?.id !== "spike/v3") return fold;
+  // Derived context is replaced, never carried into a later recomputation.
+  const { deep_research: _priorProgress, deep_research_internal: _priorDecision, ...baseFold } = fold;
+  fold = baseFold;
   const metadata = prepared.graph.deep_research;
   const failed = code => ({ ...fold, legal_actions: fold.legal_actions.filter(action => ["cancel", "recovery", "terminal_disposition"].includes(action.type)),
     deep_research: { schema: "flow.deep-research-progress/v1", operationally_blocked: true, report: null, scope_proposal: null, code } });
@@ -68,7 +71,7 @@ export function decorateDeepResearchFold(fold, prepared, events) {
     const latestTask = fold.active_plan.cards.find(card => card.id === deepCriticCardId(cycle)).inputs.task_inputs;
     const history = publicHistory(fold);
     const question = latestTask.question, scopeDigest = latestTask.scope_digest;
-    let actions = fold.legal_actions.filter(action => !action.checkpoint_id?.startsWith("deep-gate-"));
+    let actions = fold.legal_actions.filter(action => !action.checkpoint_id?.startsWith("deep-gate-") && !action.template_id?.startsWith("deep-cycle:"));
     const cards = fold.cards.map(card => ({ ...card }));
     const criticDefinition = fold.active_plan.cards.find(card => card.id === deepCriticCardId(cycle));
     const criticState = cards.find(card => card.id === criticDefinition.id);

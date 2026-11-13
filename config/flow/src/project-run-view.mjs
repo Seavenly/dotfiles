@@ -17,7 +17,7 @@ export function projectRunProgress(run) {
     cards: run.cards ?? [],
     effects: (run.effects ?? []).map(effect => ({ effect_id: effect.effect_id, card_id: effect.card_id ?? null,
       contract: effect.operation_contract ?? effect.effect_kind ?? null, status: effect.status,
-      outcome: effect.receipt?.provider_receipt?.outcome ?? effect.last_observation?.provider_observation?.code ?? null })),
+      outcome: effect.receipt?.provider_receipt?.outcome ?? effect.receipt?.outcome ?? effect.last_observation?.provider_observation?.code ?? null })),
     blocks: run.blocks ?? [], legal_actions: runDecisionActions(run).map(({ command: _command, ...action }) => action),
     ...(run.deep_research ? { deep_research: run.deep_research } : {}),
   };
@@ -39,6 +39,7 @@ export function renderRunProgress(progress) {
   return [`Run ${progress.run_id}: ${progress.phase}`,
     ...(progress.deep_research ? [`  Deep cycle: ${progress.deep_research.cycle ?? "unavailable"}; remaining cycles: ${progress.deep_research.remaining_cycles ?? "unavailable"}; operationally blocked: ${progress.deep_research.operationally_blocked}`,
       `  Effective question: ${progress.deep_research.scope?.text ?? "unavailable"}`,
+      ...(progress.deep_research.completion_block ? [`  Deep completion blocked: ${progress.deep_research.completion_block}; retained report evidence does not authorize success.`] : []),
       ...(progress.deep_research.scope_proposal ? [`  Scope checkpoint: ${progress.deep_research.scope_proposal.checkpoint_id}; explicit approval required; remaining original seconds: ${progress.deep_research.scope_proposal.remaining_elapsed_seconds ?? "unavailable"}`] : []),
       ...(progress.deep_research.report?.cap_exhausted ? ["  Research cycle cap exhausted; findings and residual gaps remain in the cited report."] : [])] : []),
     ...progress.cards.map(card => `  ${card.id}: ${card.status}`),
@@ -49,6 +50,7 @@ export function renderRunProgress(progress) {
 /** Retry accounting counts admitted attempts, including those still executing. */
 export function projectRunBlocked(run) {
   return run.progress === "blocked" || (run.cards ?? []).some(card => card.status === "blocked") ||
+    run.deep_research?.schema === "flow.deep-research-progress/v1" && ["execution_time_unavailable", "execution_deadline_uncertain", "execution_deadline_exhausted", "deep_cycle_budget_unavailable"].includes(run.deep_research.completion_block) ||
     run.phase === "active" && (run.effects ?? []).some(effect => effect.operation_contract === "flow.operation/project-check/v2" &&
       effect.receipt?.provider_receipt?.schema === "work.project-check-absence-receipt/v2" &&
       ["failed", "timeout", "output_limit", "cancelled", "environment_failure"].includes(effect.receipt.provider_receipt.record?.outcome));

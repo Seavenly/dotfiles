@@ -36,6 +36,13 @@ export function readDeepResearchReport(run, packet, deep) {
     if (receipt) current = receipt;
   }
   if (!current || current.operationally_blocked) return null;
+  const requested = current.revise_angles.length > 0 || current.proposed_question !== null && current.proposed_question.id !== current.question.id;
+  const alreadyReserved = run.active_plan.cards.some(card => card.id === deepDecisionCardId(current.cycle + 1));
+  const nextAngles = current.proposed_question !== null && current.proposed_question.id !== current.question.id ? 2 : current.revise_angles.length;
+  const nextCards = nextAngles + 3, limits = run.limits;
+  const capacityExhausted = requested && !alreadyReserved && limits !== undefined &&
+    ((run.current_revision?.ordinal ?? run.revisions?.length ?? 0) + 1 > limits.max_revisions ||
+      nextCards > limits.max_cards_per_revision || run.active_plan.cards.length + nextCards > limits.max_cards);
   return { ...current.report, cycles_used: current.cycle, max_cycles: deep.max_cycles,
-    cap_exhausted: current.cycle >= deep.max_cycles && (current.revise_angles.length > 0 || current.proposed_question !== null) };
+    cap_exhausted: requested && (current.cycle >= deep.max_cycles || capacityExhausted) };
 }

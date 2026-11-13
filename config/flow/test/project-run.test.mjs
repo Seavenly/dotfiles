@@ -10,7 +10,21 @@ import { SUPERVISED_NATIVE_ACKNOWLEDGMENT as trust } from "../src/supervised-nat
 import { writeFeatureClient } from "../scripts/feature-client-files.mjs";
 import { discoverProjectRuns, lockProjectSubmission, readRunJson } from "../src/project-run-state.mjs";
 import { parseRunArguments, runProject } from "../src/project-run.mjs";
-import { projectRunProgress, runDecisionActions, summarizeProjectRun, renderRunResult } from "../src/project-run-view.mjs";
+import { projectRunProgress, projectRunBlocked, renderRunProgress, runDecisionActions, summarizeProjectRun, renderRunResult } from "../src/project-run-view.mjs";
+
+test("settled quarantine and authority time blocks remain distinct from unresolved execution", () => {
+  const run = { run_id: "run:deep-time", phase: "active", progress: "waiting", cards: [{ id: "deep-gate-cycle-1", status: "waiting_checkpoint" }],
+    effects: [{ effect_id: "failed-angle", card_id: "deep-angle-2-cycle-1", status: "quarantined", receipt: { outcome: "quarantined", provider_receipt: { schema: "flow.delegate-quarantine/v1" } } }],
+    deep_research: { schema: "flow.deep-research-progress/v1", cycle: 1, remaining_cycles: 1, operationally_blocked: true,
+      completion_block: "execution_time_unavailable", scope: { text: "Which guarantees remain?" }, report: { answer: "Retained original-scope evidence" }, scope_proposal: null } };
+  const progress = projectRunProgress(run), rendered = renderRunProgress(progress);
+  assert.equal(projectRunBlocked(run), true);
+  assert.equal(progress.effects[0].outcome, "quarantined");
+  assert.match(rendered, /failed-angle: quarantined \(quarantined\)/u);
+  assert.match(rendered, /Deep completion blocked: execution_time_unavailable/u);
+  assert.doesNotMatch(rendered, /outcome unresolved/u);
+  assert.equal(projectRunBlocked({ ...run, effects: [], deep_research: undefined }), false);
+});
 
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const save = (path, value) => writeFileSync(path, JSON.stringify(value) + "\n", { mode: 0o600 });
