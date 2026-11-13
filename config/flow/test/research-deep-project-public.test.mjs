@@ -73,6 +73,7 @@ import {createDeepTerminalSet,deepTerminalEntry} from ${JSON.stringify(new URL('
 import {deriveDeepCycleReceipt} from ${JSON.stringify(new URL('../../../tools/flow/src/deep-research-cycle.mjs',import.meta.url).href)};
 import {researchQuestion} from ${JSON.stringify(new URL('../../../tools/flow/src/deep-research-contract.mjs',import.meta.url).href)};
 import {readDeepResearchReport} from ${JSON.stringify(new URL('../../../tools/flow/src/deep-research-report.mjs',import.meta.url).href)};
+import {withDeepExecutionTime} from ${JSON.stringify(new URL('../../../tools/flow/src/deep-research-continuation.mjs',import.meta.url).href)};
 import {validateDelegateEvidenceSafety} from ${JSON.stringify(new URL('../../../tools/flow/src/evidence-safety.mjs',import.meta.url).href)};
 const file=${JSON.stringify(stateFile)},state=JSON.parse(readFileSync(file)),args=process.argv.slice(2),directory=${JSON.stringify(directory)};
 const load=p=>JSON.parse(readFileSync(p)),save=(p,v)=>writeFileSync(p,JSON.stringify(v));
@@ -124,6 +125,11 @@ function completedRun(request){
   run.legal_actions=[{schema:'flow.command/v1',type:'cancel',run_id:run.run_id,expected_watermark:run.watermark},...(state.mode==='scope_unknown'?[]:['approve','decline']).map(decision=>({schema:'flow.command/v1',type:'checkpoint_decision',run_id:run.run_id,checkpoint_id,decision,expected_watermark:run.watermark,checkpoint_binding:{schema:'flow.checkpoint-binding/v1',checkpoint_id,draft,draft_digest:digest(draft)}}))];
  }
  if(state.mode==='forged'){const receipt=run.effects.find(effect=>effect.card_id==='deep-decision-cycle-2').receipt;receipt.provider_receipt={...receipt.provider_receipt,report:{...receipt.provider_receipt.report,answer:'Unbound replacement report'}};}
+ if(state.terminal_clock){
+  // Use the actual public decoration seam, not fabricated completion flags.
+  const execution_time={schema:'flow.execution-time-projection/v1',status:state.terminal_clock,max_elapsed_seconds:request.limits.max_elapsed_seconds,wall_elapsed_seconds:state.terminal_clock==='exhausted'?{lower:1201,upper:1201}:null};
+  run.execution_time=execution_time;Object.assign(run,withDeepExecutionTime(run,execution_time,run.legal_actions));
+ }
  return run;
 }
 state.calls.push(args);let result;
@@ -331,6 +337,20 @@ test("deep public results retain validated cycle history, genuine findings and g
  const cancelledHuman=f.run(['--attach',preview.run_id]);assert.equal(cancelledHuman.status,1,cancelledHuman.stdout+cancelledHuman.stderr);captureUi('cancelled-retained-failure.txt',cancelledHuman.stdout);assert.match(cancelledHuman.stdout,/Result: cancelled; run phase: cancelled/iu);assert.match(cancelledHuman.stdout,/operational_failure/iu);
 });
 
+
+test("completed deep research remains readable on reattach after exhausted or unobserved clock observations",t=>{
+ const f=controlledDeepResearch(t);f.change({started:true,capacity:2,mode:'complete'});
+ const preview=previewFrom(f.run([...deepFlags,'--question',question,'--source',f.source,'--json']));
+ const launched=f.run(['--confirm',preview.confirmation_digest,'--json']);assert.equal(launched.status,0,launched.stdout+launched.stderr);
+ const original=launched.stdout.split('\n').filter(Boolean).map(line=>JSON.parse(line)).find(value=>value.schema==='flow.project-deep-research-result/v1');
+ for(const terminal_clock of ['exhausted','unobserved']){
+  f.change({terminal_clock});const attached=f.run(['--attach',preview.run_id,'--json']);assert.equal(attached.status,0,attached.stdout+attached.stderr);
+  const result=attached.stdout.split('\n').filter(Boolean).map(line=>JSON.parse(line)).find(value=>value.schema==='flow.project-deep-research-result/v1');
+  assert.equal(result.phase,'succeeded');assert.equal(result.status,'succeeded');assert.deepEqual(result.report,original.report);assert.equal(Object.hasOwn(result.deep_research,'completion_block'),false);
+  const human=f.run(['--attach',preview.run_id]);assert.equal(human.status,0,human.stdout+human.stderr);captureUi('terminal-clock-'+terminal_clock+'.txt',human.stdout);assert.match(human.stdout,/Result: succeeded; run phase: succeeded/iu);assert.doesNotMatch(human.stdout,/completion blocked/iu);
+ }
+ assert.equal(f.state().launches,1);assert.equal(f.state().commands??0,0);
+});
 
 test("same-run scope decisions show exact question and remaining bounds, require fresh approval and retain original scope on decline",t=>{
  for(const decision of ['approve','decline']){
