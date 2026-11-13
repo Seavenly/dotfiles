@@ -29,6 +29,7 @@ test("settled quarantine and authority time blocks remain distinct from unresolv
   assert.equal(projectRunBlocked(evidenceFailure), true);
   assert.match(renderRunProgress(projectRunProgress(evidenceFailure)), /Deep evidence blocked: deep_continuation_evidence_changed/u);
   assert.equal(projectRunBlocked({ ...evidenceFailure, phase: "cancelled" }), false);
+  assert.equal(projectRunBlocked({ ...run, phase: "succeeded", deep_research: { ...run.deep_research, operationally_blocked: false } }), false);
 });
 
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");

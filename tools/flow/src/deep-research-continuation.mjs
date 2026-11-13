@@ -190,9 +190,13 @@ function deepCompletionTimeIssue(executionTime) {
 
 export function withDeepExecutionTime(fold, executionTime, legalActions) {
   if (!fold.deep_research) return {};
+  const { completion_block: _priorTimeBlock, ...progress } = fold.deep_research;
+  // A current observation fences new decisions; it never revokes an already
+  // recorded terminal outcome or starts a new budget on historical inspection.
+  if (fold.phase !== "active") return { deep_research: progress, legal_actions: legalActions };
   const remaining = boundedDeepRemainingSeconds(executionTime);
-  const proposed = fold.deep_research.scope_proposal;
-  return { deep_research: { ...fold.deep_research,
+  const proposed = progress.scope_proposal;
+  return { deep_research: { ...progress,
     ...(deepCompletionTimeIssue(executionTime) ? { completion_block: deepCompletionTimeIssue(executionTime) } : {}),
     ...(proposed ? { scope_proposal: { ...proposed, remaining_elapsed_seconds: remaining } } : {}) },
     legal_actions: legalActions.filter(action => !(remaining === null || remaining <= 0) ||

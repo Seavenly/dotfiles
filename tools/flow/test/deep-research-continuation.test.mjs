@@ -26,4 +26,17 @@ test("deep scope completion and expansion both require a fresh within-budget aut
   assert.equal(boundedDeepRemainingSeconds(within), 47);
   assert.deepEqual(withDeepExecutionTime(fold, within, fold.legal_actions).legal_actions, fold.legal_actions);
   assert.equal(withDeepExecutionTime(fold, within, fold.legal_actions).deep_research.scope_proposal.remaining_elapsed_seconds, 47);
+  assert.equal(Object.hasOwn(withDeepExecutionTime({ ...fold, deep_research: { ...original, completion_block: "execution_time_unavailable" } }, within, fold.legal_actions).deep_research, "completion_block"), false);
+});
+
+test("historical terminal success and cancellation retain their recorded outcome after elapsed or unknown time", () => {
+  const report = { schema: "flow.deep-research-report/v1", answer: "Accepted original report" };
+  for (const phase of ["succeeded", "cancelled"]) for (const status of ["exhausted", "unobserved", "uncertain"]) {
+    const fold = { phase, deep_research: { schema: "flow.deep-research-progress/v1", cycle: 1, report, scope_proposal: null,
+      operationally_blocked: phase === "cancelled", completion_block: "execution_time_unavailable" } };
+    const projected = withDeepExecutionTime(fold, { status, max_elapsed_seconds: 60, wall_elapsed_seconds: { upper: 1200 } }, []);
+    assert.equal(Object.hasOwn(projected.deep_research, "completion_block"), false);
+    assert.deepEqual(projected.deep_research.report, report);
+    assert.deepEqual(projected.legal_actions, []);
+  }
 });

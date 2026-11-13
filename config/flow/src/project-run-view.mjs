@@ -54,8 +54,8 @@ export function projectRunBlocked(run) {
   // cancellation retains failure history without changing its terminal phase.
   if (run.deep_research?.schema === "flow.deep-research-progress/v1" && run.phase === "cancelled") return false;
   return run.progress === "blocked" || (run.cards ?? []).some(card => card.status === "blocked") ||
-    run.deep_research?.schema === "flow.deep-research-progress/v1" && run.deep_research.operationally_blocked === true ||
-    run.deep_research?.schema === "flow.deep-research-progress/v1" && ["execution_time_unavailable", "execution_deadline_uncertain", "execution_deadline_exhausted", "deep_cycle_budget_unavailable"].includes(run.deep_research.completion_block) ||
+    run.phase === "active" && run.deep_research?.schema === "flow.deep-research-progress/v1" && run.deep_research.operationally_blocked === true ||
+    run.phase === "active" && run.deep_research?.schema === "flow.deep-research-progress/v1" && ["execution_time_unavailable", "execution_deadline_uncertain", "execution_deadline_exhausted", "deep_cycle_budget_unavailable"].includes(run.deep_research.completion_block) ||
     run.phase === "active" && (run.effects ?? []).some(effect => effect.operation_contract === "flow.operation/project-check/v2" &&
       effect.receipt?.provider_receipt?.schema === "work.project-check-absence-receipt/v2" &&
       ["failed", "timeout", "output_limit", "cancelled", "environment_failure"].includes(effect.receipt.provider_receipt.record?.outcome));
