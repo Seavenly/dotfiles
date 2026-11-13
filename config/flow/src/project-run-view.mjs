@@ -50,6 +50,9 @@ export function renderRunProgress(progress) {
 
 /** Retry accounting counts admitted attempts, including those still executing. */
 export function projectRunBlocked(run) {
+  // The session separately reports unresolved effects as blocked. Settled
+  // cancellation retains failure history without changing its terminal phase.
+  if (run.deep_research?.schema === "flow.deep-research-progress/v1" && run.phase === "cancelled") return false;
   return run.progress === "blocked" || (run.cards ?? []).some(card => card.status === "blocked") ||
     run.deep_research?.schema === "flow.deep-research-progress/v1" && run.deep_research.operationally_blocked === true ||
     run.deep_research?.schema === "flow.deep-research-progress/v1" && ["execution_time_unavailable", "execution_deadline_uncertain", "execution_deadline_exhausted", "deep_cycle_budget_unavailable"].includes(run.deep_research.completion_block) ||
